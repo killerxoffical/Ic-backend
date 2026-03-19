@@ -13,7 +13,7 @@ const MAX_CANDLES = 5000;
 const TIMEFRAME = 60000; // ১ মিনিট
 const markets = {};
 
-// ক্যান্ডেল তৈরি করার ফাংশন
+// আগের ক্যান্ডেলগুলো যেন রিয়েল মনে হয়, তার জন্য ন্যাচারাল সাইজ
 function generateInitialCandles(startPrice, count) {
     let candles = [];
     let currentPrice = startPrice;
@@ -21,9 +21,10 @@ function generateInitialCandles(startPrice, count) {
 
     for (let i = count; i > 0; i--) {
         let open = currentPrice;
-        let close = open + (Math.random() - 0.5) * 2;
-        let high = Math.max(open, close) + Math.random();
-        let low = Math.min(open, close) - Math.random();
+        let body = (Math.random() - 0.5) * 0.00500 * startPrice; // Realistic body size
+        let close = open + body;
+        let high = Math.max(open, close) + (Math.random() * 0.00200 * startPrice);
+        let low = Math.min(open, close) - (Math.random() * 0.00200 * startPrice);
         
         candles.push({
             timestamp: now - (i * TIMEFRAME),
@@ -34,17 +35,23 @@ function generateInitialCandles(startPrice, count) {
         });
         currentPrice = close;
     }
-    return candles;
+    return {
+        history: candles,
+        targetPrice: currentPrice,
+        currentPrice: currentPrice
+    };
 }
 
-// প্রতি সেকেন্ডে প্রাইস আপডেট
+// 🟢 ম্যাজিক লজিক: প্রতি ২০০ মিলিসেকেন্ডে (0.2s) স্মুথ আপডেট!
 setInterval(() => {
     const now = Math.floor(Date.now() / TIMEFRAME) * TIMEFRAME;
 
     Object.keys(markets).forEach(marketId => {
-        let history = markets[marketId];
+        let marketData = markets[marketId];
+        let history = marketData.history;
         let lastCandle = history[history.length - 1];
 
+        // ১ মিনিট পার হলে নতুন ক্যান্ডেল
         if (now > lastCandle.timestamp) {
             let newCandle = {
                 timestamp: now,
@@ -56,10 +63,23 @@ setInterval(() => {
             history.push(newCandle);
             if (history.length > MAX_CANDLES) history.shift();
             lastCandle = newCandle;
+            
+            // নতুন ক্যান্ডেলের জন্য নতুন টার্গেট প্রাইস
+            marketData.targetPrice = lastCandle.open + (Math.random() - 0.5) * 0.00500 * lastCandle.open;
         }
 
-        let priceChange = (Math.random() - 0.5) * 0.5;
-        lastCandle.close = parseFloat((lastCandle.close + priceChange).toFixed(5));
+        // মাঝে মাঝে রেন্ডমলি প্রাইসের ডিরেকশন চেঞ্জ হবে (রিয়েলিস্টিক ফিল)
+        if (Math.random() < 0.1) {
+            marketData.targetPrice = lastCandle.close + (Math.random() - 0.5) * 0.00300 * lastCandle.close;
+        }
+
+        // 🟢 স্মুথ অ্যানিমেশন লজিক: বর্তমান প্রাইসকে ধীরে ধীরে টার্গেটের দিকে টানা
+        marketData.currentPrice += (marketData.targetPrice - marketData.currentPrice) * 0.15;
+        
+        // রিয়েল টিক (Tick) ভাইব্রেশন তৈরি করা
+        let noise = (Math.random() - 0.5) * 0.00020 * marketData.currentPrice;
+        
+        lastCandle.close = parseFloat((marketData.currentPrice + noise).toFixed(5));
         lastCandle.high = Math.max(lastCandle.high, lastCandle.close);
         lastCandle.low = Math.min(lastCandle.low, lastCandle.close);
 
@@ -70,21 +90,17 @@ setInterval(() => {
             }
         });
     });
-}, 1000);
+}, 200); // 200ms = 5 FPS (চোখের দেখায় একদম স্মুথ লাগবে)
 
-// API Endpoint - স্মার্ট মার্কেট জেনারেটর (ম্যাজিক এখানেই!)
+// API Endpoint
 app.get('/api/history/:market', (req, res) => {
     const market = req.params.market;
-    
-    // যদি সার্ভারে এই মার্কেট না থাকে, তবে সাথে সাথে নতুন করে বানিয়ে নেবে!
     if (!markets[market]) {
-        let randomStartPrice = 50 + (Math.random() * 400); // 50 থেকে 500 এর মধ্যে রেন্ডম প্রাইস
+        let randomStartPrice = 1.15000 + (Math.random() * 0.10000); // Forex style pricing (যেমন: 1.15432)
         markets[market] = generateInitialCandles(randomStartPrice, MAX_CANDLES);
         console.log(`Created new market data for: ${market}`);
     }
-    
-    // শেষের ৫০০ ক্যান্ডেল অ্যাপে পাঠাবে (Fast Load এর জন্য)
-    res.json(markets[market].slice(-500)); 
+    res.json(markets[market].history.slice(-500)); 
 });
 
 app.get('/ping', (req, res) => {
