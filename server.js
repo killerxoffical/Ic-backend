@@ -9,17 +9,11 @@ app.use(cors());
 const server = http.createServer(app);
 const wss = new WebSocket.Server({ server });
 
-// ১০০টি মার্কেট এবং ৫০০০ ক্যান্ডেল সেটআপ
 const MAX_CANDLES = 5000;
-const TIMEFRAME = 60000; // ১ মিনিট (60,000 ms)
+const TIMEFRAME = 60000; // ১ মিনিট
 const markets = {};
 
-// ডেমো ১০০টি মার্কেট তৈরি করা হচ্ছে
-for (let i = 1; i <= 100; i++) {
-    markets[`OTC-MARKET-${i}`] = generateInitialCandles(100.00, MAX_CANDLES);
-}
-
-// শুরুতে কিছু ফেক ক্যান্ডেল তৈরি করার ফাংশন
+// ক্যান্ডেল তৈরি করার ফাংশন
 function generateInitialCandles(startPrice, count) {
     let candles = [];
     let currentPrice = startPrice;
@@ -43,7 +37,7 @@ function generateInitialCandles(startPrice, count) {
     return candles;
 }
 
-// প্রতি ১ সেকেন্ডে মার্কেট আপডেট করার লজিক
+// প্রতি সেকেন্ডে প্রাইস আপডেট
 setInterval(() => {
     const now = Math.floor(Date.now() / TIMEFRAME) * TIMEFRAME;
 
@@ -51,7 +45,6 @@ setInterval(() => {
         let history = markets[marketId];
         let lastCandle = history[history.length - 1];
 
-        // যদি ১ মিনিট পার হয়ে যায়, নতুন ক্যান্ডেল শুরু করো
         if (now > lastCandle.timestamp) {
             let newCandle = {
                 timestamp: now,
@@ -61,17 +54,15 @@ setInterval(() => {
                 close: lastCandle.close
             };
             history.push(newCandle);
-            if (history.length > MAX_CANDLES) history.shift(); // ৫০০০ এর বেশি হলে পুরনোটা ডিলিট
+            if (history.length > MAX_CANDLES) history.shift();
             lastCandle = newCandle;
         }
 
-        // লাইভ প্রাইস ওঠানামা করানো
         let priceChange = (Math.random() - 0.5) * 0.5;
         lastCandle.close = parseFloat((lastCandle.close + priceChange).toFixed(5));
         lastCandle.high = Math.max(lastCandle.high, lastCandle.close);
         lastCandle.low = Math.min(lastCandle.low, lastCandle.close);
 
-        // WebSockets দিয়ে সব ইউজারকে লাইভ আপডেট পাঠানো
         const liveData = JSON.stringify({ market: marketId, candle: lastCandle });
         wss.clients.forEach(client => {
             if (client.readyState === WebSocket.OPEN) {
@@ -79,25 +70,27 @@ setInterval(() => {
             }
         });
     });
-}, 1000); // প্রতি ১ সেকেন্ডে আপডেট
+}, 1000);
 
-// API Endpoint - ইউজার অ্যাপে ঢুকলে এই লিংকে হিট করে হিস্ট্রি নেবে
+// API Endpoint - স্মার্ট মার্কেট জেনারেটর (ম্যাজিক এখানেই!)
 app.get('/api/history/:market', (req, res) => {
     const market = req.params.market;
-    if (markets[market]) {
-        // একসাথে ৫০০০ না পাঠিয়ে শেষের ৫০০ ক্যান্ডেল পাঠাবে (Fast Load)
-        res.json(markets[market].slice(-500)); 
-    } else {
-        res.status(404).json({ error: "Market not found" });
+    
+    // যদি সার্ভারে এই মার্কেট না থাকে, তবে সাথে সাথে নতুন করে বানিয়ে নেবে!
+    if (!markets[market]) {
+        let randomStartPrice = 50 + (Math.random() * 400); // 50 থেকে 500 এর মধ্যে রেন্ডম প্রাইস
+        markets[market] = generateInitialCandles(randomStartPrice, MAX_CANDLES);
+        console.log(`Created new market data for: ${market}`);
     }
+    
+    // শেষের ৫০০ ক্যান্ডেল অ্যাপে পাঠাবে (Fast Load এর জন্য)
+    res.json(markets[market].slice(-500)); 
 });
 
-// Uptime/Cron-job এর জন্য Ping Endpoint (সার্ভার সজাগ রাখার জন্য)
 app.get('/ping', (req, res) => {
     res.send("Server is awake!");
 });
 
-// সার্ভার চালু করা
 const PORT = process.env.PORT || 3000;
 server.listen(PORT, () => {
     console.log(`OTC Server is running on port ${PORT}`);
