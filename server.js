@@ -28,14 +28,20 @@ const MAX_CANDLES = 5000;
 const TIMEFRAME = 60000;
 const markets = {};
 
-function generateCandle(timestamp, open) {
-    let diff = (Math.random() - 0.5) * 0.0003 * open;
-    let close = open + diff;
+// --- রিয়েল ক্যান্ডেল জেনারেটর (ন্যাচারাল শ্যাডো সহ) ---
+function generateHistoricalCandle(timestamp, open) {
+    let isGreen = Math.random() > 0.5;
+    let body = (Math.random() * 0.0004) * open;
+    let close = isGreen ? open + body : open - body;
+    
+    let upperWick = (Math.random() * 0.0002) * open;
+    let lowerWick = (Math.random() * 0.0002) * open;
+
     return {
         timestamp: timestamp,
         open: parseFloat(open.toFixed(5)),
-        high: parseFloat(Math.max(open, close + Math.random() * 0.0001 * open).toFixed(5)),
-        low: parseFloat(Math.min(open, close - Math.random() * 0.0001 * open).toFixed(5)),
+        high: parseFloat((Math.max(open, close) + upperWick).toFixed(5)),
+        low: parseFloat((Math.min(open, close) - lowerWick).toFixed(5)),
         close: parseFloat(close.toFixed(5))
     };
 }
@@ -48,16 +54,14 @@ function initializeNewMarket(marketId, fbMarket) {
     if (existingMarketIds.length > 0) {
         const randomExistingMarket = existingMarketIds[Math.floor(Math.random() * existingMarketIds.length)];
         const lastCandle = markets[randomExistingMarket]?.history.slice(-1)[0];
-        if (lastCandle) {
-            startPrice = lastCandle.close;
-        }
+        if (lastCandle) startPrice = lastCandle.close;
     }
     
     let candles = [];
     let currentPrice = startPrice;
     let now = Math.floor(Date.now() / TIMEFRAME) * TIMEFRAME;
     for (let i = 300; i > 0; i--) {
-        const newCandle = generateCandle(now - (i * TIMEFRAME), currentPrice);
+        const newCandle = generateHistoricalCandle(now - (i * TIMEFRAME), currentPrice);
         candles.push(newCandle);
         currentPrice = newCandle.close;
     }
@@ -66,9 +70,11 @@ function initializeNewMarket(marketId, fbMarket) {
         history: candles,
         currentPrice: currentPrice,
         targetPrice: currentPrice,
+        tickCount: 0 // নতুন: জিগ-জ্যাগ মুভমেন্টের জন্য
     };
 }
 
+// ফায়ারবেস মার্কেট সিঙ্ক
 const adminMarketsRef = db.ref('admin/markets');
 adminMarketsRef.on('value', (snapshot) => {
     if (!snapshot.exists()) return;
@@ -95,7 +101,7 @@ db.ref('admin/markets').on('value', snap => {
     });
 });
 
-// --- সংশোধিত মেইন ইঞ্জিন ---
+// --- সংশোধিত মেইন ইঞ্জিন (রিয়েলিস্টিক প্রাইস অ্যাকশন) ---
 setInterval(() => {
     const now = Date.now();
     const currentPeriod = Math.floor(now / TIMEFRAME) * TIMEFRAME;
@@ -106,74 +112,79 @@ setInterval(() => {
 
         let lastCandle = marketData.history[marketData.history.length - 1];
 
-        // ১. গাণিতিক ভুল সংশোধন: নিখুঁতভাবে টাইম গ্যাপ পূরণ
+        // ১. টাইম গ্যাপ পূরণ
         const timeDiff = currentPeriod - lastCandle.timestamp;
         if (timeDiff >= TIMEFRAME) {
             const missingCandlesCount = Math.floor(timeDiff / TIMEFRAME);
             let currentGenTime = lastCandle.timestamp;
             
             for (let i = 0; i < missingCandlesCount; i++) {
-                currentGenTime += TIMEFRAME; // প্রতিবার ঠিক ১ মিনিট যোগ হবে (ভবিষ্যতে যাওয়ার সুযোগ নেই)
-                
+                currentGenTime += TIMEFRAME;
                 let newCandle;
                 if (currentGenTime < currentPeriod) {
-                    // পিছনের মিস হওয়া ক্যান্ডেলগুলো র‍্যান্ডম তৈরি হবে
-                    newCandle = generateCandle(currentGenTime, lastCandle.close);
+                    newCandle = generateHistoricalCandle(currentGenTime, lastCandle.close);
                 } else {
-                    // বর্তমান লাইভ ক্যান্ডেলটি শূন্য থেকে শুরু হবে
                     newCandle = {
-                        timestamp: currentGenTime,
-                        open: lastCandle.close,
-                        high: lastCandle.close,
-                        low: lastCandle.close,
-                        close: lastCandle.close
+                        timestamp: currentGenTime, open: lastCandle.close,
+                        high: lastCandle.close, low: lastCandle.close, close: lastCandle.close
                     };
                 }
-
                 marketData.history.push(newCandle);
                 if (marketData.history.length > MAX_CANDLES) marketData.history.shift();
                 lastCandle = newCandle;
             }
-            
             marketData.currentPrice = lastCandle.open;
+            marketData.targetPrice = lastCandle.open;
+            marketData.tickCount = 10; // সাথে সাথে নতুন টার্গেট নিবে
+        }
 
-            // অ্যাডমিন কন্ট্রোল এবং নতুন টার্গেট প্রাইস সেট করা
+        // ২. নতুন জিগ-জ্যাগ লজিক (প্রতি ২ সেকেন্ডে টার্গেট বদলাবে)
+        if (!marketData.tickCount) marketData.tickCount = 0;
+        marketData.tickCount++;
+
+        if (marketData.tickCount >= 10 || !marketData.targetPrice) {
+            marketData.tickCount = 0; // রিস্টার্ট টাইমার
+            
             let forceDir = null;
             if (adminOverrides[marketId] && adminOverrides[marketId].timestamp > Date.now() - (60 * 1000)) {
                 forceDir = adminOverrides[marketId].type;
-                delete adminOverrides[marketId];
-                db.ref(`admin/market_overrides/${marketId}`).remove();
             } else if (adminPatterns[marketId] && adminPatterns[marketId].isActive) {
                 const config = adminPatterns[marketId];
                 const index = Math.floor((currentPeriod - config.startTime) / (config.timeframe * 1000));
-                if (index >= 0 && index < config.pattern.length) {
-                    forceDir = config.pattern[index];
-                }
+                if (index >= 0 && index < config.pattern.length) forceDir = config.pattern[index];
             }
 
-            let moveSize = lastCandle.open * 0.0005;
+            let baseVolatility = lastCandle.open * 0.00015;
+
             if (forceDir && forceDir.startsWith('PATTERN_CUSTOM_')) {
                 const p = forceDir.split('_');
                 const body = parseInt(p[4]) || 40;
                 const totalScale = lastCandle.open * 0.0009;
-                marketData.targetPrice = (p[2] === 'GREEN') ? lastCandle.open + (totalScale * (body / 100)) : lastCandle.open - (totalScale * (body / 100));
-            } else if (['UP', 'GREEN'].some(d => String(forceDir).includes(d))) {
-                marketData.targetPrice = lastCandle.open + moveSize;
-            } else if (['DOWN', 'RED'].some(d => String(forceDir).includes(d))) {
-                marketData.targetPrice = lastCandle.open - moveSize;
+                marketData.targetPrice = (p[2] === 'GREEN') 
+                    ? lastCandle.open + (totalScale * (body / 100)) 
+                    : lastCandle.open - (totalScale * (body / 100));
+            } else if (['UP', 'GREEN'].includes(forceDir)) {
+                // উপরে যাবে, কিন্তু একটু কাঁপতে কাঁপতে
+                marketData.targetPrice = marketData.currentPrice + (Math.random() * baseVolatility * 1.5) - (baseVolatility * 0.2);
+            } else if (['DOWN', 'RED'].includes(forceDir)) {
+                // নিচে যাবে, কিন্তু একটু কাঁপতে কাঁপতে
+                marketData.targetPrice = marketData.currentPrice - (Math.random() * baseVolatility * 1.5) + (baseVolatility * 0.2);
             } else {
-                marketData.targetPrice = lastCandle.open + (Math.random() - 0.5) * 0.0006 * lastCandle.open;
+                // একদম রিয়েল ন্যাচারাল মার্কেট (Zig-Zag)
+                let randomMove = (Math.random() - 0.5) * baseVolatility * 2.5;
+                // মার্কেট যেন একদিকে হারিয়ে না যায় তার জন্য রিকভারি সিস্টেম
+                let distanceToOpen = marketData.currentPrice - lastCandle.open;
+                let meanReversion = -distanceToOpen * 0.1; 
+                marketData.targetPrice = marketData.currentPrice + randomMove + meanReversion;
             }
         }
 
-        // ২. স্মুথ লাইভ প্রাইস মুভমেন্ট
+        // ৩. স্মুথ মুভমেন্ট (Smooth Transition)
         let distance = marketData.targetPrice - marketData.currentPrice;
-        let step = distance * 0.08;
-        let maxAllowedStep = lastCandle.open * 0.00003;
-        if (Math.abs(step) > maxAllowedStep) step = Math.sign(step) * maxAllowedStep;
+        let step = distance * 0.15; // প্রতি টিক-এ ১৫% এগোবে
         
         marketData.currentPrice += step;
-        let jitter = (Math.random() - 0.5) * 0.00001 * lastCandle.open;
+        let jitter = (Math.random() - 0.5) * 0.000008 * lastCandle.open; // মাইক্রো কাঁপুনি
         
         lastCandle.close = parseFloat((marketData.currentPrice + jitter).toFixed(5));
         lastCandle.high = Math.max(lastCandle.high, lastCandle.close);
@@ -188,7 +199,6 @@ setInterval(() => {
     });
 }, 200);
 
-// API Endpoint (কোনো গ্যাপ পূরণের দরকার নেই, মেইন ইঞ্জিনই সব করে নেবে)
 app.get('/api/history/:market', (req, res) => {
     const marketId = req.params.market;
     if (markets[marketId] && markets[marketId].history) {
@@ -198,7 +208,7 @@ app.get('/api/history/:market', (req, res) => {
     }
 });
 
-app.get('/ping', (req, res) => res.send("UltraSmooth V6 - Final Perfect Timeline"));
+app.get('/ping', (req, res) => res.send("UltraSmooth V7 - ZigZag Engine"));
 
 const PORT = process.env.PORT || 3000;
-server.listen(PORT, () => console.log(`Ultra Smooth Server v6 on ${PORT}`));
+server.listen(PORT, () => console.log(`Ultra Smooth Server v7 on ${PORT}`));
