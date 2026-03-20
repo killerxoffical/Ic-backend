@@ -28,26 +28,30 @@ const MAX_CANDLES = 5000;
 const TIMEFRAME = 60000; 
 const markets = {};
 
-// ক্যান্ডেল জেনারেটর (অত্যন্ত স্থিতিশীল লজিক)
+// ক্যান্ডেল জেনারেটর (স্মুথ হিস্ট্রি)
 function generateInitialCandles(startPrice, count) {
     let candles = [];
     let currentPrice = startPrice;
     let now = Math.floor(Date.now() / TIMEFRAME) * TIMEFRAME;
     for (let i = count; i > 0; i--) {
         let open = currentPrice;
-        // মুভমেন্ট খুব ছোট রাখা হয়েছে (০.০৫% এর নিচে)
-        let diff = (Math.random() - 0.5) * 0.0005 * startPrice;
+        let diff = (Math.random() - 0.5) * 0.0003 * startPrice;
         let close = open + diff;
         candles.push({
             timestamp: now - (i * TIMEFRAME),
             open: parseFloat(open.toFixed(5)),
-            high: parseFloat(Math.max(open, close + Math.random() * 0.0002 * startPrice).toFixed(5)),
-            low: parseFloat(Math.min(open, close - Math.random() * 0.0002 * startPrice).toFixed(5)),
+            high: parseFloat(Math.max(open, close + Math.random() * 0.0001 * startPrice).toFixed(5)),
+            low: parseFloat(Math.min(open, close - Math.random() * 0.0001 * startPrice).toFixed(5)),
             close: parseFloat(close.toFixed(5))
         });
         currentPrice = close;
     }
-    return { history: candles, currentPrice: currentPrice, targetPrice: currentPrice };
+    return { 
+        history: candles, 
+        currentPrice: currentPrice, 
+        targetPrice: currentPrice,
+        velocity: 0 // গতির হিসাব রাখার জন্য
+    };
 }
 
 const adminOverrides = {};
@@ -67,7 +71,7 @@ db.ref('admin/markets').on('value', snap => {
     }
 });
 
-// 🟢 মেইন ইঞ্জিন: স্পাইক কন্ট্রোল লজিকসহ
+// 🟢 মেইন ইঞ্জিন: ফিজিক্স বেসড স্মুথ মুভমেন্ট
 setInterval(() => {
     const now = Date.now();
     const currentPeriod = Math.floor(now / TIMEFRAME) * TIMEFRAME;
@@ -89,6 +93,7 @@ setInterval(() => {
             if (history.length > MAX_CANDLES) history.shift();
             lastCandle = newCandle;
 
+            // অ্যাডমিন কন্ট্রোল চেক
             let forceDir = null;
             if (adminOverrides[marketId]) {
                 forceDir = adminOverrides[marketId].type;
@@ -99,55 +104,42 @@ setInterval(() => {
                 const index = Math.floor((currentPeriod - config.startTime) / (config.timeframe * 1000));
                 if (index >= 0 && index < config.pattern.length) {
                     forceDir = config.pattern[index];
-                } else if (index >= config.pattern.length) {
-                    db.ref(`admin/markets/${marketId}/pattern_config/isActive`).set(false);
                 }
             }
 
-            // 🛠️ মুভমেন্ট রেঞ্জ ছোট করা হয়েছে যাতে গ্রাফ লাফ না দেয়
-            let baseMove = (Math.random() * 0.0006 + 0.0002) * lastCandle.open;
-            
-            const bullish = ['UP', 'GREEN', 'PATTERN_HAMMER', 'PATTERN_MARUBOZU_GREEN', 'PATTERN_BULLISH_ENGULFING', 'PATTERN_MORNING_STAR', 'PATTERN_THREE_WHITE_SOLDIERS', 'PATTERN_BULLISH_HARAMI', 'PATTERN_PIERCING_LINE', 'PATTERN_TWEEZER_BOTTOM', 'PATTERN_THREE_INSIDE_UP', 'PATTERN_THREE_OUTSIDE_UP', 'PATTERN_INVERTED_HAMMER'];
-            const bearish = ['DOWN', 'RED', 'PATTERN_HANGING_MAN', 'PATTERN_SHOOTING_STAR', 'PATTERN_MARUBOZU_RED', 'PATTERN_BEARISH_ENGULFING', 'PATTERN_EVENING_STAR', 'PATTERN_THREE_BLACK_CROWS', 'PATTERN_BEARISH_HARAMI', 'PATTERN_DARK_CLOUD_COVER', 'PATTERN_TWEEZER_TOP', 'PATTERN_THREE_INSIDE_DOWN', 'PATTERN_THREE_OUTSIDE_DOWN'];
-            const neutral = ['PATTERN_DOJI', 'PATTERN_DRAGONFLY_DOJI', 'PATTERN_GRAVESTONE_DOJI', 'PATTERN_LONG_LEGGED_DOJI', 'PATTERN_SPINNING_TOP'];
-
+            // টার্গেট সেট করা
+            let moveSize = lastCandle.open * 0.0005;
             if (forceDir && forceDir.startsWith('PATTERN_CUSTOM_')) {
-                const p = forceDir.split('_'); 
-                const color = p[2];
+                const p = forceDir.split('_');
                 const body = parseInt(p[4]);
-                // আর্কিটেক্টের জন্য মুভমেন্ট লিমিটেড করা হয়েছে
-                const totalScale = lastCandle.open * 0.0008; 
-
-                if (color === 'GREEN') {
-                    marketData.targetPrice = lastCandle.open + (totalScale * (body / 100));
-                } else {
-                    marketData.targetPrice = lastCandle.open - (totalScale * (body / 100));
-                }
-                marketData.currentPrice = lastCandle.open;
-            } 
-            else if (bullish.includes(forceDir)) {
-                marketData.targetPrice = lastCandle.open + baseMove;
-            } else if (bearish.includes(forceDir)) {
-                marketData.targetPrice = lastCandle.open - baseMove;
-            } else if (neutral.includes(forceDir)) {
-                marketData.targetPrice = lastCandle.open + (Math.random() - 0.5) * 0.00005;
+                const totalScale = lastCandle.open * 0.0009;
+                marketData.targetPrice = (p[2] === 'GREEN') ? lastCandle.open + (totalScale * (body / 100)) : lastCandle.open - (totalScale * (body / 100));
+            } else if (['UP', 'GREEN'].some(d => String(forceDir).includes(d))) {
+                marketData.targetPrice = lastCandle.open + moveSize;
+            } else if (['DOWN', 'RED'].some(d => String(forceDir).includes(d))) {
+                marketData.targetPrice = lastCandle.open - moveSize;
             } else {
-                // সাধারণ সময়ে মুভমেন্ট আরও ছোট (০.০১% এর আশেপাশে)
-                marketData.targetPrice = lastCandle.open + (Math.random() - 0.5) * 0.0005 * lastCandle.open;
+                marketData.targetPrice = lastCandle.open + (Math.random() - 0.5) * 0.0006 * lastCandle.open;
             }
         }
 
-        // 🟢 স্পাইক প্রিভেনশন: এক লাফে প্রাইস মুভমেন্ট সীমিত করা
-        let diff = marketData.targetPrice - marketData.currentPrice;
-        let maxStep = lastCandle.open * 0.0001; // প্রতি ২০০ মিলিসেকেন্ডে ০.০১% এর বেশি মুভ করতে পারবে না
-        
-        if (Math.abs(diff) > maxStep) {
-            marketData.currentPrice += Math.sign(diff) * maxStep;
-        } else {
-            marketData.currentPrice += diff * 0.15;
+        // 🧠 স্মুথিং লজিক: "Ease-Out" মুভমেন্ট
+        // প্রাইস হুট করে লাফাবে না, বরং গন্তব্যের দিকে ধীরে ধীরে এগোবে
+        let distance = marketData.targetPrice - marketData.currentPrice;
+        let step = distance * 0.08; // প্রতি টিক-এ ৮% দূরত্ব অতিক্রম করবে
+
+        // সর্বোচ্চ গতির সীমা (Hard limit to prevent jumps)
+        let maxAllowedStep = lastCandle.open * 0.00003; 
+        if (Math.abs(step) > maxAllowedStep) {
+            step = Math.sign(step) * maxAllowedStep;
         }
+
+        marketData.currentPrice += step;
+
+        // হালকা মার্কেট নয়েজ (কাঁপাকাঁপি)
+        let jitter = (Math.random() - 0.5) * 0.00001 * lastCandle.open;
         
-        lastCandle.close = parseFloat(marketData.currentPrice.toFixed(5));
+        lastCandle.close = parseFloat((marketData.currentPrice + jitter).toFixed(5));
         lastCandle.high = Math.max(lastCandle.high, lastCandle.close);
         lastCandle.low = Math.min(lastCandle.low, lastCandle.close);
 
@@ -162,13 +154,13 @@ setInterval(() => {
 app.get('/api/history/:market', (req, res) => {
     const market = req.params.market;
     if (!markets[market]) {
-        let startPrice = 1.15000 + (Math.random() * 0.05);
+        let startPrice = 1.15000 + (Math.random() * 0.02);
         markets[market] = generateInitialCandles(startPrice, MAX_CANDLES);
     }
     res.json(markets[market].history.slice(-500));
 });
 
-app.get('/ping', (req, res) => res.send("Stable"));
+app.get('/ping', (req, res) => res.send("UltraSmooth"));
 
 const PORT = process.env.PORT || 3000;
-server.listen(PORT, () => console.log(`Stable Server on ${PORT}`));
+server.listen(PORT, () => console.log(`Ultra Smooth Server on ${PORT}`));
