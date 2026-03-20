@@ -31,10 +31,22 @@ const markets = {}; // In-memory storage for all markets
 // --- ফায়ারবেস থেকে মার্কেট লিস্ট লোড এবং সিঙ্ক করা ---
 const adminMarketsRef = db.ref('admin/markets');
 
+function generateCandle(timestamp, open) {
+    let diff = (Math.random() - 0.5) * 0.0003 * open;
+    let close = open + diff;
+    return {
+        timestamp: timestamp,
+        open: parseFloat(open.toFixed(5)),
+        high: parseFloat(Math.max(open, close + Math.random() * 0.0001 * open).toFixed(5)),
+        low: parseFloat(Math.min(open, close - Math.random() * 0.0001 * open).toFixed(5)),
+        close: parseFloat(close.toFixed(5))
+    };
+}
+
 function initializeNewMarket(marketId, fbMarket) {
     console.log(`Initializing new market: ${fbMarket.name} (${marketId})`);
     
-    let startPrice = 1.15000 + (Math.random() - 0.5) * 0.1; // ডিফল্ট প্রাইস + র‍্যান্ডম ভ্যারিয়েশন
+    let startPrice = 1.15000 + (Math.random() - 0.5) * 0.1;
     const existingMarketIds = Object.keys(markets);
     if (existingMarketIds.length > 0) {
         const randomExistingMarket = existingMarketIds[Math.floor(Math.random() * existingMarketIds.length)];
@@ -44,15 +56,25 @@ function initializeNewMarket(marketId, fbMarket) {
         }
     }
     
-    markets[marketId] = generateInitialCandles(startPrice, 300);
+    let candles = [];
+    let currentPrice = startPrice;
+    let now = Math.floor(Date.now() / TIMEFRAME) * TIMEFRAME;
+    for (let i = 300; i > 0; i--) {
+        const newCandle = generateCandle(now - (i * TIMEFRAME), currentPrice);
+        candles.push(newCandle);
+        currentPrice = newCandle.close;
+    }
+
+    markets[marketId] = {
+        history: candles,
+        currentPrice: currentPrice,
+        targetPrice: currentPrice,
+    };
     console.log(`Market ${fbMarket.name} initialized with start price ${startPrice.toFixed(5)}`);
 }
 
 adminMarketsRef.on('value', (snapshot) => {
-    if (!snapshot.exists()) {
-        console.log("No markets found in Firebase admin/markets.");
-        return;
-    }
+    if (!snapshot.exists()) return;
     const fbMarkets = snapshot.val();
     console.log("Syncing markets from Firebase...");
 
@@ -72,45 +94,17 @@ adminMarketsRef.on('value', (snapshot) => {
 });
 // --- মার্কেট সিঙ্ক শেষ ---
 
-function generateInitialCandles(startPrice, count) {
-    let candles = [];
-    let currentPrice = startPrice;
-    let now = Math.floor(Date.now() / TIMEFRAME) * TIMEFRAME;
-    for (let i = count; i > 0; i--) {
-        let open = currentPrice;
-        let diff = (Math.random() - 0.5) * 0.0003 * startPrice;
-        let close = open + diff;
-        candles.push({
-            timestamp: now - (i * TIMEFRAME),
-            open: parseFloat(open.toFixed(5)),
-            high: parseFloat(Math.max(open, close + Math.random() * 0.0001 * startPrice).toFixed(5)),
-            low: parseFloat(Math.min(open, close - Math.random() * 0.0001 * startPrice).toFixed(5)),
-            close: parseFloat(close.toFixed(5))
-        });
-        currentPrice = close;
-    }
-    return {
-        history: candles,
-        currentPrice: currentPrice,
-        targetPrice: currentPrice,
-    };
-}
-
 const adminOverrides = {};
 const adminPatterns = {};
 
 db.ref('admin/market_overrides').on('value', snap => {
-    const data = snap.val();
-    if (data) Object.assign(adminOverrides, data);
+    Object.assign(adminOverrides, snap.val() || {});
 });
-
 db.ref('admin/markets').on('value', snap => {
-    const data = snap.val();
-    if (data) {
-        Object.keys(data).forEach(id => {
-            if (data[id].pattern_config) adminPatterns[id] = data[id].pattern_config;
-        });
-    }
+    const data = snap.val() || {};
+    Object.keys(data).forEach(id => {
+        if (data[id].pattern_config) adminPatterns[id] = data[id].pattern_config;
+    });
 });
 
 // মেইন ইঞ্জিন
@@ -126,13 +120,7 @@ setInterval(() => {
         let lastCandle = history[history.length - 1];
 
         if (currentPeriod > lastCandle.timestamp) {
-            let newCandle = {
-                timestamp: currentPeriod,
-                open: lastCandle.close,
-                high: lastCandle.close,
-                low: lastCandle.close,
-                close: lastCandle.close
-            };
+            let newCandle = generateCandle(currentPeriod, lastCandle.close);
             history.push(newCandle);
             if (history.length > MAX_CANDLES) history.shift();
             lastCandle = newCandle;
@@ -149,7 +137,7 @@ setInterval(() => {
                     forceDir = config.pattern[index];
                 }
             }
-
+            
             let moveSize = lastCandle.open * 0.0005;
             if (forceDir && forceDir.startsWith('PATTERN_CUSTOM_')) {
                 const p = forceDir.split('_');
@@ -168,9 +156,8 @@ setInterval(() => {
         let distance = marketData.targetPrice - marketData.currentPrice;
         let step = distance * 0.08;
         let maxAllowedStep = lastCandle.open * 0.00003;
-        if (Math.abs(step) > maxAllowedStep) {
-            step = Math.sign(step) * maxAllowedStep;
-        }
+        if (Math.abs(step) > maxAllowedStep) step = Math.sign(step) * maxAllowedStep;
+        
         marketData.currentPrice += step;
         let jitter = (Math.random() - 0.5) * 0.00001 * lastCandle.open;
         
@@ -190,7 +177,6 @@ setInterval(() => {
 app.get('/api/history/:market', (req, res) => {
     const marketId = req.params.market;
     
-    // ১. চেক করা যে মার্কেটটি মেমোরিতে আছে কিনা
     if (markets[marketId] && markets[marketId].history) {
         const marketData = markets[marketId];
         const lastCandle = marketData.history[marketData.history.length - 1];
@@ -198,42 +184,33 @@ app.get('/api/history/:market', (req, res) => {
         const currentPeriod = Math.floor(now / TIMEFRAME) * TIMEFRAME;
         const timeDiff = currentPeriod - lastCandle.timestamp;
 
-        // ২. ইতিহাস পুরানো হয়ে গেছে কিনা চেক করা
         if (timeDiff > 0) {
             const missingCandlesCount = timeDiff / TIMEFRAME;
             console.log(`History for ${marketId} is stale. Generating ${missingCandlesCount} missing candles.`);
             let latestPrice = lastCandle.close;
             for (let i = 1; i <= missingCandlesCount; i++) {
                 const newTimestamp = lastCandle.timestamp + (i * TIMEFRAME);
-                let open = latestPrice;
-                let diff = (Math.random() - 0.5) * 0.0001 * open; // কম ভলাটিলিটি দিয়ে গ্যাপ পূরণ
-                let close = open + diff;
-                const newCandle = {
-                    timestamp: newTimestamp,
-                    open: parseFloat(open.toFixed(5)),
-                    high: parseFloat(Math.max(open, close).toFixed(5)),
-                    low: parseFloat(Math.min(open, close).toFixed(5)),
-                    close: parseFloat(close.toFixed(5))
-                };
+                
+                // *** মূল পরিবর্তন এখানে ***
+                // এখন গ্যাপ পূরণের সময়ও স্বাভাবিক ক্যান্ডেল তৈরি হবে
+                const newCandle = generateCandle(newTimestamp, latestPrice); 
+                
                 marketData.history.push(newCandle);
                 if (marketData.history.length > MAX_CANDLES) marketData.history.shift();
-                latestPrice = close;
+                latestPrice = newCandle.close;
             }
-            // ৩. নতুন ক্যান্ডেল জেনারেট করার পর লাইভ প্রাইস আপডেট করা
             marketData.currentPrice = latestPrice;
             marketData.targetPrice = latestPrice;
         }
-        // ৪. আপ-টু-ডেট ইতিহাস পাঠানো
         res.json(marketData.history);
     } else {
-        // ৫. মার্কেট মেমোরিতে না থাকলে, খালি উত্তর পাঠানো যাতে ক্লায়েন্ট আবার চেষ্টা করে
         console.warn(`History requested for uninitialized market: ${marketId}. Sending empty array for client retry.`);
         res.json([]); 
     }
 });
 
 
-app.get('/ping', (req, res) => res.send("UltraSmooth"));
+app.get('/ping', (req, res) => res.send("UltraSmooth V4 - Final"));
 
 const PORT = process.env.PORT || 3000;
-server.listen(PORT, () => console.log(`Ultra Smooth Server on ${PORT}`));
+server.listen(PORT, () => console.log(`Ultra Smooth Server v4 on ${PORT}`));
