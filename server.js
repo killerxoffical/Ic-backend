@@ -37,6 +37,10 @@ function roundPrice(v) {
   return parseFloat(Math.max(MIN_PRICE, v).toFixed(5));
 }
 
+function randomBetween(min, max) {
+  return min + Math.random() * (max - min);
+}
+
 function marketPathFromId(marketId) {
   return String(marketId || '').replace(/[\.\/ ]/g, '-').toLowerCase();
 }
@@ -51,17 +55,13 @@ function cloneCandle(c) {
   };
 }
 
-function randomBetween(min, max) {
-  return min + Math.random() * (max - min);
-}
-
 function generateHistoricalCandle(timestamp, open) {
   const safeOpen = Math.max(MIN_PRICE, open);
   const isGreen = Math.random() > 0.5;
-  const body = randomBetween(0.00008, 0.00040) * safeOpen;
+  const body = randomBetween(0.00006, 0.00028) * safeOpen;
   const close = isGreen ? safeOpen + body : safeOpen - body;
-  const upperWick = randomBetween(0.00005, 0.00022) * safeOpen;
-  const lowerWick = randomBetween(0.00005, 0.00022) * safeOpen;
+  const upperWick = randomBetween(0.00003, 0.00018) * safeOpen;
+  const lowerWick = randomBetween(0.00003, 0.00018) * safeOpen;
 
   return {
     timestamp,
@@ -72,11 +72,19 @@ function generateHistoricalCandle(timestamp, open) {
   };
 }
 
+function getAverageRange(history, count = 20) {
+  const recent = history.slice(-count);
+  if (!recent.length) return 0.0003;
+  const total = recent.reduce((sum, c) => sum + Math.abs(c.high - c.low), 0);
+  return total / recent.length;
+}
+
 function initializeNewMarket(marketId, fbMarket = {}) {
   let startPrice = 1.15 + (Math.random() - 0.5) * 0.1;
-  const existingIds = Object.keys(markets);
-  if (existingIds.length) {
-    const randomId = existingIds[Math.floor(Math.random() * existingIds.length)];
+
+  const ids = Object.keys(markets);
+  if (ids.length) {
+    const randomId = ids[Math.floor(Math.random() * ids.length)];
     const last = markets[randomId]?.history?.[markets[randomId].history.length - 1];
     if (last?.close) startPrice = last.close;
   }
@@ -86,9 +94,9 @@ function initializeNewMarket(marketId, fbMarket = {}) {
   let currentPrice = Math.max(MIN_PRICE, startPrice);
 
   for (let i = HISTORY_SEED_COUNT; i > 0; i--) {
-    const candle = generateHistoricalCandle(nowPeriod - (i * TIMEFRAME), currentPrice);
-    candles.push(candle);
-    currentPrice = candle.close;
+    const c = generateHistoricalCandle(nowPeriod - (i * TIMEFRAME), currentPrice);
+    candles.push(c);
+    currentPrice = c.close;
   }
 
   const last = candles[candles.length - 1];
@@ -153,113 +161,93 @@ function ensureCurrentPeriodCandle(marketData, currentPeriod) {
   return lastCandle;
 }
 
-function getRandomGreenStyle(open, label = 'GREEN') {
-  const scale = Math.max(open * 0.0010, 0.00035);
+function makeCommandShape(open, direction, label, history) {
+  const avgRange = getAverageRange(history, 20);
+  const maxRange = Math.max(avgRange * 1.20, 0.00025);
   const style = Math.floor(Math.random() * 6);
+
+  let totalRange;
+  let bodyRatio;
+  let upperRatio;
+  let lowerRatio;
+
+  if (style === 0) {
+    totalRange = maxRange * randomBetween(0.45, 0.70);
+    bodyRatio = randomBetween(0.10, 0.18); // doji-like
+    upperRatio = randomBetween(0.30, 0.45);
+    lowerRatio = 1 - bodyRatio - upperRatio;
+  } else if (style === 1) {
+    totalRange = maxRange * randomBetween(0.55, 0.85);
+    bodyRatio = randomBetween(0.35, 0.55); // normal
+    upperRatio = randomBetween(0.12, 0.22);
+    lowerRatio = 1 - bodyRatio - upperRatio;
+  } else if (style === 2) {
+    totalRange = maxRange * randomBetween(0.60, 0.95);
+    bodyRatio = randomBetween(0.20, 0.35); // hammer-ish
+    upperRatio = randomBetween(0.08, 0.16);
+    lowerRatio = 1 - bodyRatio - upperRatio;
+  } else if (style === 3) {
+    totalRange = maxRange * randomBetween(0.60, 0.95);
+    bodyRatio = randomBetween(0.20, 0.35); // inverted-ish
+    upperRatio = randomBetween(0.35, 0.50);
+    lowerRatio = 1 - bodyRatio - upperRatio;
+  } else if (style === 4) {
+    totalRange = maxRange * randomBetween(0.75, 1.05);
+    bodyRatio = randomBetween(0.45, 0.70); // stronger
+    upperRatio = randomBetween(0.08, 0.16);
+    lowerRatio = 1 - bodyRatio - upperRatio;
+  } else {
+    totalRange = maxRange * randomBetween(0.50, 0.80);
+    bodyRatio = randomBetween(0.22, 0.40);
+    upperRatio = randomBetween(0.20, 0.32);
+    lowerRatio = 1 - bodyRatio - upperRatio;
+  }
+
+  if (lowerRatio < 0.08) lowerRatio = 0.08;
+  if (upperRatio < 0.08) upperRatio = 0.08;
+
+  const bodyMove = totalRange * bodyRatio;
+  const upperWick = totalRange * upperRatio;
+  const lowerWick = totalRange * lowerRatio;
 
   let desiredClose, desiredHigh, desiredLow;
 
-  if (style === 0) {
-    const body = scale * randomBetween(0.10, 0.18);
-    desiredClose = open + body;
-    desiredHigh = desiredClose + scale * randomBetween(0.18, 0.45);
-    desiredLow = open - scale * randomBetween(0.10, 0.18);
-  } else if (style === 1) {
-    const body = scale * randomBetween(0.40, 0.75);
-    desiredClose = open + body;
-    desiredHigh = desiredClose + scale * randomBetween(0.04, 0.12);
-    desiredLow = open - scale * randomBetween(0.02, 0.08);
-  } else if (style === 2) {
-    const body = scale * randomBetween(0.25, 0.45);
-    desiredClose = open + body;
-    desiredHigh = desiredClose + scale * randomBetween(0.08, 0.25);
-    desiredLow = open - scale * randomBetween(0.18, 0.35);
-  } else if (style === 3) {
-    const body = scale * randomBetween(0.06, 0.12);
-    desiredClose = open + body;
-    desiredHigh = desiredClose + scale * randomBetween(0.15, 0.32);
-    desiredLow = open - scale * randomBetween(0.15, 0.32);
-  } else if (style === 4) {
-    const body = scale * randomBetween(0.30, 0.50);
-    desiredClose = open + body;
-    desiredHigh = desiredClose + scale * randomBetween(0.12, 0.28);
-    desiredLow = open - scale * randomBetween(0.04, 0.10);
+  if (direction === 'GREEN') {
+    desiredClose = open + bodyMove;
+    desiredHigh = Math.max(open, desiredClose) + upperWick;
+    desiredLow = Math.min(open, desiredClose) - lowerWick;
   } else {
-    const body = scale * randomBetween(0.16, 0.28);
-    desiredClose = open + body;
-    desiredHigh = desiredClose + scale * randomBetween(0.04, 0.10);
-    desiredLow = open - scale * randomBetween(0.25, 0.42);
+    desiredClose = open - bodyMove;
+    desiredHigh = Math.max(open, desiredClose) + upperWick;
+    desiredLow = Math.min(open, desiredClose) - lowerWick;
   }
 
   return {
     label,
-    direction: 'GREEN',
+    direction,
     desiredClose: roundPrice(desiredClose),
-    desiredHigh: roundPrice(Math.max(desiredHigh, desiredClose)),
-    desiredLow: roundPrice(Math.min(desiredLow, open)),
+    desiredHigh: roundPrice(desiredHigh),
+    desiredLow: roundPrice(desiredLow),
+    totalRange,
     expiresAt: Date.now() + 65000
   };
 }
 
-function getRandomRedStyle(open, label = 'RED') {
-  const scale = Math.max(open * 0.0010, 0.00035);
-  const style = Math.floor(Math.random() * 6);
-
-  let desiredClose, desiredHigh, desiredLow;
-
-  if (style === 0) {
-    const body = scale * randomBetween(0.10, 0.18);
-    desiredClose = open - body;
-    desiredHigh = open + scale * randomBetween(0.10, 0.18);
-    desiredLow = desiredClose - scale * randomBetween(0.18, 0.45);
-  } else if (style === 1) {
-    const body = scale * randomBetween(0.40, 0.75);
-    desiredClose = open - body;
-    desiredHigh = open + scale * randomBetween(0.02, 0.08);
-    desiredLow = desiredClose - scale * randomBetween(0.04, 0.12);
-  } else if (style === 2) {
-    const body = scale * randomBetween(0.25, 0.45);
-    desiredClose = open - body;
-    desiredHigh = open + scale * randomBetween(0.18, 0.35);
-    desiredLow = desiredClose - scale * randomBetween(0.08, 0.25);
-  } else if (style === 3) {
-    const body = scale * randomBetween(0.06, 0.12);
-    desiredClose = open - body;
-    desiredHigh = open + scale * randomBetween(0.15, 0.32);
-    desiredLow = desiredClose - scale * randomBetween(0.15, 0.32);
-  } else if (style === 4) {
-    const body = scale * randomBetween(0.30, 0.50);
-    desiredClose = open - body;
-    desiredHigh = open + scale * randomBetween(0.04, 0.10);
-    desiredLow = desiredClose - scale * randomBetween(0.12, 0.28);
-  } else {
-    const body = scale * randomBetween(0.16, 0.28);
-    desiredClose = open - body;
-    desiredHigh = open + scale * randomBetween(0.25, 0.42);
-    desiredLow = desiredClose - scale * randomBetween(0.04, 0.10);
-  }
-
-  return {
-    label,
-    direction: 'RED',
-    desiredClose: roundPrice(desiredClose),
-    desiredHigh: roundPrice(Math.max(desiredHigh, open)),
-    desiredLow: roundPrice(Math.min(desiredLow, desiredClose)),
-    expiresAt: Date.now() + 65000
-  };
-}
-
-function parseCustomOverride(type, open) {
+function parseCustomOverride(type, open, history) {
   const parts = String(type).split('_');
   const color = parts[2] === 'GREEN' ? 'GREEN' : 'RED';
   const upper = Math.max(0, Math.min(100, parseInt(parts[3], 10) || 20));
   const body = Math.max(5, Math.min(100, parseInt(parts[4], 10) || 60));
   const lower = Math.max(0, Math.min(100, parseInt(parts[5], 10) || 20));
 
-  const totalScale = Math.max(open * 0.001, 0.0004);
-  const bodyMove = totalScale * (body / 100);
-  const upperWick = totalScale * 0.9 * (upper / 100);
-  const lowerWick = totalScale * 0.9 * (lower / 100);
+  const avgRange = getAverageRange(history, 20);
+  const maxRange = Math.max(avgRange * 1.20, 0.00025);
+  const totalScale = maxRange;
+
+  const totalParts = upper + body + lower || 100;
+  const upperWick = totalScale * (upper / totalParts);
+  const bodyMove = totalScale * (body / totalParts);
+  const lowerWick = totalScale * (lower / totalParts);
 
   const desiredClose = color === 'GREEN' ? open + bodyMove : open - bodyMove;
   const desiredHigh = Math.max(open, desiredClose) + upperWick;
@@ -271,13 +259,9 @@ function parseCustomOverride(type, open) {
     desiredClose: roundPrice(desiredClose),
     desiredHigh: roundPrice(desiredHigh),
     desiredLow: roundPrice(desiredLow),
+    totalRange: totalScale,
     expiresAt: Date.now() + 65000
   };
-}
-
-function buildDirectedCommand(label, direction, open) {
-  if (direction === 'GREEN') return getRandomGreenStyle(open, label);
-  return getRandomRedStyle(open, label);
 }
 
 function getCommandForCurrentCandle(marketId, marketData, lastCandle, currentPeriod) {
@@ -288,22 +272,31 @@ function getCommandForCurrentCandle(marketId, marketData, lastCandle, currentPer
       marketData.currentCommandSignature = signature;
 
       if (String(override.type).startsWith('PATTERN_CUSTOM_')) {
-        return parseCustomOverride(override.type, lastCandle.open);
-      }
-      if (override.type === 'UP' || override.type === 'GREEN') {
-        return buildDirectedCommand(override.type, 'GREEN', lastCandle.open);
-      }
-      if (override.type === 'DOWN' || override.type === 'RED') {
-        return buildDirectedCommand(override.type, 'RED', lastCandle.open);
-      }
-      if (String(override.type).includes('BULLISH') || String(override.type).includes('WHITE')) {
-        return buildDirectedCommand(override.type, 'GREEN', lastCandle.open);
-      }
-      if (String(override.type).includes('BEARISH') || String(override.type).includes('BLACK')) {
-        return buildDirectedCommand(override.type, 'RED', lastCandle.open);
+        return parseCustomOverride(override.type, lastCandle.open, marketData.history);
       }
 
-      return buildDirectedCommand(override.type, Math.random() > 0.5 ? 'GREEN' : 'RED', lastCandle.open);
+      if (override.type === 'UP' || override.type === 'GREEN') {
+        return makeCommandShape(lastCandle.open, 'GREEN', override.type, marketData.history);
+      }
+
+      if (override.type === 'DOWN' || override.type === 'RED') {
+        return makeCommandShape(lastCandle.open, 'RED', override.type, marketData.history);
+      }
+
+      if (String(override.type).includes('BULLISH') || String(override.type).includes('WHITE')) {
+        return makeCommandShape(lastCandle.open, 'GREEN', override.type, marketData.history);
+      }
+
+      if (String(override.type).includes('BEARISH') || String(override.type).includes('BLACK')) {
+        return makeCommandShape(lastCandle.open, 'RED', override.type, marketData.history);
+      }
+
+      return makeCommandShape(
+        lastCandle.open,
+        Math.random() > 0.5 ? 'GREEN' : 'RED',
+        override.type,
+        marketData.history
+      );
     }
     return marketData.activeCommand;
   }
@@ -316,7 +309,12 @@ function getCommandForCurrentCandle(marketId, marketData, lastCandle, currentPer
       const signature = `pattern:${patternConfig.startTime}:${index}:${step}`;
       if (marketData.currentCommandSignature !== signature) {
         marketData.currentCommandSignature = signature;
-        return buildDirectedCommand(step, step === 'GREEN' ? 'GREEN' : 'RED', lastCandle.open);
+        return makeCommandShape(
+          lastCandle.open,
+          step === 'GREEN' ? 'GREEN' : 'RED',
+          step,
+          marketData.history
+        );
       }
       return marketData.activeCommand;
     }
@@ -327,10 +325,10 @@ function getCommandForCurrentCandle(marketId, marketData, lastCandle, currentPer
 }
 
 function getNaturalDriftTarget(lastCandle, currentPrice) {
-  const baseVol = Math.max(lastCandle.open * 0.00015, 0.00001);
-  const randomMove = (Math.random() - 0.5) * baseVol * 2.2;
+  const baseVol = Math.max(lastCandle.open * 0.00012, 0.000008);
+  const randomMove = (Math.random() - 0.5) * baseVol * 1.8;
   const distanceToOpen = currentPrice - lastCandle.open;
-  const meanReversion = -distanceToOpen * 0.10;
+  const meanReversion = -distanceToOpen * 0.08;
   return currentPrice + randomMove + meanReversion;
 }
 
@@ -338,51 +336,46 @@ function updateControlledCandle(marketData, candle, now) {
   const cmd = marketData.activeCommand;
   const progress = Math.max(0, Math.min(1, (now - candle.timestamp) / TIMEFRAME));
   const closeGap = cmd.desiredClose - candle.open;
-  const amplitude = Math.max(Math.abs(closeGap), 0.00008);
-  const microNoise = amplitude * 0.16;
+  const amplitude = Math.max(Math.abs(closeGap), 0.00005);
+  const microNoise = amplitude * 0.08;
+
   let anchor;
 
-  if (progress < 0.15) {
+  if (progress < 0.22) {
     const fakeDir = cmd.direction === 'GREEN' ? -1 : 1;
-    anchor = candle.open + fakeDir * amplitude * randomBetween(0.08, 0.14);
-  } else if (progress < 0.38) {
-    const firstPushTarget = cmd.direction === 'GREEN'
-      ? candle.open + Math.abs(closeGap) * randomBetween(0.22, 0.42)
-      : candle.open - Math.abs(closeGap) * randomBetween(0.22, 0.42);
-    anchor = firstPushTarget + (Math.random() - 0.5) * microNoise;
-  } else if (progress < 0.58) {
+    anchor = candle.open + fakeDir * amplitude * randomBetween(0.03, 0.08);
+  } else if (progress < 0.48) {
+    const firstPush = cmd.direction === 'GREEN'
+      ? candle.open + Math.abs(closeGap) * randomBetween(0.10, 0.24)
+      : candle.open - Math.abs(closeGap) * randomBetween(0.10, 0.24);
+    anchor = firstPush + (Math.random() - 0.5) * microNoise;
+  } else if (progress < 0.68) {
     const retrace = cmd.direction === 'GREEN'
-      ? candle.open + Math.abs(closeGap) * randomBetween(0.12, 0.28)
-      : candle.open - Math.abs(closeGap) * randomBetween(0.12, 0.28);
-    anchor = retrace + (Math.random() - 0.5) * microNoise * 0.9;
-  } else if (progress < 0.80) {
+      ? candle.open + Math.abs(closeGap) * randomBetween(0.06, 0.16)
+      : candle.open - Math.abs(closeGap) * randomBetween(0.06, 0.16);
+    anchor = retrace + (Math.random() - 0.5) * microNoise;
+  } else if (progress < 0.90) {
     const mainDrive = cmd.direction === 'GREEN'
-      ? candle.open + Math.abs(closeGap) * randomBetween(0.50, 0.90)
-      : candle.open - Math.abs(closeGap) * randomBetween(0.50, 0.90);
+      ? candle.open + Math.abs(closeGap) * randomBetween(0.35, 0.75)
+      : candle.open - Math.abs(closeGap) * randomBetween(0.35, 0.75);
     anchor = mainDrive + (Math.random() - 0.5) * microNoise * 0.8;
-  } else if (progress < 0.93) {
-    const settleNear = cmd.desiredClose + (Math.random() - 0.5) * microNoise * 0.5;
-    anchor = marketData.currentPrice + (settleNear - marketData.currentPrice) * 0.35;
   } else {
-    const finalBlend = 0.25 + ((progress - 0.93) / 0.07) * 0.70;
-    anchor = marketData.currentPrice + (cmd.desiredClose - marketData.currentPrice) * finalBlend;
+    anchor = marketData.currentPrice + (cmd.desiredClose - marketData.currentPrice) * 0.18;
   }
 
   marketData.currentPrice = roundPrice(anchor);
-
   candle.close = marketData.currentPrice;
   candle.high = roundPrice(Math.max(candle.high, candle.close));
   candle.low = roundPrice(Math.min(candle.low, candle.close));
 
-  if (progress > 0.30 && cmd.direction === 'GREEN' && Math.random() > 0.70) {
-    candle.low = roundPrice(Math.min(candle.low, candle.close - amplitude * randomBetween(0.04, 0.10)));
-  }
-  if (progress > 0.30 && cmd.direction === 'RED' && Math.random() > 0.70) {
-    candle.high = roundPrice(Math.max(candle.high, candle.close + amplitude * randomBetween(0.04, 0.10)));
+  if (progress > 0.35 && Math.random() > 0.78) {
+    const wickNoise = amplitude * randomBetween(0.03, 0.08);
+    candle.high = roundPrice(Math.max(candle.high, candle.close + wickNoise));
+    candle.low = roundPrice(Math.min(candle.low, candle.close - wickNoise));
   }
 
-  if (progress >= 0.96) {
-    candle.close = roundPrice(cmd.desiredClose + (Math.random() - 0.5) * amplitude * 0.03);
+  if (progress >= 0.97) {
+    candle.close = roundPrice(cmd.desiredClose + (Math.random() - 0.5) * amplitude * 0.012);
     candle.high = roundPrice(Math.max(candle.high, cmd.desiredHigh));
     candle.low = roundPrice(Math.min(candle.low, cmd.desiredLow));
     marketData.currentPrice = candle.close;
@@ -392,20 +385,20 @@ function updateControlledCandle(marketData, candle, now) {
 function updateNaturalCandle(marketData, candle) {
   marketData.tickCount += 1;
 
-  if (marketData.tickCount >= 10 || !Number.isFinite(marketData.naturalTarget)) {
+  if (marketData.tickCount >= 12 || !Number.isFinite(marketData.naturalTarget)) {
     marketData.tickCount = 0;
     marketData.naturalTarget = getNaturalDriftTarget(candle, marketData.currentPrice);
   }
 
   const distance = marketData.naturalTarget - marketData.currentPrice;
-  let step = distance * 0.15;
+  let step = distance * 0.06;
 
-  if (Math.abs(step) < 0.000001) {
-    step = distance === 0 ? 0 : (distance > 0 ? 0.000001 : -0.000001);
+  if (Math.abs(step) < 0.0000005) {
+    step = distance === 0 ? 0 : (distance > 0 ? 0.0000005 : -0.0000005);
   }
 
   marketData.currentPrice = Math.max(MIN_PRICE, marketData.currentPrice + step);
-  const jitter = (Math.random() - 0.5) * 0.000008 * Math.max(candle.open, MIN_PRICE);
+  const jitter = (Math.random() - 0.5) * 0.000006 * Math.max(candle.open, MIN_PRICE);
 
   candle.close = roundPrice(marketData.currentPrice + jitter);
   candle.high = roundPrice(Math.max(candle.high, candle.close));
@@ -582,12 +575,12 @@ app.get('/api/history/:market', (req, res) => {
 });
 
 app.get('/ping', (_req, res) => {
-  res.send('UltraSmooth V10 - Randomized Admin Control Engine');
+  res.send('UltraSmooth V11 - Slow Natural Admin Engine');
 });
 
 const PORT = process.env.PORT || 3000;
 server.listen(PORT, () => {
-  console.log(`Ultra Smooth Server v10 on ${PORT}`);
+  console.log(`Ultra Smooth Server v11 on ${PORT}`);
 });
 
 server.on('close', () => clearInterval(heartbeat));
