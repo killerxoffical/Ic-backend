@@ -20,6 +20,7 @@ const db = firebase.database();
 
 const app = express();
 app.use(cors());
+
 const server = http.createServer(app);
 const wss = new WebSocket.Server({ server });
 
@@ -92,7 +93,6 @@ function initializeNewMarket(marketId, fbMarket = {}) {
         currentPrice,
         targetPrice: currentPrice,
         tickCount: 0,
-        lastBroadcastTs: 0,
         lastPeriod: candles[candles.length - 1]?.timestamp ?? nowPeriod
     };
 }
@@ -300,7 +300,7 @@ wss.on('connection', (ws) => {
                 }
             }
         } catch (err) {
-            // old client hole ignore
+            // old client হলে ignore
         }
     });
 });
