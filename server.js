@@ -28,24 +28,24 @@ const MAX_CANDLES = 5000;
 const TIMEFRAME = 60000;
 const markets = {}; // In-memory storage for all markets
 
-// --- নতুন কোড: ফায়ারবেস থেকে মার্কেট লিস্ট লোড করা ---
+// --- ফায়ারবেস থেকে মার্কেট লিস্ট লোড এবং সিঙ্ক করা ---
 const adminMarketsRef = db.ref('admin/markets');
 
 function initializeNewMarket(marketId, fbMarket) {
-    console.log(`New market detected: ${fbMarket.name} (${marketId}). Initializing...`);
+    console.log(`Initializing new market: ${fbMarket.name} (${marketId})`);
     
-    // Smooth start-এর জন্য অন্য কোনো চলমান মার্কেট থেকে দাম নেয়া
-    let startPrice = 1.15000; // ডিফল্ট প্রাইস
+    let startPrice = 1.15000 + (Math.random() - 0.5) * 0.1; // ডিফল্ট প্রাইস + র‍্যান্ডম ভ্যারিয়েশন
     const existingMarketIds = Object.keys(markets);
     if (existingMarketIds.length > 0) {
-        const lastMarketKey = existingMarketIds[existingMarketIds.length - 1];
-        if (markets[lastMarketKey] && markets[lastMarketKey].history.length > 0) {
-            startPrice = markets[lastMarketKey].history[markets[lastMarketKey].history.length - 1].close;
+        const randomExistingMarket = existingMarketIds[Math.floor(Math.random() * existingMarketIds.length)];
+        const lastCandle = markets[randomExistingMarket]?.history.slice(-1)[0];
+        if (lastCandle) {
+            startPrice = lastCandle.close;
         }
     }
     
-    markets[marketId] = generateInitialCandles(startPrice, 300); // নতুন মার্কেটের জন্য কম ক্যান্ডেল দিয়ে শুরু
-    console.log(`Market ${fbMarket.name} initialized with start price ${startPrice}`);
+    markets[marketId] = generateInitialCandles(startPrice, 300);
+    console.log(`Market ${fbMarket.name} initialized with start price ${startPrice.toFixed(5)}`);
 }
 
 adminMarketsRef.on('value', (snapshot) => {
@@ -56,7 +56,6 @@ adminMarketsRef.on('value', (snapshot) => {
     const fbMarkets = snapshot.val();
     console.log("Syncing markets from Firebase...");
 
-    // নতুন মার্কেট যোগ করা হয়েছে কিনা চেক করা
     Object.keys(fbMarkets).forEach(marketId => {
         const fbMarket = fbMarkets[marketId];
         if (fbMarket.type === 'otc' && !markets[marketId]) {
@@ -64,7 +63,6 @@ adminMarketsRef.on('value', (snapshot) => {
         }
     });
 
-    // সার্ভারের মেমোরি থেকে ডিলিট হয়ে যাওয়া মার্কেট মুছে ফেলা
     Object.keys(markets).forEach(localMarketId => {
         if (!fbMarkets[localMarketId] || fbMarkets[localMarketId].type !== 'otc') {
             console.log(`Market ${localMarketId} removed from memory.`);
@@ -72,7 +70,7 @@ adminMarketsRef.on('value', (snapshot) => {
         }
     });
 });
-// --- নতুন কোড শেষ ---
+// --- মার্কেট সিঙ্ক শেষ ---
 
 function generateInitialCandles(startPrice, count) {
     let candles = [];
@@ -95,7 +93,6 @@ function generateInitialCandles(startPrice, count) {
         history: candles,
         currentPrice: currentPrice,
         targetPrice: currentPrice,
-        velocity: 0
     };
 }
 
@@ -141,7 +138,7 @@ setInterval(() => {
             lastCandle = newCandle;
 
             let forceDir = null;
-            if (adminOverrides[marketId]) {
+            if (adminOverrides[marketId] && adminOverrides[marketId].timestamp > Date.now() - (60 * 1000)) {
                 forceDir = adminOverrides[marketId].type;
                 delete adminOverrides[marketId];
                 db.ref(`admin/market_overrides/${marketId}`).remove();
@@ -156,7 +153,7 @@ setInterval(() => {
             let moveSize = lastCandle.open * 0.0005;
             if (forceDir && forceDir.startsWith('PATTERN_CUSTOM_')) {
                 const p = forceDir.split('_');
-                const body = parseInt(p[4]);
+                const body = parseInt(p[4]) || 40;
                 const totalScale = lastCandle.open * 0.0009;
                 marketData.targetPrice = (p[2] === 'GREEN') ? lastCandle.open + (totalScale * (body / 100)) : lastCandle.open - (totalScale * (body / 100));
             } else if (['UP', 'GREEN'].some(d => String(forceDir).includes(d))) {
@@ -189,19 +186,52 @@ setInterval(() => {
     });
 }, 200);
 
-// --- ***সবচেয়ে গুরুত্বপূর্ণ পরিবর্তন এখানে*** ---
+// --- *** API এন্ডপয়েন্ট এর চূড়ান্ত সমাধান *** ---
 app.get('/api/history/:market', (req, res) => {
-    const market = req.params.market;
-    if (markets[market] && markets[market].history) {
-        // যদি মার্কেট মেমোরিতে থাকে, তাহলে ইতিহাস পাঠিয়ে দাও
-        res.json(markets[market].history);
+    const marketId = req.params.market;
+    
+    // ১. চেক করা যে মার্কেটটি মেমোরিতে আছে কিনা
+    if (markets[marketId] && markets[marketId].history) {
+        const marketData = markets[marketId];
+        const lastCandle = marketData.history[marketData.history.length - 1];
+        const now = Date.now();
+        const currentPeriod = Math.floor(now / TIMEFRAME) * TIMEFRAME;
+        const timeDiff = currentPeriod - lastCandle.timestamp;
+
+        // ২. ইতিহাস পুরানো হয়ে গেছে কিনা চেক করা
+        if (timeDiff > 0) {
+            const missingCandlesCount = timeDiff / TIMEFRAME;
+            console.log(`History for ${marketId} is stale. Generating ${missingCandlesCount} missing candles.`);
+            let latestPrice = lastCandle.close;
+            for (let i = 1; i <= missingCandlesCount; i++) {
+                const newTimestamp = lastCandle.timestamp + (i * TIMEFRAME);
+                let open = latestPrice;
+                let diff = (Math.random() - 0.5) * 0.0001 * open; // কম ভলাটিলিটি দিয়ে গ্যাপ পূরণ
+                let close = open + diff;
+                const newCandle = {
+                    timestamp: newTimestamp,
+                    open: parseFloat(open.toFixed(5)),
+                    high: parseFloat(Math.max(open, close).toFixed(5)),
+                    low: parseFloat(Math.min(open, close).toFixed(5)),
+                    close: parseFloat(close.toFixed(5))
+                };
+                marketData.history.push(newCandle);
+                if (marketData.history.length > MAX_CANDLES) marketData.history.shift();
+                latestPrice = close;
+            }
+            // ৩. নতুন ক্যান্ডেল জেনারেট করার পর লাইভ প্রাইস আপডেট করা
+            marketData.currentPrice = latestPrice;
+            marketData.targetPrice = latestPrice;
+        }
+        // ৪. আপ-টু-ডেট ইতিহাস পাঠানো
+        res.json(marketData.history);
     } else {
-        // যদি মার্কেট মেমোরিতে না থাকে, তাহলে একটি খালি অ্যারে পাঠাও
-        // অ্যাপ নিজে থেকেই আবার চেষ্টা করবে
-        console.log(`History requested for uninitialized market: ${market}. Sending empty array for client to retry.`);
+        // ৫. মার্কেট মেমোরিতে না থাকলে, খালি উত্তর পাঠানো যাতে ক্লায়েন্ট আবার চেষ্টা করে
+        console.warn(`History requested for uninitialized market: ${marketId}. Sending empty array for client retry.`);
         res.json([]); 
     }
 });
+
 
 app.get('/ping', (req, res) => res.send("UltraSmooth"));
 
