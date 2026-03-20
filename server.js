@@ -5,7 +5,7 @@ const cors = require('cors');
 const firebase = require('firebase/app');
 require('firebase/database');
 
-// --- আপনার ফায়ারবেস কনফিগারেশন ---
+// --- ফায়ারবেস কনফিগারেশন ---
 const firebaseConfig = {
     apiKey: "AIzaSyBspVTNDTLn2zuwwI7580vqHABrAjJl63o",
     authDomain: "earning-xone-v1.firebaseapp.com",
@@ -26,9 +26,8 @@ const wss = new WebSocket.Server({ server });
 
 const MAX_CANDLES = 5000;
 const TIMEFRAME = 60000;
-const markets = {}; // In-memory storage for all markets
+const markets = {};
 
-// --- কেন্দ্রীয় ক্যান্ডেল তৈরির ফাংশন ---
 function generateCandle(timestamp, open) {
     let diff = (Math.random() - 0.5) * 0.0003 * open;
     let close = open + diff;
@@ -41,7 +40,6 @@ function generateCandle(timestamp, open) {
     };
 }
 
-// --- নতুন মার্কেট শুরু করার ফাংশন ---
 function initializeNewMarket(marketId, fbMarket) {
     console.log(`Initializing new market: ${fbMarket.name} (${marketId})`);
     
@@ -69,26 +67,19 @@ function initializeNewMarket(marketId, fbMarket) {
         currentPrice: currentPrice,
         targetPrice: currentPrice,
     };
-    console.log(`Market ${fbMarket.name} initialized with start price ${startPrice.toFixed(5)}`);
 }
 
-// --- ফায়ারবেস থেকে মার্কেট লিস্ট সিঙ্ক করা ---
 const adminMarketsRef = db.ref('admin/markets');
 adminMarketsRef.on('value', (snapshot) => {
     if (!snapshot.exists()) return;
     const fbMarkets = snapshot.val();
-    console.log("Syncing markets from Firebase...");
-
     Object.keys(fbMarkets).forEach(marketId => {
-        const fbMarket = fbMarkets[marketId];
-        if (fbMarket.type === 'otc' && !markets[marketId]) {
-            initializeNewMarket(marketId, fbMarket);
+        if (fbMarkets[marketId].type === 'otc' && !markets[marketId]) {
+            initializeNewMarket(marketId, fbMarkets[marketId]);
         }
     });
-
     Object.keys(markets).forEach(localMarketId => {
         if (!fbMarkets[localMarketId] || fbMarkets[localMarketId].type !== 'otc') {
-            console.log(`Market ${localMarketId} removed from memory.`);
             delete markets[localMarketId];
         }
     });
@@ -104,48 +95,78 @@ db.ref('admin/markets').on('value', snap => {
     });
 });
 
-// --- চূড়ান্ত সমাধান: মেইন ইঞ্জিন (সবসময় চলবে) ---
+// --- সংশোধিত মেইন ইঞ্জিন ---
 setInterval(() => {
     const now = Date.now();
     const currentPeriod = Math.floor(now / TIMEFRAME) * TIMEFRAME;
 
-    // মেমোরিতে থাকা সব OTC মার্কেটের জন্য ক্যান্ডেল আপডেট করা
     Object.keys(markets).forEach(marketId => {
         let marketData = markets[marketId];
         if (!marketData || !marketData.history || marketData.history.length === 0) return;
 
         let lastCandle = marketData.history[marketData.history.length - 1];
-        
-        // যদি সময় গ্যাপ থাকে, তবে তা পূরণ করা (সার্ভার রিস্টার্ট বা অন্য কারণে হতে পারে)
+
+        // ১. গাণিতিক ভুল সংশোধন: নিখুঁতভাবে টাইম গ্যাপ পূরণ
         const timeDiff = currentPeriod - lastCandle.timestamp;
         if (timeDiff >= TIMEFRAME) {
-            const missingCandlesCount = timeDiff / TIMEFRAME;
-            for (let i = 1; i <= missingCandlesCount; i++) {
-                const newTimestamp = lastCandle.timestamp + (i * TIMEFRAME);
-                const newCandle = generateCandle(newTimestamp, lastCandle.close);
+            const missingCandlesCount = Math.floor(timeDiff / TIMEFRAME);
+            let currentGenTime = lastCandle.timestamp;
+            
+            for (let i = 0; i < missingCandlesCount; i++) {
+                currentGenTime += TIMEFRAME; // প্রতিবার ঠিক ১ মিনিট যোগ হবে (ভবিষ্যতে যাওয়ার সুযোগ নেই)
+                
+                let newCandle;
+                if (currentGenTime < currentPeriod) {
+                    // পিছনের মিস হওয়া ক্যান্ডেলগুলো র‍্যান্ডম তৈরি হবে
+                    newCandle = generateCandle(currentGenTime, lastCandle.close);
+                } else {
+                    // বর্তমান লাইভ ক্যান্ডেলটি শূন্য থেকে শুরু হবে
+                    newCandle = {
+                        timestamp: currentGenTime,
+                        open: lastCandle.close,
+                        high: lastCandle.close,
+                        low: lastCandle.close,
+                        close: lastCandle.close
+                    };
+                }
+
                 marketData.history.push(newCandle);
                 if (marketData.history.length > MAX_CANDLES) marketData.history.shift();
                 lastCandle = newCandle;
             }
-             marketData.currentPrice = lastCandle.close;
-             marketData.targetPrice = lastCandle.close;
-        }
+            
+            marketData.currentPrice = lastCandle.open;
 
-        // নতুন ক্যান্ডেলের জন্য টার্গেট সেট করা
-        if (currentPeriod > marketData.history[marketData.history.length - 1].timestamp) {
-             let newCandle = { timestamp: currentPeriod, open: lastCandle.close, high: lastCandle.close, low: lastCandle.close, close: lastCandle.close };
-             marketData.history.push(newCandle);
-             if (marketData.history.length > MAX_CANDLES) marketData.history.shift();
-             lastCandle = newCandle;
-
-            // Admin Controls
+            // অ্যাডমিন কন্ট্রোল এবং নতুন টার্গেট প্রাইস সেট করা
             let forceDir = null;
-            // ... (বাকি অ্যাডমিন লজিক একই থাকবে) ...
+            if (adminOverrides[marketId] && adminOverrides[marketId].timestamp > Date.now() - (60 * 1000)) {
+                forceDir = adminOverrides[marketId].type;
+                delete adminOverrides[marketId];
+                db.ref(`admin/market_overrides/${marketId}`).remove();
+            } else if (adminPatterns[marketId] && adminPatterns[marketId].isActive) {
+                const config = adminPatterns[marketId];
+                const index = Math.floor((currentPeriod - config.startTime) / (config.timeframe * 1000));
+                if (index >= 0 && index < config.pattern.length) {
+                    forceDir = config.pattern[index];
+                }
+            }
+
             let moveSize = lastCandle.open * 0.0005;
-            marketData.targetPrice = lastCandle.open + (Math.random() - 0.5) * 0.0006 * lastCandle.open; // Simplified
+            if (forceDir && forceDir.startsWith('PATTERN_CUSTOM_')) {
+                const p = forceDir.split('_');
+                const body = parseInt(p[4]) || 40;
+                const totalScale = lastCandle.open * 0.0009;
+                marketData.targetPrice = (p[2] === 'GREEN') ? lastCandle.open + (totalScale * (body / 100)) : lastCandle.open - (totalScale * (body / 100));
+            } else if (['UP', 'GREEN'].some(d => String(forceDir).includes(d))) {
+                marketData.targetPrice = lastCandle.open + moveSize;
+            } else if (['DOWN', 'RED'].some(d => String(forceDir).includes(d))) {
+                marketData.targetPrice = lastCandle.open - moveSize;
+            } else {
+                marketData.targetPrice = lastCandle.open + (Math.random() - 0.5) * 0.0006 * lastCandle.open;
+            }
         }
 
-        // স্মুথ প্রাইস মুভমেন্ট
+        // ২. স্মুথ লাইভ প্রাইস মুভমেন্ট
         let distance = marketData.targetPrice - marketData.currentPrice;
         let step = distance * 0.08;
         let maxAllowedStep = lastCandle.open * 0.00003;
@@ -158,7 +179,7 @@ setInterval(() => {
         lastCandle.high = Math.max(lastCandle.high, lastCandle.close);
         lastCandle.low = Math.min(lastCandle.low, lastCandle.close);
 
-        // সব কানেক্টেড ক্লায়েন্টকে লাইভ আপডেট পাঠানো
+        // ক্লায়েন্টদের আপডেট পাঠানো
         wss.clients.forEach(client => {
             if (client.readyState === WebSocket.OPEN) {
                 client.send(JSON.stringify({ market: marketId, candle: lastCandle }));
@@ -167,19 +188,17 @@ setInterval(() => {
     });
 }, 200);
 
-// --- API এন্ডপয়েন্ট (এখন অনেক সিম্পল) ---
+// API Endpoint (কোনো গ্যাপ পূরণের দরকার নেই, মেইন ইঞ্জিনই সব করে নেবে)
 app.get('/api/history/:market', (req, res) => {
     const marketId = req.params.market;
     if (markets[marketId] && markets[marketId].history) {
-        // সার্ভার যেহেতু সবসময় আপ-টু-ডেট, তাই শুধু ইতিহাস পাঠিয়ে দিলেই হবে
         res.json(markets[marketId].history);
     } else {
-        // যদি কোনো কারণে মার্কেট এখনও তৈরি না হয়ে থাকে
-        res.status(404).json([]);
+        res.status(404).json([]); 
     }
 });
 
-app.get('/ping', (req, res) => res.send("UltraSmooth V5 - Always On"));
+app.get('/ping', (req, res) => res.send("UltraSmooth V6 - Final Perfect Timeline"));
 
 const PORT = process.env.PORT || 3000;
-server.listen(PORT, () => console.log(`Ultra Smooth Server v5 on ${PORT}`));
+server.listen(PORT, () => console.log(`Ultra Smooth Server v6 on ${PORT}`));
