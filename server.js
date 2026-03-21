@@ -79,6 +79,23 @@ function getAverageRange(history, count = 20) {
   return total / recent.length;
 }
 
+// --- NEW: Market Personality Engine ---
+function createMarketPersonality(marketId) {
+    const seed = marketId.split("").reduce((a, b) => { a = ((a << 5) - a) + b.charCodeAt(0); return a & a }, 0);
+    const seededRandom = (s) => {
+        let x = Math.sin(s) * 10000;
+        return x - Math.floor(x);
+    };
+
+    return {
+        baseVolatility: 0.00010 + seededRandom(seed + 1) * 0.00010, // 0.00010 to 0.00020
+        meanReversion: 0.010 + seededRandom(seed + 2) * 0.025,   // 0.010 to 0.035
+        randomness: 2.0 + seededRandom(seed + 3) * 1.5,           // 2.0 to 3.5
+        gravityPower: 3.5 + seededRandom(seed + 4) * 1.5          // 3.5 to 5.0
+    };
+}
+
+
 function initializeNewMarket(marketId, fbMarket = {}) {
   let startPrice = 1.15 + (Math.random() - 0.5) * 0.1;
 
@@ -104,9 +121,9 @@ function initializeNewMarket(marketId, fbMarket = {}) {
   markets[marketId] = {
     marketId,
     marketPath: marketPathFromId(marketId),
+    personality: createMarketPersonality(marketId), // Assign personality
     history: candles,
     currentPrice: last.close,
-    naturalTarget: last.close,
     tickCount: 0,
     activeCommand: null,
     currentCommandSignature: null,
@@ -189,7 +206,7 @@ function makeCommandShape(open, direction, label, history) {
     const bodyMove = totalRange * bodyRatio;
     const upperWick = totalRange * upperRatio;
     const lowerWick = totalRange * lowerRatio;
-    const extraWickRoom = totalRange * 0.25; // Extra room for natural movement
+    const extraWickRoom = totalRange * 0.25;
 
     let desiredClose, desiredHigh, desiredLow;
     if (direction === 'GREEN') {
@@ -278,30 +295,23 @@ function getCommandForCurrentCandle(marketId, marketData, lastCandle, currentPer
 // --- NEW (REPLACED) `updateControlledCandle` function ---
 function updateControlledCandle(marketData, candle, now) {
     const cmd = marketData.activeCommand;
+    const p = marketData.personality;
     const progress = Math.max(0, Math.min(1, (now - candle.timestamp) / TIMEFRAME));
 
-    // 1. Natural Drift Calculation (for realistic randomness)
-    const baseVol = Math.max(candle.open * 0.00018, 0.000012);
-    const randomMove = (Math.random() - 0.5) * baseVol * 2.5; // More volatility
-    const meanReversion = -(marketData.currentPrice - candle.open) * 0.03; // Weak pull towards open price
-    let naturalStep = randomMove + meanReversion;
+    const baseVol = Math.max(candle.open * p.baseVolatility, MIN_PRICE);
+    const randomMove = (Math.random() - 0.5) * baseVol * p.randomness;
+    const meanReversion = -(marketData.currentPrice - candle.open) * p.meanReversion;
 
-    // 2. "Gravitational Pull" towards the desired close price
-    const pullStrength = Math.pow(progress, 4) * 0.35; // Becomes very strong at the end
+    const pullStrength = Math.pow(progress, p.gravityPower) * 0.35;
     const pullForce = (cmd.desiredClose - marketData.currentPrice) * pullStrength;
 
-    // 3. Combine forces
-    let priceChange = naturalStep + pullForce;
-    
-    // 4. Update the current price
+    let priceChange = randomMove + meanReversion + pullForce;
     marketData.currentPrice += priceChange;
 
-    // 5. Final Snap to guarantee the outcome in the last second
     if (progress > 0.98) {
         marketData.currentPrice += (cmd.desiredClose - marketData.currentPrice) * 0.6;
     }
     
-    // 6. Update candle properties, respecting command boundaries
     candle.close = roundPrice(marketData.currentPrice);
     candle.high = roundPrice(Math.min(cmd.desiredHigh, Math.max(candle.high, candle.close)));
     candle.low = roundPrice(Math.max(cmd.desiredLow, Math.min(candle.low, candle.close)));
@@ -310,9 +320,10 @@ function updateControlledCandle(marketData, candle, now) {
 
 // --- NEW (REPLACED) `updateNaturalCandle` function ---
 function updateNaturalCandle(marketData, candle) {
-    const baseVol = Math.max(candle.open * 0.00015, 0.00001);
-    const randomMove = (Math.random() - 0.5) * baseVol * 2.5;
-    const meanReversionForce = -(marketData.currentPrice - candle.open) * 0.015; 
+    const p = marketData.personality;
+    const baseVol = Math.max(candle.open * p.baseVolatility, MIN_PRICE);
+    const randomMove = (Math.random() - 0.5) * baseVol * p.randomness;
+    const meanReversionForce = -(marketData.currentPrice - candle.open) * p.meanReversion; 
     
     const priceChange = randomMove + meanReversionForce;
     marketData.currentPrice = Math.max(MIN_PRICE, marketData.currentPrice + priceChange);
@@ -322,6 +333,7 @@ function updateNaturalCandle(marketData, candle) {
     candle.low = roundPrice(Math.min(candle.low, candle.close));
     marketData.currentPrice = candle.close;
 }
+
 
 async function mirrorCandleToFirebase(marketData, candle, force = false) {
   if (!marketData || !candle) return;
@@ -495,12 +507,12 @@ app.get('/api/history/:market', (req, res) => {
 });
 
 app.get('/ping', (_req, res) => {
-  res.send('UltraSmooth V12 - Natural Movement Engine');
+  res.send('UltraSmooth V13 - Dynamic Personality Engine');
 });
 
 const PORT = process.env.PORT || 3000;
 server.listen(PORT, () => {
-  console.log(`Ultra Smooth Server v12 on ${PORT}`);
+  console.log(`Ultra Smooth Server v13 on ${PORT}`);
 });
 
 server.on('close', () => clearInterval(heartbeat));
