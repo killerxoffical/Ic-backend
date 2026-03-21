@@ -5,7 +5,6 @@ const cors = require('cors');
 const firebase = require('firebase/app');
 require('firebase/database');
 
-// Firebase Configuration
 const firebaseConfig = {
   apiKey: "AIzaSyBspVTNDTLn2zuwwI7580vqHABrAjJl63o",
   authDomain: "earning-xone-v1.firebaseapp.com",
@@ -130,7 +129,6 @@ function ensureCurrentPeriodCandle(marketData, currentPeriod) {
     const fallback = createFlatCurrentCandle(currentPeriod, marketData.currentPrice || 1.15);
     marketData.history.push(fallback);
     marketData.currentPrice = fallback.close;
-    marketData.naturalTarget = fallback.close;
     return fallback;
   }
 
@@ -154,7 +152,6 @@ function ensureCurrentPeriodCandle(marketData, currentPeriod) {
   }
 
   marketData.currentPrice = lastCandle.close;
-  marketData.naturalTarget = lastCandle.close;
   marketData.tickCount = 0;
   marketData.lastPeriod = lastCandle.timestamp;
   marketData.activeCommand = null;
@@ -163,75 +160,55 @@ function ensureCurrentPeriodCandle(marketData, currentPeriod) {
 }
 
 function makeCommandShape(open, direction, label, history) {
-  const avgRange = getAverageRange(history, 20);
-  const maxRange = Math.max(avgRange * 1.20, 0.00025);
-  const style = Math.floor(Math.random() * 6);
+    const avgRange = getAverageRange(history, 20);
+    const maxRange = Math.max(avgRange * 1.20, 0.00025);
+    const style = Math.floor(Math.random() * 6);
 
-  let totalRange;
-  let bodyRatio;
-  let upperRatio;
-  let lowerRatio;
+    let totalRange, bodyRatio, upperRatio, lowerRatio;
 
-  if (style === 0) {
-    totalRange = maxRange * randomBetween(0.45, 0.70);
-    bodyRatio = randomBetween(0.10, 0.18); // doji-like
-    upperRatio = randomBetween(0.30, 0.45);
-    lowerRatio = 1 - bodyRatio - upperRatio;
-  } else if (style === 1) {
-    totalRange = maxRange * randomBetween(0.55, 0.85);
-    bodyRatio = randomBetween(0.35, 0.55); // normal
-    upperRatio = randomBetween(0.12, 0.22);
-    lowerRatio = 1 - bodyRatio - upperRatio;
-  } else if (style === 2) {
-    totalRange = maxRange * randomBetween(0.60, 0.95);
-    bodyRatio = randomBetween(0.20, 0.35); // hammer-ish
-    upperRatio = randomBetween(0.08, 0.16);
-    lowerRatio = 1 - bodyRatio - upperRatio;
-  } else if (style === 3) {
-    totalRange = maxRange * randomBetween(0.60, 0.95);
-    bodyRatio = randomBetween(0.20, 0.35); // inverted-ish
-    upperRatio = randomBetween(0.35, 0.50);
-    lowerRatio = 1 - bodyRatio - upperRatio;
-  } else if (style === 4) {
-    totalRange = maxRange * randomBetween(0.75, 1.05);
-    bodyRatio = randomBetween(0.45, 0.70); // stronger
-    upperRatio = randomBetween(0.08, 0.16);
-    lowerRatio = 1 - bodyRatio - upperRatio;
-  } else {
-    totalRange = maxRange * randomBetween(0.50, 0.80);
-    bodyRatio = randomBetween(0.22, 0.40);
-    upperRatio = randomBetween(0.20, 0.32);
-    lowerRatio = 1 - bodyRatio - upperRatio;
-  }
+    if (style === 0) {
+        totalRange = maxRange * randomBetween(0.45, 0.70); bodyRatio = randomBetween(0.10, 0.18);
+        upperRatio = randomBetween(0.30, 0.45); lowerRatio = 1 - bodyRatio - upperRatio;
+    } else if (style === 1) {
+        totalRange = maxRange * randomBetween(0.55, 0.85); bodyRatio = randomBetween(0.35, 0.55);
+        upperRatio = randomBetween(0.12, 0.22); lowerRatio = 1 - bodyRatio - upperRatio;
+    } else if (style === 2) {
+        totalRange = maxRange * randomBetween(0.60, 0.95); bodyRatio = randomBetween(0.20, 0.35);
+        upperRatio = randomBetween(0.08, 0.16); lowerRatio = 1 - bodyRatio - upperRatio;
+    } else if (style === 3) {
+        totalRange = maxRange * randomBetween(0.60, 0.95); bodyRatio = randomBetween(0.20, 0.35);
+        upperRatio = randomBetween(0.35, 0.50); lowerRatio = 1 - bodyRatio - upperRatio;
+    } else {
+        totalRange = maxRange * randomBetween(0.75, 1.05); bodyRatio = randomBetween(0.45, 0.70);
+        upperRatio = randomBetween(0.08, 0.16); lowerRatio = 1 - bodyRatio - upperRatio;
+    }
 
-  if (lowerRatio < 0.08) lowerRatio = 0.08;
-  if (upperRatio < 0.08) upperRatio = 0.08;
+    if (lowerRatio < 0.08) lowerRatio = 0.08;
+    if (upperRatio < 0.08) upperRatio = 0.08;
 
-  const bodyMove = totalRange * bodyRatio;
-  const upperWick = totalRange * upperRatio;
-  const lowerWick = totalRange * lowerRatio;
+    const bodyMove = totalRange * bodyRatio;
+    const upperWick = totalRange * upperRatio;
+    const lowerWick = totalRange * lowerRatio;
+    const extraWickRoom = totalRange * 0.25; // Extra room for natural movement
 
-  let desiredClose, desiredHigh, desiredLow;
+    let desiredClose, desiredHigh, desiredLow;
+    if (direction === 'GREEN') {
+        desiredClose = open + bodyMove;
+        desiredHigh = Math.max(open, desiredClose) + upperWick + extraWickRoom;
+        desiredLow = Math.min(open, desiredClose) - lowerWick;
+    } else {
+        desiredClose = open - bodyMove;
+        desiredHigh = Math.max(open, desiredClose) + upperWick;
+        desiredLow = Math.min(open, desiredClose) - lowerWick - extraWickRoom;
+    }
 
-  if (direction === 'GREEN') {
-    desiredClose = open + bodyMove;
-    desiredHigh = Math.max(open, desiredClose) + upperWick;
-    desiredLow = Math.min(open, desiredClose) - lowerWick;
-  } else {
-    desiredClose = open - bodyMove;
-    desiredHigh = Math.max(open, desiredClose) + upperWick;
-    desiredLow = Math.min(open, desiredClose) - lowerWick;
-  }
-
-  return {
-    label,
-    direction,
-    desiredClose: roundPrice(desiredClose),
-    desiredHigh: roundPrice(desiredHigh),
-    desiredLow: roundPrice(desiredLow),
-    totalRange,
-    expiresAt: Date.now() + 65000
-  };
+    return {
+        label, direction,
+        desiredClose: roundPrice(desiredClose),
+        desiredHigh: roundPrice(desiredHigh),
+        desiredLow: roundPrice(desiredLow),
+        expiresAt: Date.now() + 65000
+    };
 }
 
 function parseCustomOverride(type, open, history) {
@@ -249,10 +226,11 @@ function parseCustomOverride(type, open, history) {
   const upperWick = totalScale * (upper / totalParts);
   const bodyMove = totalScale * (body / totalParts);
   const lowerWick = totalScale * (lower / totalParts);
+  const extraWickRoom = totalScale * 0.25;
 
   const desiredClose = color === 'GREEN' ? open + bodyMove : open - bodyMove;
-  const desiredHigh = Math.max(open, desiredClose) + upperWick;
-  const desiredLow = Math.min(open, desiredClose) - lowerWick;
+  const desiredHigh = Math.max(open, desiredClose) + upperWick + extraWickRoom;
+  const desiredLow = Math.min(open, desiredClose) - lowerWick - extraWickRoom;
 
   return {
     label: type,
@@ -260,7 +238,6 @@ function parseCustomOverride(type, open, history) {
     desiredClose: roundPrice(desiredClose),
     desiredHigh: roundPrice(desiredHigh),
     desiredLow: roundPrice(desiredLow),
-    totalRange: totalScale,
     expiresAt: Date.now() + 65000
   };
 }
@@ -271,33 +248,11 @@ function getCommandForCurrentCandle(marketId, marketData, lastCandle, currentPer
     const signature = `override:${override.timestamp}:${override.type}`;
     if (marketData.currentCommandSignature !== signature) {
       marketData.currentCommandSignature = signature;
-
       if (String(override.type).startsWith('PATTERN_CUSTOM_')) {
         return parseCustomOverride(override.type, lastCandle.open, marketData.history);
       }
-
-      if (override.type === 'UP' || override.type === 'GREEN') {
-        return makeCommandShape(lastCandle.open, 'GREEN', override.type, marketData.history);
-      }
-
-      if (override.type === 'DOWN' || override.type === 'RED') {
-        return makeCommandShape(lastCandle.open, 'RED', override.type, marketData.history);
-      }
-
-      if (String(override.type).includes('BULLISH') || String(override.type).includes('WHITE')) {
-        return makeCommandShape(lastCandle.open, 'GREEN', override.type, marketData.history);
-      }
-
-      if (String(override.type).includes('BEARISH') || String(override.type).includes('BLACK')) {
-        return makeCommandShape(lastCandle.open, 'RED', override.type, marketData.history);
-      }
-
-      return makeCommandShape(
-        lastCandle.open,
-        Math.random() > 0.5 ? 'GREEN' : 'RED',
-        override.type,
-        marketData.history
-      );
+      const direction = (override.type === 'UP' || String(override.type).includes('BULLISH') || String(override.type).includes('WHITE')) ? 'GREEN' : 'RED';
+      return makeCommandShape(lastCandle.open, direction, override.type, marketData.history);
     }
     return marketData.activeCommand;
   }
@@ -310,12 +265,7 @@ function getCommandForCurrentCandle(marketId, marketData, lastCandle, currentPer
       const signature = `pattern:${patternConfig.startTime}:${index}:${step}`;
       if (marketData.currentCommandSignature !== signature) {
         marketData.currentCommandSignature = signature;
-        return makeCommandShape(
-          lastCandle.open,
-          step === 'GREEN' ? 'GREEN' : 'RED',
-          step,
-          marketData.history
-        );
+        return makeCommandShape(lastCandle.open, step === 'GREEN' ? 'GREEN' : 'RED', step, marketData.history);
       }
       return marketData.activeCommand;
     }
@@ -325,86 +275,52 @@ function getCommandForCurrentCandle(marketId, marketData, lastCandle, currentPer
   return null;
 }
 
-function getNaturalDriftTarget(lastCandle, currentPrice) {
-  const baseVol = Math.max(lastCandle.open * 0.00012, 0.000008);
-  const randomMove = (Math.random() - 0.5) * baseVol * 1.8;
-  const distanceToOpen = currentPrice - lastCandle.open;
-  const meanReversion = -distanceToOpen * 0.08;
-  return currentPrice + randomMove + meanReversion;
-}
-
+// --- NEW (REPLACED) `updateControlledCandle` function ---
 function updateControlledCandle(marketData, candle, now) {
-  const cmd = marketData.activeCommand;
-  const progress = Math.max(0, Math.min(1, (now - candle.timestamp) / TIMEFRAME));
-  const closeGap = cmd.desiredClose - candle.open;
-  const amplitude = Math.max(Math.abs(closeGap), 0.00005);
-  const microNoise = amplitude * 0.08;
+    const cmd = marketData.activeCommand;
+    const progress = Math.max(0, Math.min(1, (now - candle.timestamp) / TIMEFRAME));
 
-  let anchor;
+    // 1. Natural Drift Calculation (for realistic randomness)
+    const baseVol = Math.max(candle.open * 0.00018, 0.000012);
+    const randomMove = (Math.random() - 0.5) * baseVol * 2.5; // More volatility
+    const meanReversion = -(marketData.currentPrice - candle.open) * 0.03; // Weak pull towards open price
+    let naturalStep = randomMove + meanReversion;
 
-  if (progress < 0.22) {
-    const fakeDir = cmd.direction === 'GREEN' ? -1 : 1;
-    anchor = candle.open + fakeDir * amplitude * randomBetween(0.03, 0.08);
-  } else if (progress < 0.48) {
-    const firstPush = cmd.direction === 'GREEN'
-      ? candle.open + Math.abs(closeGap) * randomBetween(0.10, 0.24)
-      : candle.open - Math.abs(closeGap) * randomBetween(0.10, 0.24);
-    anchor = firstPush + (Math.random() - 0.5) * microNoise;
-  } else if (progress < 0.68) {
-    const retrace = cmd.direction === 'GREEN'
-      ? candle.open + Math.abs(closeGap) * randomBetween(0.06, 0.16)
-      : candle.open - Math.abs(closeGap) * randomBetween(0.06, 0.16);
-    anchor = retrace + (Math.random() - 0.5) * microNoise;
-  } else if (progress < 0.90) {
-    const mainDrive = cmd.direction === 'GREEN'
-      ? candle.open + Math.abs(closeGap) * randomBetween(0.35, 0.75)
-      : candle.open - Math.abs(closeGap) * randomBetween(0.35, 0.75);
-    anchor = mainDrive + (Math.random() - 0.5) * microNoise * 0.8;
-  } else {
-    anchor = marketData.currentPrice + (cmd.desiredClose - marketData.currentPrice) * 0.18;
-  }
+    // 2. "Gravitational Pull" towards the desired close price
+    const pullStrength = Math.pow(progress, 4) * 0.35; // Becomes very strong at the end
+    const pullForce = (cmd.desiredClose - marketData.currentPrice) * pullStrength;
 
-  marketData.currentPrice = roundPrice(anchor);
-  candle.close = marketData.currentPrice;
-  candle.high = roundPrice(Math.max(candle.high, candle.close));
-  candle.low = roundPrice(Math.min(candle.low, candle.close));
+    // 3. Combine forces
+    let priceChange = naturalStep + pullForce;
+    
+    // 4. Update the current price
+    marketData.currentPrice += priceChange;
 
-  if (progress > 0.35 && Math.random() > 0.78) {
-    const wickNoise = amplitude * randomBetween(0.03, 0.08);
-    candle.high = roundPrice(Math.max(candle.high, candle.close + wickNoise));
-    candle.low = roundPrice(Math.min(candle.low, candle.close - wickNoise));
-  }
-
-  if (progress >= 0.97) {
-    candle.close = roundPrice(cmd.desiredClose + (Math.random() - 0.5) * amplitude * 0.012);
-    candle.high = roundPrice(Math.max(candle.high, cmd.desiredHigh));
-    candle.low = roundPrice(Math.min(candle.low, cmd.desiredLow));
+    // 5. Final Snap to guarantee the outcome in the last second
+    if (progress > 0.98) {
+        marketData.currentPrice += (cmd.desiredClose - marketData.currentPrice) * 0.6;
+    }
+    
+    // 6. Update candle properties, respecting command boundaries
+    candle.close = roundPrice(marketData.currentPrice);
+    candle.high = roundPrice(Math.min(cmd.desiredHigh, Math.max(candle.high, candle.close)));
+    candle.low = roundPrice(Math.max(cmd.desiredLow, Math.min(candle.low, candle.close)));
     marketData.currentPrice = candle.close;
-  }
 }
 
+// --- NEW (REPLACED) `updateNaturalCandle` function ---
 function updateNaturalCandle(marketData, candle) {
-  marketData.tickCount += 1;
-
-  if (marketData.tickCount >= 12 || !Number.isFinite(marketData.naturalTarget)) {
-    marketData.tickCount = 0;
-    marketData.naturalTarget = getNaturalDriftTarget(candle, marketData.currentPrice);
-  }
-
-  const distance = marketData.naturalTarget - marketData.currentPrice;
-  let step = distance * 0.06;
-
-  if (Math.abs(step) < 0.0000005) {
-    step = distance === 0 ? 0 : (distance > 0 ? 0.0000005 : -0.0000005);
-  }
-
-  marketData.currentPrice = Math.max(MIN_PRICE, marketData.currentPrice + step);
-  const jitter = (Math.random() - 0.5) * 0.000006 * Math.max(candle.open, MIN_PRICE);
-
-  candle.close = roundPrice(marketData.currentPrice + jitter);
-  candle.high = roundPrice(Math.max(candle.high, candle.close));
-  candle.low = roundPrice(Math.min(candle.low, candle.close));
-  marketData.currentPrice = candle.close;
+    const baseVol = Math.max(candle.open * 0.00015, 0.00001);
+    const randomMove = (Math.random() - 0.5) * baseVol * 2.5;
+    const meanReversionForce = -(marketData.currentPrice - candle.open) * 0.015; 
+    
+    const priceChange = randomMove + meanReversionForce;
+    marketData.currentPrice = Math.max(MIN_PRICE, marketData.currentPrice + priceChange);
+    
+    candle.close = roundPrice(marketData.currentPrice);
+    candle.high = roundPrice(Math.max(candle.high, candle.close));
+    candle.low = roundPrice(Math.min(candle.low, candle.close));
+    marketData.currentPrice = candle.close;
 }
 
 async function mirrorCandleToFirebase(marketData, candle, force = false) {
@@ -455,16 +371,12 @@ function broadcastCandle(marketId, candle) {
   });
 }
 
-// -------------------------------------------------------------
-// 🔥 CRITICAL FIX: Ensure 'broker_real' markets are processed
-// -------------------------------------------------------------
 const adminMarketsRef = db.ref('admin/markets');
 adminMarketsRef.on('value', (snapshot) => {
   const fbMarkets = snapshot.val() || {};
 
   Object.keys(fbMarkets).forEach((marketId) => {
     const type = fbMarkets[marketId]?.type;
-    // Allow both 'otc' and 'broker_real' to be initialized and processed by this server
     if ((type === 'otc' || type === 'broker_real') && !markets[marketId]) {
       initializeNewMarket(marketId, fbMarkets[marketId]);
     }
@@ -472,7 +384,6 @@ adminMarketsRef.on('value', (snapshot) => {
 
   Object.keys(markets).forEach((marketId) => {
     const fbMarket = fbMarkets[marketId];
-    // Don't delete if it is 'otc' or 'broker_real'
     if (!fbMarket || (fbMarket.type !== 'otc' && fbMarket.type !== 'broker_real')) {
       delete markets[marketId];
       delete adminOverrides[marketId];
@@ -480,7 +391,6 @@ adminMarketsRef.on('value', (snapshot) => {
     }
   });
 });
-// -------------------------------------------------------------
 
 db.ref('admin/market_overrides').on('value', (snap) => {
   const next = snap.val() || {};
@@ -543,6 +453,7 @@ const heartbeat = setInterval(() => {
   });
 }, 30000);
 
+// --- MAIN SERVER LOOP ---
 setInterval(async () => {
   const now = Date.now();
   const currentPeriod = Math.floor(now / TIMEFRAME) * TIMEFRAME;
@@ -584,12 +495,12 @@ app.get('/api/history/:market', (req, res) => {
 });
 
 app.get('/ping', (_req, res) => {
-  res.send('UltraSmooth V11 - Slow Natural Admin Engine (Broker Real Fixed)');
+  res.send('UltraSmooth V12 - Natural Movement Engine');
 });
 
 const PORT = process.env.PORT || 3000;
 server.listen(PORT, () => {
-  console.log(`Ultra Smooth Server v11 on ${PORT}`);
+  console.log(`Ultra Smooth Server v12 on ${PORT}`);
 });
 
 server.on('close', () => clearInterval(heartbeat));
