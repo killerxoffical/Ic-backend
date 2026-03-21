@@ -5,6 +5,7 @@ const cors = require('cors');
 const firebase = require('firebase/app');
 require('firebase/database');
 
+// Firebase Configuration
 const firebaseConfig = {
   apiKey: "AIzaSyBspVTNDTLn2zuwwI7580vqHABrAjJl63o",
   authDomain: "earning-xone-v1.firebaseapp.com",
@@ -454,24 +455,32 @@ function broadcastCandle(marketId, candle) {
   });
 }
 
+// -------------------------------------------------------------
+// 🔥 CRITICAL FIX: Ensure 'broker_real' markets are processed
+// -------------------------------------------------------------
 const adminMarketsRef = db.ref('admin/markets');
 adminMarketsRef.on('value', (snapshot) => {
   const fbMarkets = snapshot.val() || {};
 
   Object.keys(fbMarkets).forEach((marketId) => {
-    if (fbMarkets[marketId]?.type === 'otc' && !markets[marketId]) {
+    const type = fbMarkets[marketId]?.type;
+    // Allow both 'otc' and 'broker_real' to be initialized and processed by this server
+    if ((type === 'otc' || type === 'broker_real') && !markets[marketId]) {
       initializeNewMarket(marketId, fbMarkets[marketId]);
     }
   });
 
   Object.keys(markets).forEach((marketId) => {
-    if (!fbMarkets[marketId] || fbMarkets[marketId].type !== 'otc') {
+    const fbMarket = fbMarkets[marketId];
+    // Don't delete if it is 'otc' or 'broker_real'
+    if (!fbMarket || (fbMarket.type !== 'otc' && fbMarket.type !== 'broker_real')) {
       delete markets[marketId];
       delete adminOverrides[marketId];
       delete adminPatterns[marketId];
     }
   });
 });
+// -------------------------------------------------------------
 
 db.ref('admin/market_overrides').on('value', (snap) => {
   const next = snap.val() || {};
@@ -575,7 +584,7 @@ app.get('/api/history/:market', (req, res) => {
 });
 
 app.get('/ping', (_req, res) => {
-  res.send('UltraSmooth V11 - Slow Natural Admin Engine');
+  res.send('UltraSmooth V11 - Slow Natural Admin Engine (Broker Real Fixed)');
 });
 
 const PORT = process.env.PORT || 3000;
