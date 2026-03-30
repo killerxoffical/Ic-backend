@@ -26,7 +26,7 @@ const wss = new WebSocket.Server({ server });
 
 const MAX_CANDLES = 5000;
 const TIMEFRAME = 60000;
-const TICK_MS = 500;
+const TICK_MS = 300;
 const MIN_PRICE = 0.00001;
 const HISTORY_SEED_COUNT = 300;
 
