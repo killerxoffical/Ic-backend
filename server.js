@@ -29,7 +29,7 @@ const wss = new WebSocket.Server({ server });
 
 const MAX_CANDLES_IN_RAM = 1000;
 const TIMEFRAME = 60000;
-const TICK_MS = 300; 
+const TICK_MS = 500; 
 const HISTORY_SEED_COUNT = 300;
 
 const markets = {}; 
