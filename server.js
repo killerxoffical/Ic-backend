@@ -1,4 +1,4 @@
-// --- START: FULLY UPDATED server.js (v16-Final Fixed) ---
+// --- START: FULLY UPDATED server.js (v16-Final Fixed with Batch Sync) ---
 
 const express = require('express');
 const http = require('http');
@@ -28,8 +28,7 @@ const wss = new WebSocket.Server({ server });
 
 const MAX_CANDLES_IN_RAM = 3000;
 const TIMEFRAME = 60000; // 1 minute candles
-const TICK_MS = 300; // 🔥 প্রতি ২০০ মিলিসেকেন্ডে চার্ট আপডেট (সুপার স্মুথ)
-const FIREBASE_BACKUP_INTERVAL = 60000; // 🔥 প্রতি ১ মিনিটে একবার ফায়ারবেসে ব্যাকআপ
+const TICK_MS = 300; // 🔥 প্রতি ৩০০ মিলিসেকেন্ডে চার্ট আপডেট (সুপার স্মুথ)
 const HISTORY_SEED_COUNT = 300;
 
 const markets = {}; // সার্ভারের র‍্যামে ক্যান্ডেলগুলো থাকবে
@@ -136,17 +135,7 @@ function updateCandlePrice(marketData, candle) {
   candle.low = roundPrice(Math.min(candle.low, candle.close));
 }
 
-// 🔥 ফায়ারবেস আপডেট
-async function mirrorLivePriceToFirebase(marketData, candle) {
-  try {
-    await db.ref(`markets/${marketData.marketPath}/live`).set({
-      price: candle.close,
-      timestamp: candle.timestamp,
-    });
-  } catch (err) {}
-}
-
-// 🔥 ব্যান্ডউইথ সেভার
+// 🔥 ব্যান্ডউইথ সেভার: শুধু সাবস্ক্রাইব করা ইউজারকেই ডাটা পাঠাবে
 function broadcastCandle(marketId, candle) {
   const payload = JSON.stringify({ market: marketId, candle, serverTime: Date.now() });
   wss.clients.forEach((client) => {
@@ -179,11 +168,15 @@ wss.on('connection', (ws) => {
 });
 
 
-// 🔥 MAIN LOOP
+// 🔥 MAIN LOOP & BATCH FIREBASE BACKUP
+let lastSyncMinute = 0; // ব্যাকআপ ট্র্যাক করার জন্য
+
 setInterval(() => {
   const now = Date.now();
   const currentPeriod = Math.floor(now / TIMEFRAME) * TIMEFRAME;
+  const currentMinute = Math.floor(now / 60000);
 
+  // ১. চার্ট আপডেট এবং ব্রডকাস্ট (সুপার স্মুথ)
   for (const marketId in markets) {
     const marketData = markets[marketId];
     let candle = ensureCurrentPeriodCandle(marketData, currentPeriod);
@@ -193,14 +186,31 @@ setInterval(() => {
     broadcastCandle(marketId, candle);
   }
   
-  // ফায়ারবেসে ব্যাকআপ (প্রতি ১ মিনিটে একবার)
-  if (now % FIREBASE_BACKUP_INTERVAL < TICK_MS) {
+  // ২. ফায়ারবেসে ব্যাকআপ (Batch Update - No Traffic Jam!)
+  if (currentMinute > lastSyncMinute) {
+      lastSyncMinute = currentMinute;
+      
+      const batchUpdates = {}; 
+      let marketsToSync = 0;
+      
       for (const marketId in markets) {
           const marketData = markets[marketId];
           const lastCandle = marketData.history[marketData.history.length-1];
-          if(lastCandle) mirrorLivePriceToFirebase(marketData, lastCandle);
+          if(lastCandle) {
+              batchUpdates[`markets/${marketData.marketPath}/live`] = {
+                  price: lastCandle.close,
+                  timestamp: lastCandle.timestamp
+              };
+              marketsToSync++;
+          }
       }
-      console.log(`[Firebase Backup] Synced live prices.`);
+      
+      // ৭০ বার রিকোয়েস্ট না পাঠিয়ে ১ বারেই সব আপডেট! (সুপার ফাস্ট)
+      if (marketsToSync > 0) {
+          db.ref().update(batchUpdates).then(() => {
+              console.log(`[Firebase Backup] Batched sync for ${marketsToSync} markets successful.`);
+          }).catch(err => console.error("Batch update failed:", err));
+      }
   }
 
 }, TICK_MS);
