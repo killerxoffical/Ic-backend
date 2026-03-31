@@ -28,7 +28,7 @@ const wss = new WebSocket.Server({ server });
 
 const MAX_CANDLES_IN_RAM = 3000;
 const TIMEFRAME = 60000; // 1 minute candles
-const TICK_MS = 200; // 🔥 প্রতি ২০০ মিলিসেকেন্ডে চার্ট আপডেট (সুপার স্মুথ)
+const TICK_MS = 300; // 🔥 প্রতি ২০০ মিলিসেকেন্ডে চার্ট আপডেট (সুপার স্মুথ)
 const FIREBASE_BACKUP_INTERVAL = 60000; // 🔥 প্রতি ১ মিনিটে একবার ফায়ারবেসে ব্যাকআপ
 const HISTORY_SEED_COUNT = 300;
 
