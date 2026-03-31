@@ -1,4 +1,4 @@
-// --- START: FULLY UPDATED server.js (v16-Final Fixed with Batch Sync) ---
+// --- START: FULLY UPDATED server.js (Manual Backup Mode) ---
 
 const express = require('express');
 const http = require('http');
@@ -23,15 +23,16 @@ const db = firebase.database();
 
 const app = express();
 app.use(cors());
+app.use(express.json()); // JSON রিকোয়েস্ট রিসিভ করার জন্য
 const server = http.createServer(app);
 const wss = new WebSocket.Server({ server });
 
 const MAX_CANDLES_IN_RAM = 3000;
 const TIMEFRAME = 60000; // 1 minute candles
-const TICK_MS = 300; // 🔥 প্রতি ৩০০ মিলিসেকেন্ডে চার্ট আপডেট (সুপার স্মুথ)
+const TICK_MS = 300; // চার্ট সুপার স্মুথ
 const HISTORY_SEED_COUNT = 300;
 
-const markets = {}; // সার্ভারের র‍্যামে ক্যান্ডেলগুলো থাকবে
+const markets = {}; 
 
 function roundPrice(v) {
   return parseFloat(v.toFixed(5));
@@ -62,7 +63,7 @@ function generateHistoricalCandle(timestamp, open) {
   };
 }
 
-// 🔥 সার্ভার রিস্টার্ট হলে ফায়ারবেস থেকে আগের প্রাইস রিস্টোর করার ফাংশন
+// সার্ভার রিস্টার্ট হলে ফায়ারবেস থেকে আগের প্রাইস রিস্টোর করার ফাংশন
 async function initializeNewMarket(marketId) {
   const path = marketPathFromId(marketId);
   let startPrice = 1.15;
@@ -135,7 +136,7 @@ function updateCandlePrice(marketData, candle) {
   candle.low = roundPrice(Math.min(candle.low, candle.close));
 }
 
-// 🔥 ব্যান্ডউইথ সেভার: শুধু সাবস্ক্রাইব করা ইউজারকেই ডাটা পাঠাবে
+// ব্যান্ডউইথ সেভার: শুধু সাবস্ক্রাইব করা ইউজারকেই ডাটা পাঠাবে
 function broadcastCandle(marketId, candle) {
   const payload = JSON.stringify({ market: marketId, candle, serverTime: Date.now() });
   wss.clients.forEach((client) => {
@@ -167,16 +168,11 @@ wss.on('connection', (ws) => {
     });
 });
 
-
-// 🔥 MAIN LOOP & BATCH FIREBASE BACKUP
-let lastSyncMinute = 0; // ব্যাকআপ ট্র্যাক করার জন্য
-
+// 🔥 MAIN LOOP (No Auto Firebase Backup)
 setInterval(() => {
   const now = Date.now();
   const currentPeriod = Math.floor(now / TIMEFRAME) * TIMEFRAME;
-  const currentMinute = Math.floor(now / 60000);
 
-  // ১. চার্ট আপডেট এবং ব্রডকাস্ট (সুপার স্মুথ)
   for (const marketId in markets) {
     const marketData = markets[marketId];
     let candle = ensureCurrentPeriodCandle(marketData, currentPeriod);
@@ -185,36 +181,7 @@ setInterval(() => {
     updateCandlePrice(marketData, candle);
     broadcastCandle(marketId, candle);
   }
-  
-  // ২. ফায়ারবেসে ব্যাকআপ (Batch Update - No Traffic Jam!)
-  if (currentMinute > lastSyncMinute) {
-      lastSyncMinute = currentMinute;
-      
-      const batchUpdates = {}; 
-      let marketsToSync = 0;
-      
-      for (const marketId in markets) {
-          const marketData = markets[marketId];
-          const lastCandle = marketData.history[marketData.history.length-1];
-          if(lastCandle) {
-              batchUpdates[`markets/${marketData.marketPath}/live`] = {
-                  price: lastCandle.close,
-                  timestamp: lastCandle.timestamp
-              };
-              marketsToSync++;
-          }
-      }
-      
-      // ৭০ বার রিকোয়েস্ট না পাঠিয়ে ১ বারেই সব আপডেট! (সুপার ফাস্ট)
-      if (marketsToSync > 0) {
-          db.ref().update(batchUpdates).then(() => {
-              console.log(`[Firebase Backup] Batched sync for ${marketsToSync} markets successful.`);
-          }).catch(err => console.error("Batch update failed:", err));
-      }
-  }
-
 }, TICK_MS);
-
 
 // API routes
 app.get('/api/history/:market', (req, res) => {
@@ -223,12 +190,43 @@ app.get('/api/history/:market', (req, res) => {
   res.json(marketData.history.map(cloneCandle));
 });
 
-// 🔥 CRITICAL FIX: Cron Job এর জন্য এই রুটটি যোগ করা হলো
+// 🔥 NEW: Manual Backup API (এডমিন বাটন চাপলে এটি কল হবে)
+app.post('/api/backup', async (req, res) => {
+    try {
+        const batchUpdates = {}; 
+        let marketsToSync = 0;
+        
+        for (const marketId in markets) {
+            const marketData = markets[marketId];
+            const lastCandle = marketData.history[marketData.history.length-1];
+            if(lastCandle) {
+                batchUpdates[`markets/${marketData.marketPath}/live`] = {
+                    price: lastCandle.close,
+                    timestamp: lastCandle.timestamp
+                };
+                marketsToSync++;
+            }
+        }
+        
+        if (marketsToSync > 0) {
+            await db.ref().update(batchUpdates);
+            console.log(`[Manual Backup] Synced ${marketsToSync} markets.`);
+            res.json({ success: true, message: `Successfully backed up ${marketsToSync} markets.` });
+        } else {
+            res.json({ success: false, message: "No active markets found to backup." });
+        }
+    } catch (err) {
+        console.error("Manual Backup Error:", err);
+        res.status(500).json({ success: false, message: "Backup failed.", error: err.message });
+    }
+});
+
+// Cron Job এর জন্য
 app.get('/ping', (_req, res) => {
-  res.send('UltraSmooth V16-Final active');
+  res.send('UltraSmooth Manual Backup Mode Active');
 });
 
 const PORT = process.env.PORT || 3000;
-server.listen(PORT, () => console.log(`Server v16-Final active on ${PORT}`));
+server.listen(PORT, () => console.log(`Server Manual Backup Mode active on ${PORT}`));
 
 // --- END: FULLY UPDATED server.js ---
