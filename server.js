@@ -1,4 +1,4 @@
-// --- START: FULLY UPDATED server.js (v19 - Real Broker Tick Behavior) ---
+// --- START: server.js (v20 - Realistic Stutter & Pulse Movement) ---
 
 const express = require('express');
 const http = require('http');
@@ -7,15 +7,15 @@ const cors = require('cors');
 const firebase = require('firebase/app');
 require('firebase/database');
 
-// 🔥 আপনার ফায়ারবেস কনফিগারেশন
+// Firebase Configuration
 const firebaseConfig = {
-  apiKey: "AIzaSyBUTMFblYIVovOe4F25XCFneJNTlVcoWCA",
-  authDomain: "ictex-trade.firebaseapp.com",
-  databaseURL: "https://ictex-trade-default-rtdb.firebaseio.com",
-  projectId: "ictex-trade",
-  storageBucket: "ictex-trade.appspot.com",
-  messagingSenderId: "755532704199",
-  appId: "1:755532704199:web:b27d7c9e7d0f4ac76291e2"
+  apiKey: "AIzaSyBspVTNDTLn2zuwwI7580vqHABrAjJl63o",
+  authDomain: "earning-xone-v1.firebaseapp.com",
+  databaseURL: "https://earning-xone-v1-default-rtdb.firebaseio.com",
+  projectId: "earning-xone-v1",
+  storageBucket: "earning-xone-v1.appspot.com",
+  messagingSenderId: "471994174185",
+  appId: "1:471994174185:web:eb45e6c24a66b40c34fe78"
 };
 
 if (!firebase.apps.length) firebase.initializeApp(firebaseConfig);
@@ -23,19 +23,21 @@ const db = firebase.database();
 
 const app = express();
 app.use(cors());
-app.use(express.json());
 const server = http.createServer(app);
 const wss = new WebSocket.Server({ server });
 
-const MAX_CANDLES_IN_RAM = 1000;
+const MAX_CANDLES = 1000;
 const TIMEFRAME = 60000;
-const TICK_MS = 500; 
+const TICK_MS = 300; // ৩০০ms টিক রেট প্রফেশনাল ব্রোকারের জন্য পারফেক্ট
+const MIN_PRICE = 0.00001;
 const HISTORY_SEED_COUNT = 300;
 
-const markets = {}; 
+const markets = {};
+const adminOverrides = {};
+const adminPatterns = {};
 
 function roundPrice(v) {
-  return parseFloat(v.toFixed(5));
+  return parseFloat(Math.max(MIN_PRICE, v).toFixed(5));
 }
 
 function marketPathFromId(marketId) {
@@ -47,9 +49,9 @@ function cloneCandle(c) {
 }
 
 function generateHistoricalCandle(timestamp, open) {
-  const safeOpen = Math.max(0.00001, open);
+  const safeOpen = Math.max(MIN_PRICE, open);
   const isGreen = Math.random() > 0.5;
-  const body = (0.00006 + Math.random() * 0.00022) * safeOpen;
+  const body = (0.00006 + Math.random() * 0.00025) * safeOpen;
   const close = isGreen ? safeOpen + body : safeOpen - body;
   const upperWick = (0.00003 + Math.random() * 0.00015) * safeOpen;
   const lowerWick = (0.00003 + Math.random() * 0.00015) * safeOpen;
@@ -63,20 +65,16 @@ function generateHistoricalCandle(timestamp, open) {
   };
 }
 
-async function initializeNewMarket(marketId) {
+async function initializeNewMarket(marketId, fbMarket = {}) {
   const path = marketPathFromId(marketId);
   let startPrice = 1.15;
 
+  // Firebase থেকে আগের প্রাইস রিস্টোর
   try {
     const liveSnap = await db.ref(`markets/${path}/live`).once('value');
     const lastLive = liveSnap.val();
-    if (lastLive && lastLive.price) {
-      startPrice = lastLive.price;
-      console.log(`[Restored] ${marketId} from price: ${startPrice}`);
-    }
-  } catch (e) {
-    console.error("Restore error:", e);
-  }
+    if (lastLive && lastLive.price) startPrice = lastLive.price;
+  } catch (e) {}
 
   const nowPeriod = Math.floor(Date.now() / TIMEFRAME) * TIMEFRAME;
   const candles = [];
@@ -87,16 +85,15 @@ async function initializeNewMarket(marketId) {
     candles.push(c);
     currentPrice = c.close;
   }
-  
+
   markets[marketId] = {
     marketId,
     marketPath: path,
     history: candles,
     currentPrice: currentPrice,
-    // রিয়েল ব্রোকার বিহেভিয়ারের জন্য স্টেট ভেরিয়েবল
+    lastMove: 0,
     targetPrice: currentPrice,
-    trendDirection: 0,
-    tickCount: 0
+    stutterCount: 0
   };
 }
 
@@ -106,78 +103,55 @@ function ensureCurrentPeriodCandle(marketData, currentPeriod) {
 
   if (currentPeriod > lastCandle.timestamp) {
     const newCandle = {
-      timestamp: currentPeriod,
-      open: lastCandle.close,
-      high: lastCandle.close,
-      low: lastCandle.close,
-      close: lastCandle.close
+        timestamp: currentPeriod,
+        open: lastCandle.close,
+        high: lastCandle.close,
+        low: lastCandle.close,
+        close: lastCandle.close
     };
     marketData.history.push(newCandle);
-    if (marketData.history.length > MAX_CANDLES_IN_RAM) {
-      marketData.history.shift();
-    }
-    // নতুন ক্যান্ডেল শুরু হলে টার্গেট রিসেট
-    marketData.targetPrice = lastCandle.close;
-    marketData.trendDirection = 0;
+    if (marketData.history.length > MAX_CANDLES) marketData.history.shift();
     return newCandle;
   }
   return lastCandle;
 }
 
-// 🔥 CRITICAL FIX: Real Broker Tick Behavior (Pocket Option / Quotex Style)
-function updateCandlePrice(marketData, candle) {
-    marketData.tickCount++;
-    const openPrice = candle.open;
-    const baseVolatility = openPrice * 0.00004; // সাধারণ মুভমেন্ট সাইজ
+// 🔥 রিয়েলিস্টিক ক্যান্ডেল মুভমেন্ট (ধাক্কা খেয়ে এবং থেমে থেমে চলা)
+function updateRealisticPrice(marketData, candle) {
+  // ১. Stutter Logic (প্রাইস মাঝে মাঝে এক জায়গায় বেজে থাকবে)
+  if (Math.random() < 0.35) return; 
 
-    // ১. Random Stall (৭০% সময় প্রাইস খুব সামান্য কাঁপবে, বড় মুভমেন্ট হবে না)
-    // এটি "পানির মতো" টানা মুভমেন্ট বন্ধ করবে এবং রিয়েলিস্টিক ফিল দেবে।
-    if (Math.random() < 0.70) {
-        // Micro-jitter (খুবই সামান্য কাঁপাকাপি)
-        const jitter = (Math.random() - 0.5) * (baseVolatility * 0.3);
-        
-        // যদি টার্গেট প্রাইস থাকে, তবে সেদিকে খুব ধীরে এগোবে (LERP)
-        marketData.currentPrice += (marketData.targetPrice - marketData.currentPrice) * 0.1;
-        marketData.currentPrice += jitter;
-    } 
-    // ২. Impulse Move (হঠাৎ করে একটা বড় লাফ দেওয়া)
-    else {
-        // প্রতি ১০-১৫ টিকে একবার ট্রেন্ডের দিক (Trend Direction) চেঞ্জ হতে পারে
-        if (marketData.tickCount % 12 === 0 || Math.random() < 0.1) {
-            marketData.trendDirection = Math.random() > 0.5 ? 1 : -1;
-        }
+  const openPrice = candle.open;
+  const baseVolatility = openPrice * 0.00005;
 
-        // লাফের সাইজ নির্ধারণ (মাঝে মাঝে অনেক বড় লাফ দেবে)
-        const isBigJump = Math.random() < 0.15;
-        const jumpSize = isBigJump ? baseVolatility * (4 + Math.random() * 4) : baseVolatility * (1 + Math.random() * 2);
-        
-        // টার্গেট প্রাইস সেট করা (এই প্রাইসের দিকে ক্যান্ডেল লাফ দেবে)
-        const move = marketData.trendDirection * jumpSize;
-        marketData.targetPrice = marketData.currentPrice + move;
+  // ২. Impulse & Recoil (একদিকে লাফ দিয়ে আবার সামান্য ফিরে আসা)
+  let impulse = (Math.random() - 0.5) * baseVolatility * 2.5;
+  
+  // গত মুভমেন্টের বিপরীত দিকে একটা টান রাখা (Spring effect)
+  let recoil = -marketData.lastMove * 0.3; 
+  
+  // ৩. Micro Jitter (ছোট্ট কাঁপাকাপি)
+  let jitter = (Math.random() - 0.5) * (baseVolatility * 0.2);
 
-        // ৩. Micro-Pullback (লাফ দেওয়ার পর উল্টো দিকে একটু ব্যাক করা)
-        // রিয়েল মার্কেটে প্রাইস একটা লেভেলে হিট করে সাথে সাথে একটু রিজেকশন খায়
-        const pullBack = -move * (0.2 + Math.random() * 0.3); // ২০-৫০% রিজেকশন
-        marketData.targetPrice += pullBack;
-        
-        // প্রাইসকে টার্গেটের কাছাকাছি নিয়ে যাওয়া (ধাক্কা দেওয়া)
-        marketData.currentPrice += move * 0.8; 
-    }
+  let finalMove = impulse + recoil + jitter;
+  
+  // একদিকের টানের ভারসাম্য (Trend bias)
+  if (Math.random() < 0.1) {
+      finalMove *= 4; // হঠাৎ বড় ধাক্কা
+  }
 
-    // ৪. Mean Reversion / Boundary Check (ক্যান্ডেল যেন অস্বাভাবিক বড় না হয়ে যায়)
-    const maxCandleSize = openPrice * 0.0008; // ক্যান্ডেলের সর্বোচ্চ সাইজ
-    const currentDistance = marketData.currentPrice - openPrice;
+  marketData.currentPrice += finalMove;
+  marketData.lastMove = finalMove; // পরবর্তী টিকে recoil এর জন্য সেভ রাখা
 
-    if (Math.abs(currentDistance) > maxCandleSize) {
-        // লিমিটে পৌঁছে গেলে জোর করে রিভার্স করা (শ্যাডো/উইক তৈরি হবে)
-        marketData.trendDirection = currentDistance > 0 ? -1 : 1;
-        marketData.targetPrice = openPrice + (currentDistance > 0 ? maxCandleSize * 0.8 : -maxCandleSize * 0.8);
-    }
+  // ৪. Boundary Check (ক্যান্ডেল যেন পাগলের মতো বড় না হয়)
+  const dist = marketData.currentPrice - openPrice;
+  if (Math.abs(dist) > openPrice * 0.001) {
+      marketData.currentPrice -= finalMove * 1.5; // রিজেকশন
+  }
 
-    // ফাইনাল প্রাইস আপডেট
-    candle.close = roundPrice(marketData.currentPrice);
-    candle.high = roundPrice(Math.max(candle.high, candle.close));
-    candle.low = roundPrice(Math.min(candle.low, candle.close));
+  candle.close = roundPrice(marketData.currentPrice);
+  candle.high = roundPrice(Math.max(candle.high, candle.close));
+  candle.low = roundPrice(Math.min(candle.low, candle.close));
 }
 
 function broadcastCandle(marketId, candle) {
@@ -189,114 +163,68 @@ function broadcastCandle(marketId, candle) {
   });
 }
 
+// Market লিসেনার
 db.ref('admin/markets').on('value', (snapshot) => {
   const fbMarkets = snapshot.val() || {};
-  Object.keys(fbMarkets).forEach((id) => {
-    if (!markets[id] && fbMarkets[id].status === 'active' && (fbMarkets[id].type === 'otc' || fbMarkets[id].type === 'broker_real')) {
-      initializeNewMarket(id);
+  Object.keys(fbMarkets).forEach((marketId) => {
+    const type = fbMarkets[marketId]?.type;
+    if ((type === 'otc' || type === 'broker_real') && !markets[marketId]) {
+      initializeNewMarket(marketId, fbMarkets[marketId]);
     }
   });
 });
 
 wss.on('connection', (ws) => {
-    ws.subscribedMarket = null;
-    ws.on('message', (raw) => {
-        try {
-            const msg = JSON.parse(raw.toString());
-            if (msg.type === 'subscribe' && msg.market) {
-                ws.subscribedMarket = msg.market;
-            }
-        } catch(e) {}
-    });
-});
-
-// 🔥 MAIN LOOP (Async & Batched)
-(async () => {
-    let lastSyncMinute = 0;
-
-    setInterval(async () => {
-        try {
-            const now = Date.now();
-            const currentPeriod = Math.floor(now / TIMEFRAME) * TIMEFRAME;
-            const currentMinute = Math.floor(now / 60000);
-            
-            for (const marketId in markets) {
-                const marketData = markets[marketId];
-                let candle = ensureCurrentPeriodCandle(marketData, currentPeriod);
-                if (!candle) continue;
-
-                // রিয়েলিস্টিক ব্রোকার বিহেভিয়ার কল করা হচ্ছে
-                updateCandlePrice(marketData, candle);
-                broadcastCandle(marketId, candle);
-            }
-
-            // Firebase Batch Backup (১ মিনিটে ১ বার)
-            if (currentMinute > lastSyncMinute) {
-                lastSyncMinute = currentMinute;
-                const batchUpdates = {};
-                let marketsToSync = 0;
-                
-                for (const marketId in markets) {
-                    const marketData = markets[marketId];
-                    const lastCandle = marketData.history[marketData.history.length-1];
-                    if (lastCandle) {
-                        batchUpdates[`markets/${marketData.marketPath}/live`] = { 
-                            price: lastCandle.close, 
-                            timestamp: lastCandle.timestamp 
-                        };
-                        marketsToSync++;
-                    }
-                }
-                
-                if (marketsToSync > 0) {
-                    await db.ref().update(batchUpdates);
-                }
-            }
-        } catch (error) {
-            console.error("Main loop error:", error);
-        }
-    }, TICK_MS);
-})();
-
-// API routes
-app.get('/api/history/:market', (req, res) => {
-  const marketData = markets[req.params.market];
-  if (!marketData) return res.status(404).json([]);
-  res.json(marketData.history.map(cloneCandle));
-});
-
-// Manual Backup API
-app.post('/api/backup', async (req, res) => {
+  ws.on('message', (raw) => {
     try {
-        const batchUpdates = {}; 
-        let marketsToSync = 0;
-        
-        for (const marketId in markets) {
-            const marketData = markets[marketId];
-            const lastCandle = marketData.history[marketData.history.length-1];
-            if(lastCandle) {
-                batchUpdates[`markets/${marketData.marketPath}/live`] = {
-                    price: lastCandle.close,
-                    timestamp: lastCandle.timestamp
-                };
-                marketsToSync++;
-            }
-        }
-        
-        if (marketsToSync > 0) {
-            await db.ref().update(batchUpdates);
-            res.json({ success: true, message: `Successfully backed up ${marketsToSync} markets.` });
-        } else {
-            res.json({ success: false, message: "No active markets found to backup." });
-        }
-    } catch (err) {
-        res.status(500).json({ success: false, message: "Backup failed.", error: err.message });
-    }
+      const msg = JSON.parse(raw.toString());
+      if (msg?.type === 'subscribe') ws.subscribedMarket = msg.market;
+    } catch (_) {}
+  });
 });
 
-app.get('/ping', (_req, res) => res.send('UltraSmooth v19 - Real Broker Tick Behavior Active'));
+// 🔥 MAIN LOOP & BATCH SYNC (সার্ভার হ্যাং হবে না)
+let lastSyncMinute = 0;
+
+setInterval(() => {
+  const now = Date.now();
+  const currentPeriod = Math.floor(now / TIMEFRAME) * TIMEFRAME;
+  const currentMinute = Math.floor(now / 60000);
+
+  // ১. চার্ট মুভমেন্ট আপডেট
+  for (const marketId in markets) {
+    const marketData = markets[marketId];
+    let candle = ensureCurrentPeriodCandle(marketData, currentPeriod);
+    if (!candle) continue;
+
+    updateRealisticPrice(marketData, candle);
+    broadcastCandle(marketId, candle);
+  }
+
+  // ২. ফায়ারবেস ব্যাচ ব্যাকআপ (প্রতি মিনিটে ১ বার - ক্রন জব সেফটি)
+  if (currentMinute > lastSyncMinute) {
+    lastSyncMinute = currentMinute;
+    const batchUpdates = {};
+    for (const marketId in markets) {
+      const m = markets[marketId];
+      const lastC = m.history[m.history.length-1];
+      if (lastC) {
+        batchUpdates[`markets/${m.marketPath}/live`] = {
+          price: lastC.close,
+          timestamp: lastC.timestamp,
+          marketId: marketId,
+          updatedAt: now
+        };
+      }
+    }
+    db.ref().update(batchUpdates).catch(()=>{});
+    console.log(`[Batch Sync] ${Object.keys(markets).length} markets backed up.`);
+  }
+}, TICK_MS);
+
+app.get('/ping', (_req, res) => res.send('UltraSmooth V20 - Realistic Pulse Active'));
 
 const PORT = process.env.PORT || 3000;
-server.listen(PORT, () => console.log(`Server v19 Real Tick Behavior active on ${PORT}`));
+server.listen(PORT, () => console.log(`Server running on ${PORT}`));
 
 // --- END OF FILE ---
