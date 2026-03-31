@@ -1,4 +1,4 @@
-// --- START: FULLY UPDATED server.js (v18 - Realistic Quotex-style Movement) ---
+// --- START: FULLY UPDATED server.js (v19 - Real Broker Tick Behavior) ---
 
 const express = require('express');
 const http = require('http');
@@ -7,7 +7,7 @@ const cors = require('cors');
 const firebase = require('firebase/app');
 require('firebase/database');
 
-// 🔥 আপনার নতুন ফায়ারবেস প্রজেক্টের কনফিগারেশন
+// 🔥 আপনার ফায়ারবেস কনফিগারেশন
 const firebaseConfig = {
   apiKey: "AIzaSyBUTMFblYIVovOe4F25XCFneJNTlVcoWCA",
   authDomain: "ictex-trade.firebaseapp.com",
@@ -29,7 +29,7 @@ const wss = new WebSocket.Server({ server });
 
 const MAX_CANDLES_IN_RAM = 1000;
 const TIMEFRAME = 60000;
-const TICK_MS = 500; 
+const TICK_MS = 300; 
 const HISTORY_SEED_COUNT = 300;
 
 const markets = {}; 
@@ -93,7 +93,10 @@ async function initializeNewMarket(marketId) {
     marketPath: path,
     history: candles,
     currentPrice: currentPrice,
-    momentum: 0 // নতুন: রিয়েলিস্টিক মুভমেন্টের জন্য মোমেন্টাম
+    // রিয়েল ব্রোকার বিহেভিয়ারের জন্য স্টেট ভেরিয়েবল
+    targetPrice: currentPrice,
+    trendDirection: 0,
+    tickCount: 0
   };
 }
 
@@ -113,56 +116,68 @@ function ensureCurrentPeriodCandle(marketData, currentPeriod) {
     if (marketData.history.length > MAX_CANDLES_IN_RAM) {
       marketData.history.shift();
     }
-    // নতুন ক্যান্ডেল শুরু হলে মোমেন্টাম জিরো করে দেওয়া
-    marketData.momentum = 0; 
+    // নতুন ক্যান্ডেল শুরু হলে টার্গেট রিসেট
+    marketData.targetPrice = lastCandle.close;
+    marketData.trendDirection = 0;
     return newCandle;
   }
   return lastCandle;
 }
 
-// 🔥 CRITICAL FIX: রিয়েলিস্টিক (Quotex/Binomo style) ক্যান্ডেল মুভমেন্ট
+// 🔥 CRITICAL FIX: Real Broker Tick Behavior (Pocket Option / Quotex Style)
 function updateCandlePrice(marketData, candle) {
-  // ১. Random Stall (মাঝে মাঝে প্রাইস এক জায়গায় দাঁড়িয়ে থাকবে)
-  // ২৫% সম্ভাবনা আছে যে এই টিকে প্রাইস নড়বেই না (রিয়েল মার্কেটের মতো)
-  if (Math.random() < 0.25) return;
+    marketData.tickCount++;
+    const openPrice = candle.open;
+    const baseVolatility = openPrice * 0.00004; // সাধারণ মুভমেন্ট সাইজ
 
-  const baseVolatility = 0.00008; // সাধারণ নড়াচড়ার সাইজ
-  
-  // ২. Micro-Jumps (হঠাৎ বড় লাফ দেওয়া)
-  // ১০% সম্ভাবনা আছে প্রাইস হঠাৎ করে বড় লাফ দেবে
-  const isJump = Math.random() < 0.10;
-  const volatility = isJump ? baseVolatility * (3 + Math.random() * 3) : baseVolatility;
+    // ১. Random Stall (৭০% সময় প্রাইস খুব সামান্য কাঁপবে, বড় মুভমেন্ট হবে না)
+    // এটি "পানির মতো" টানা মুভমেন্ট বন্ধ করবে এবং রিয়েলিস্টিক ফিল দেবে।
+    if (Math.random() < 0.70) {
+        // Micro-jitter (খুবই সামান্য কাঁপাকাপি)
+        const jitter = (Math.random() - 0.5) * (baseVolatility * 0.3);
+        
+        // যদি টার্গেট প্রাইস থাকে, তবে সেদিকে খুব ধীরে এগোবে (LERP)
+        marketData.currentPrice += (marketData.targetPrice - marketData.currentPrice) * 0.1;
+        marketData.currentPrice += jitter;
+    } 
+    // ২. Impulse Move (হঠাৎ করে একটা বড় লাফ দেওয়া)
+    else {
+        // প্রতি ১০-১৫ টিকে একবার ট্রেন্ডের দিক (Trend Direction) চেঞ্জ হতে পারে
+        if (marketData.tickCount % 12 === 0 || Math.random() < 0.1) {
+            marketData.trendDirection = Math.random() > 0.5 ? 1 : -1;
+        }
 
-  // ৩. Momentum & Trend (একদিকে যাওয়ার প্রবণতা)
-  // রেন্ডমলি মোমেন্টাম চেঞ্জ হবে (Trend direction)
-  if (Math.random() < 0.15) {
-      marketData.momentum = (Math.random() - 0.5) * 2; // -1 থেকে +1 এর মধ্যে
-  }
-  
-  // প্রাইস মুভমেন্ট ক্যালকুলেশন (রেন্ডম নয়েজ + মোমেন্টাম)
-  let rawMove = (Math.random() - 0.5 + (marketData.momentum * 0.3)) * (candle.open * volatility);
+        // লাফের সাইজ নির্ধারণ (মাঝে মাঝে অনেক বড় লাফ দেবে)
+        const isBigJump = Math.random() < 0.15;
+        const jumpSize = isBigJump ? baseVolatility * (4 + Math.random() * 4) : baseVolatility * (1 + Math.random() * 2);
+        
+        // টার্গেট প্রাইস সেট করা (এই প্রাইসের দিকে ক্যান্ডেল লাফ দেবে)
+        const move = marketData.trendDirection * jumpSize;
+        marketData.targetPrice = marketData.currentPrice + move;
 
-  // ৪. Mean Reversion (রিজেকশন খাওয়া)
-  // প্রাইস ক্যান্ডেলের ওপেন থেকে অনেক দূরে চলে গেলে শ্যাডো (Wick) তৈরি করার জন্য রিজেকশন নেবে
-  const distance = marketData.currentPrice - candle.open;
-  const maxDistance = candle.open * 0.0005; // ক্যান্ডেলের সর্বোচ্চ সাইজ লিমিট
-  
-  if (Math.abs(distance) > maxDistance) {
-      // লিমিট পার হলে জোর করে বিপরীত দিকে ঠেলে দেওয়া (Rejection)
-      const pullBackForce = distance > 0 ? -0.5 : 0.5;
-      rawMove += pullBackForce * (candle.open * baseVolatility * 2);
-  }
+        // ৩. Micro-Pullback (লাফ দেওয়ার পর উল্টো দিকে একটু ব্যাক করা)
+        // রিয়েল মার্কেটে প্রাইস একটা লেভেলে হিট করে সাথে সাথে একটু রিজেকশন খায়
+        const pullBack = -move * (0.2 + Math.random() * 0.3); // ২০-৫০% রিজেকশন
+        marketData.targetPrice += pullBack;
+        
+        // প্রাইসকে টার্গেটের কাছাকাছি নিয়ে যাওয়া (ধাক্কা দেওয়া)
+        marketData.currentPrice += move * 0.8; 
+    }
 
-  // ৫. Tick Noise (কাঁপাকাঁপি)
-  const jitter = (Math.random() - 0.5) * (candle.open * 0.00002);
-  
-  // ফাইনাল প্রাইস আপডেট
-  marketData.currentPrice += (rawMove + jitter);
+    // ৪. Mean Reversion / Boundary Check (ক্যান্ডেল যেন অস্বাভাবিক বড় না হয়ে যায়)
+    const maxCandleSize = openPrice * 0.0008; // ক্যান্ডেলের সর্বোচ্চ সাইজ
+    const currentDistance = marketData.currentPrice - openPrice;
 
-  // ক্যান্ডেলের হাই, লো এবং ক্লোজ আপডেট করা
-  candle.close = roundPrice(marketData.currentPrice);
-  candle.high = roundPrice(Math.max(candle.high, candle.close));
-  candle.low = roundPrice(Math.min(candle.low, candle.close));
+    if (Math.abs(currentDistance) > maxCandleSize) {
+        // লিমিটে পৌঁছে গেলে জোর করে রিভার্স করা (শ্যাডো/উইক তৈরি হবে)
+        marketData.trendDirection = currentDistance > 0 ? -1 : 1;
+        marketData.targetPrice = openPrice + (currentDistance > 0 ? maxCandleSize * 0.8 : -maxCandleSize * 0.8);
+    }
+
+    // ফাইনাল প্রাইস আপডেট
+    candle.close = roundPrice(marketData.currentPrice);
+    candle.high = roundPrice(Math.max(candle.high, candle.close));
+    candle.low = roundPrice(Math.min(candle.low, candle.close));
 }
 
 function broadcastCandle(marketId, candle) {
@@ -205,18 +220,17 @@ wss.on('connection', (ws) => {
             const currentPeriod = Math.floor(now / TIMEFRAME) * TIMEFRAME;
             const currentMinute = Math.floor(now / 60000);
             
-            // 1. Chart Update & Broadcast
             for (const marketId in markets) {
                 const marketData = markets[marketId];
                 let candle = ensureCurrentPeriodCandle(marketData, currentPeriod);
                 if (!candle) continue;
 
-                // রিয়েলিস্টিক প্রাইস আপডেট কল করা হচ্ছে
+                // রিয়েলিস্টিক ব্রোকার বিহেভিয়ার কল করা হচ্ছে
                 updateCandlePrice(marketData, candle);
                 broadcastCandle(marketId, candle);
             }
 
-            // 2. Firebase Backup (Batch - Every 1 Minute)
+            // Firebase Batch Backup (১ মিনিটে ১ বার)
             if (currentMinute > lastSyncMinute) {
                 lastSyncMinute = currentMinute;
                 const batchUpdates = {};
@@ -236,7 +250,6 @@ wss.on('connection', (ws) => {
                 
                 if (marketsToSync > 0) {
                     await db.ref().update(batchUpdates);
-                    // console.log(`[Firebase Backup] Batched sync for ${marketsToSync} markets successful.`);
                 }
             }
         } catch (error) {
@@ -281,9 +294,9 @@ app.post('/api/backup', async (req, res) => {
     }
 });
 
-app.get('/ping', (_req, res) => res.send('UltraSmooth v18 - Realistic Movement Active'));
+app.get('/ping', (_req, res) => res.send('UltraSmooth v19 - Real Broker Tick Behavior Active'));
 
 const PORT = process.env.PORT || 3000;
-server.listen(PORT, () => console.log(`Server v18 Realistic Movement active on ${PORT}`));
+server.listen(PORT, () => console.log(`Server v19 Real Tick Behavior active on ${PORT}`));
 
 // --- END OF FILE ---
