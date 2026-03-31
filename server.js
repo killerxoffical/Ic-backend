@@ -1,4 +1,4 @@
-// --- START: FULLY UPDATED server.js (v16-Final) ---
+// --- START: FULLY UPDATED server.js (v16-Final Fixed) ---
 
 const express = require('express');
 const http = require('http');
@@ -13,9 +13,9 @@ const firebaseConfig = {
   authDomain: "ictex-trade.firebaseapp.com",
   databaseURL: "https://ictex-trade-default-rtdb.firebaseio.com",
   projectId: "ictex-trade",
-  storageBucket: "ictex-trade.appspot.com", // .firebasestorage লেখাটি কেটে দিয়েছি
+  storageBucket: "ictex-trade.appspot.com",
   messagingSenderId: "755532704199",
-  appId: "1:755532704199:web:b27d7c9e7d0f4ac76291e2" // একটি ওয়েবের জন্য নতুন করে তৈরি
+  appId: "1:755532704199:web:b27d7c9e7d0f4ac76291e2"
 };
 
 if (!firebase.apps.length) firebase.initializeApp(firebaseConfig);
@@ -126,7 +126,7 @@ function updateCandlePrice(marketData, candle) {
   const volatility = 0.00015;
   let move = (Math.random() - 0.495) * (candle.open * volatility);
   
-  // Mean reversion (প্রাইসকে আগের জায়গায় ফিরিয়ে আনার প্রবণতা)
+  // Mean reversion
   const meanReversionForce = (candle.open - marketData.currentPrice) * 0.01;
   move += meanReversionForce;
 
@@ -136,20 +136,17 @@ function updateCandlePrice(marketData, candle) {
   candle.low = roundPrice(Math.min(candle.low, candle.close));
 }
 
-// 🔥 ফায়ারবেস আপডেট - এখানে আর ক্যান্ডেল সেভ হবে না
+// 🔥 ফায়ারবেস আপডেট
 async function mirrorLivePriceToFirebase(marketData, candle) {
   try {
-    // শুধু লাইভ প্রাইস আপডেট করা হচ্ছে
     await db.ref(`markets/${marketData.marketPath}/live`).set({
       price: candle.close,
       timestamp: candle.timestamp,
     });
-  } catch (err) {
-    // console.error('FB Sync Error:', err.message);
-  }
+  } catch (err) {}
 }
 
-// 🔥 ব্যান্ডউইথ সেভার: শুধু সাবস্ক্রাইব করা ইউজারকেই ডাটা পাঠাবে
+// 🔥 ব্যান্ডউইথ সেভার
 function broadcastCandle(marketId, candle) {
   const payload = JSON.stringify({ market: marketId, candle, serverTime: Date.now() });
   wss.clients.forEach((client) => {
@@ -182,7 +179,7 @@ wss.on('connection', (ws) => {
 });
 
 
-// 🔥 MAIN LOOP (২০০+ মার্কেটের জন্য অপ্টিমাইজড)
+// 🔥 MAIN LOOP
 setInterval(() => {
   const now = Date.now();
   const currentPeriod = Math.floor(now / TIMEFRAME) * TIMEFRAME;
@@ -192,31 +189,33 @@ setInterval(() => {
     let candle = ensureCurrentPeriodCandle(marketData, currentPeriod);
     if (!candle) continue;
 
-    // ১. প্রাইস ক্যালকুলেশন
     updateCandlePrice(marketData, candle);
-
-    // ২. ক্লায়েন্টের কাছে লাইভ চার্ট পাঠানো (WebSocket এর মাধ্যমে)
     broadcastCandle(marketId, candle);
   }
   
-  // ৩. ফায়ারবেসে ব্যাকআপ পাঠানো (প্রতি ১ মিনিটে একবার)
+  // ফায়ারবেসে ব্যাকআপ (প্রতি ১ মিনিটে একবার)
   if (now % FIREBASE_BACKUP_INTERVAL < TICK_MS) {
       for (const marketId in markets) {
           const marketData = markets[marketId];
           const lastCandle = marketData.history[marketData.history.length-1];
           if(lastCandle) mirrorLivePriceToFirebase(marketData, lastCandle);
       }
-      console.log(`[Firebase Backup] Synced live prices for all markets.`);
+      console.log(`[Firebase Backup] Synced live prices.`);
   }
 
 }, TICK_MS);
 
 
-// ক্লায়েন্ট যখন অ্যাপে ঢুকবে, তখন এখান থেকে হিস্টরি নিবে
+// API routes
 app.get('/api/history/:market', (req, res) => {
   const marketData = markets[req.params.market];
   if (!marketData) return res.status(404).json([]);
   res.json(marketData.history.map(cloneCandle));
+});
+
+// 🔥 CRITICAL FIX: Cron Job এর জন্য এই রুটটি যোগ করা হলো
+app.get('/ping', (_req, res) => {
+  res.send('UltraSmooth V16-Final active');
 });
 
 const PORT = process.env.PORT || 3000;
