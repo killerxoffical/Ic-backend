@@ -1,4 +1,4 @@
-// --- START: FULLY UPDATED server.js (Manual Backup Mode) ---
+// --- START: FULLY UPDATED server.js (v17 - Memory & Stability Fix) ---
 
 const express = require('express');
 const http = require('http');
@@ -7,15 +7,15 @@ const cors = require('cors');
 const firebase = require('firebase/app');
 require('firebase/database');
 
-// 🔥 আপনার নতুন ফায়ারবেস প্রজেক্টের কনফিগারেশন
+// Firebase Config
 const firebaseConfig = {
-  apiKey: "AIzaSyBUTMFblYIVovOe4F25XCFneJNTlVcoWCA",
-  authDomain: "ictex-trade.firebaseapp.com",
-  databaseURL: "https://ictex-trade-default-rtdb.firebaseio.com",
-  projectId: "ictex-trade",
-  storageBucket: "ictex-trade.appspot.com",
-  messagingSenderId: "755532704199",
-  appId: "1:755532704199:web:b27d7c9e7d0f4ac76291e2"
+    apiKey: "AIzaSyBUTMFblYIVovOe4F25XCFneJNTlVcoWCA",
+    authDomain: "ictex-trade.firebaseapp.com",
+    databaseURL: "https://ictex-trade-default-rtdb.firebaseio.com",
+    projectId: "ictex-trade",
+    storageBucket: "ictex-trade.appspot.com",
+    messagingSenderId: "755532704199",
+    appId: "1:755532704199:web:b27d7c9e7d0f4ac76291e2"
 };
 
 if (!firebase.apps.length) firebase.initializeApp(firebaseConfig);
@@ -23,210 +23,179 @@ const db = firebase.database();
 
 const app = express();
 app.use(cors());
-app.use(express.json()); // JSON রিকোয়েস্ট রিসিভ করার জন্য
+app.use(express.json());
 const server = http.createServer(app);
 const wss = new WebSocket.Server({ server });
 
-const MAX_CANDLES_IN_RAM = 3000;
-const TIMEFRAME = 60000; // 1 minute candles
-const TICK_MS = 300; // চার্ট সুপার স্মুথ
+// Server Config
+const MAX_CANDLES_IN_RAM = 1000;
+const TIMEFRAME = 60000;
+const TICK_MS = 300; 
 const HISTORY_SEED_COUNT = 300;
+const markets = {};
 
-const markets = {}; 
-
-function roundPrice(v) {
-  return parseFloat(v.toFixed(5));
-}
-
-function marketPathFromId(marketId) {
-  return String(marketId || '').replace(/[\.\/ ]/g, '-').toLowerCase();
-}
-
-function cloneCandle(c) {
-  return { timestamp: c.timestamp, open: c.open, high: c.high, low: c.low, close: c.close };
-}
+// Helper Functions
+const roundPrice = v => parseFloat(v.toFixed(5));
+const marketPathFromId = id => String(id || '').replace(/[\.\/ ]/g, '-').toLowerCase();
+const cloneCandle = c => ({ ...c });
 
 function generateHistoricalCandle(timestamp, open) {
-  const safeOpen = Math.max(0.00001, open);
-  const isGreen = Math.random() > 0.5;
-  const body = (0.00006 + Math.random() * 0.00022) * safeOpen;
-  const close = isGreen ? safeOpen + body : safeOpen - body;
-  const upperWick = (0.00003 + Math.random() * 0.00015) * safeOpen;
-  const lowerWick = (0.00003 + Math.random() * 0.00015) * safeOpen;
-
-  return {
-    timestamp,
-    open: roundPrice(safeOpen),
-    high: roundPrice(Math.max(safeOpen, close) + upperWick),
-    low: roundPrice(Math.min(safeOpen, close) - lowerWick),
-    close: roundPrice(close)
-  };
+    const safeOpen = Math.max(0.00001, open);
+    const isGreen = Math.random() > 0.5;
+    const body = (0.00006 + Math.random() * 0.00022) * safeOpen;
+    const close = isGreen ? safeOpen + body : safeOpen - body;
+    const upperWick = (0.00003 + Math.random() * 0.00015) * safeOpen;
+    const lowerWick = (0.00003 + Math.random() * 0.00015) * safeOpen;
+    return {
+        timestamp,
+        open: roundPrice(safeOpen),
+        high: roundPrice(Math.max(safeOpen, close) + upperWick),
+        low: roundPrice(Math.min(safeOpen, close) - lowerWick),
+        close: roundPrice(close)
+    };
 }
 
-// সার্ভার রিস্টার্ট হলে ফায়ারবেস থেকে আগের প্রাইস রিস্টোর করার ফাংশন
 async function initializeNewMarket(marketId) {
-  const path = marketPathFromId(marketId);
-  let startPrice = 1.15;
-
-  try {
-    const liveSnap = await db.ref(`markets/${path}/live`).once('value');
-    const lastLive = liveSnap.val();
-    if (lastLive && lastLive.price) {
-      startPrice = lastLive.price;
-      console.log(`[Restored] ${marketId} from price: ${startPrice}`);
+    const path = marketPathFromId(marketId);
+    let startPrice = 1.15;
+    try {
+        const liveSnap = await db.ref(`markets/${path}/live`).once('value');
+        const lastLive = liveSnap.val();
+        if (lastLive && lastLive.price) {
+            startPrice = lastLive.price;
+            console.log(`[Restored] ${marketId} from price: ${startPrice}`);
+        }
+    } catch (e) {
+        console.error("Restore error:", e);
     }
-  } catch (e) {
-    console.error("Restore error:", e);
-  }
-
-  const nowPeriod = Math.floor(Date.now() / TIMEFRAME) * TIMEFRAME;
-  const candles = [];
-  let currentPrice = startPrice;
-
-  for (let i = HISTORY_SEED_COUNT; i > 0; i--) {
-    const c = generateHistoricalCandle(nowPeriod - (i * TIMEFRAME), currentPrice);
-    candles.push(c);
-    currentPrice = c.close;
-  }
-  
-  markets[marketId] = {
-    marketId,
-    marketPath: path,
-    history: candles,
-    currentPrice: currentPrice
-  };
+    const nowPeriod = Math.floor(Date.now() / TIMEFRAME) * TIMEFRAME;
+    const candles = Array.from({ length: HISTORY_SEED_COUNT }, (_, i) => 
+        generateHistoricalCandle(nowPeriod - ((HISTORY_SEED_COUNT - i) * TIMEFRAME), startPrice)
+    );
+    markets[marketId] = {
+        marketId,
+        marketPath: path,
+        history: candles,
+        currentPrice: candles[candles.length - 1].close
+    };
 }
 
 function ensureCurrentPeriodCandle(marketData, currentPeriod) {
-  let lastCandle = marketData.history[marketData.history.length - 1];
-  if (!lastCandle) return null;
-
-  if (currentPeriod > lastCandle.timestamp) {
-    const missingCount = Math.floor((currentPeriod - lastCandle.timestamp) / TIMEFRAME);
-    for (let i = 0; i < missingCount; i++) {
-      const newTimestamp = lastCandle.timestamp + TIMEFRAME;
-      const newCandle = {
-        timestamp: newTimestamp,
-        open: lastCandle.close,
-        high: lastCandle.close,
-        low: lastCandle.close,
-        close: lastCandle.close
-      };
-      marketData.history.push(newCandle);
-      if (marketData.history.length > MAX_CANDLES_IN_RAM) {
-        marketData.history.shift();
-      }
-      lastCandle = newCandle;
+    let lastCandle = marketData.history[marketData.history.length - 1];
+    if (!lastCandle) return null;
+    if (currentPeriod > lastCandle.timestamp) {
+        const newCandle = {
+            timestamp: currentPeriod,
+            open: lastCandle.close,
+            high: lastCandle.close,
+            low: lastCandle.close,
+            close: lastCandle.close
+        };
+        marketData.history.push(newCandle);
+        if (marketData.history.length > MAX_CANDLES_IN_RAM) marketData.history.shift();
+        return newCandle;
     }
-  }
-  return lastCandle;
+    return lastCandle;
 }
 
 function updateCandlePrice(marketData, candle) {
-  const volatility = 0.00015;
-  let move = (Math.random() - 0.495) * (candle.open * volatility);
-  
-  // Mean reversion
-  const meanReversionForce = (candle.open - marketData.currentPrice) * 0.01;
-  move += meanReversionForce;
-
-  marketData.currentPrice += move;
-  candle.close = roundPrice(marketData.currentPrice);
-  candle.high = roundPrice(Math.max(candle.high, candle.close));
-  candle.low = roundPrice(Math.min(candle.low, candle.close));
+    const volatility = 0.00015;
+    let move = (Math.random() - 0.495) * (candle.open * volatility);
+    const meanReversionForce = (candle.open - marketData.currentPrice) * 0.01;
+    move += meanReversionForce;
+    marketData.currentPrice += move;
+    candle.close = roundPrice(marketData.currentPrice);
+    candle.high = roundPrice(Math.max(candle.high, candle.close));
+    candle.low = roundPrice(Math.min(candle.low, candle.close));
 }
 
-// ব্যান্ডউইথ সেভার: শুধু সাবস্ক্রাইব করা ইউজারকেই ডাটা পাঠাবে
-function broadcastCandle(marketId, candle) {
-  const payload = JSON.stringify({ market: marketId, candle, serverTime: Date.now() });
-  wss.clients.forEach((client) => {
-    if (client.readyState === WebSocket.OPEN && client.subscribedMarket === marketId) {
-      client.send(payload);
-    }
-  });
-}
-
-// Admin / Market লিসেনার
-db.ref('admin/markets').on('value', (snapshot) => {
-  const fbMarkets = snapshot.val() || {};
-  Object.keys(fbMarkets).forEach((id) => {
-    if (!markets[id] && fbMarkets[id].status === 'active' && (fbMarkets[id].type === 'otc' || fbMarkets[id].type === 'broker_real')) {
-      initializeNewMarket(id);
-    }
-  });
+// Market & WebSocket Listeners
+db.ref('admin/markets').on('value', snapshot => {
+    const fbMarkets = snapshot.val() || {};
+    Object.keys(fbMarkets).forEach(id => {
+        if (!markets[id] && fbMarkets[id].status === 'active' && (fbMarkets[id].type === 'otc' || fbMarkets[id].type === 'broker_real')) {
+            initializeNewMarket(id);
+        }
+    });
 });
-
-wss.on('connection', (ws) => {
-    ws.subscribedMarket = null;
-    ws.on('message', (raw) => {
+wss.on('connection', ws => {
+    ws.on('message', raw => {
         try {
-            const msg = JSON.parse(raw.toString());
-            if (msg.type === 'subscribe' && msg.market) {
-                ws.subscribedMarket = msg.market;
-            }
+            const msg = JSON.parse(raw);
+            if (msg.type === 'subscribe' && msg.market) ws.subscribedMarket = msg.market;
         } catch(e) {}
     });
 });
 
-// 🔥 MAIN LOOP (No Auto Firebase Backup)
-setInterval(() => {
-  const now = Date.now();
-  const currentPeriod = Math.floor(now / TIMEFRAME) * TIMEFRAME;
+// 🔥 STABILITY FIX: মেইন লুপটিকে `async` করা হয়েছে এবং `try-catch` যোগ করা হয়েছে
+// এটি সার্ভারকে যে কোনো আনএক্সপেক্টেড এরর থেকে বাঁচাবে এবং ক্র্যাশ হওয়া বন্ধ করবে
+(async () => {
+    let lastSyncMinute = 0;
+    setInterval(async () => {
+        try {
+            const now = Date.now();
+            const currentPeriod = Math.floor(now / TIMEFRAME) * TIMEFRAME;
+            const currentMinute = Math.floor(now / 60000);
+            
+            // 1. Chart Update & Broadcast
+            for (const marketId in markets) {
+                const marketData = markets[marketId];
+                let candle = ensureCurrentPeriodCandle(marketData, currentPeriod);
+                if (!candle) continue;
+                updateCandlePrice(marketData, candle);
+                const payload = JSON.stringify({ market: marketId, candle, serverTime: now });
+                wss.clients.forEach(client => {
+                    if (client.readyState === WebSocket.OPEN && client.subscribedMarket === marketId) {
+                        client.send(payload);
+                    }
+                });
+            }
 
-  for (const marketId in markets) {
-    const marketData = markets[marketId];
-    let candle = ensureCurrentPeriodCandle(marketData, currentPeriod);
-    if (!candle) continue;
-
-    updateCandlePrice(marketData, candle);
-    broadcastCandle(marketId, candle);
-  }
-}, TICK_MS);
+            // 2. Firebase Backup (Batch)
+            if (currentMinute > lastSyncMinute) {
+                lastSyncMinute = currentMinute;
+                const batchUpdates = {};
+                for (const marketId in markets) {
+                    const marketData = markets[marketId];
+                    const lastCandle = marketData.history[marketData.history.length-1];
+                    if (lastCandle) {
+                        batchUpdates[`markets/${marketData.marketPath}/live`] = { price: lastCandle.close, timestamp: lastCandle.timestamp };
+                    }
+                }
+                if (Object.keys(batchUpdates).length > 0) {
+                    await db.ref().update(batchUpdates);
+                    console.log(`[Firebase Backup] Batched sync successful.`);
+                }
+            }
+        } catch (error) {
+            console.error("Main loop error, but server is safe:", error);
+        }
+    }, TICK_MS);
+})();
 
 // API routes
 app.get('/api/history/:market', (req, res) => {
-  const marketData = markets[req.params.market];
-  if (!marketData) return res.status(404).json([]);
-  res.json(marketData.history.map(cloneCandle));
+    const marketData = markets[req.params.market];
+    if (!marketData) return res.status(404).json([]);
+    res.json(marketData.history.map(cloneCandle));
 });
-
-// 🔥 NEW: Manual Backup API (এডমিন বাটন চাপলে এটি কল হবে)
 app.post('/api/backup', async (req, res) => {
     try {
-        const batchUpdates = {}; 
-        let marketsToSync = 0;
-        
+        const batchUpdates = {};
         for (const marketId in markets) {
             const marketData = markets[marketId];
-            const lastCandle = marketData.history[marketData.history.length-1];
-            if(lastCandle) {
-                batchUpdates[`markets/${marketData.marketPath}/live`] = {
-                    price: lastCandle.close,
-                    timestamp: lastCandle.timestamp
-                };
-                marketsToSync++;
+            const lastCandle = marketData.history[marketData.history.length - 1];
+            if (lastCandle) {
+                batchUpdates[`markets/${marketData.marketPath}/live`] = { price: lastCandle.close, timestamp: lastCandle.timestamp };
             }
         }
-        
-        if (marketsToSync > 0) {
-            await db.ref().update(batchUpdates);
-            console.log(`[Manual Backup] Synced ${marketsToSync} markets.`);
-            res.json({ success: true, message: `Successfully backed up ${marketsToSync} markets.` });
-        } else {
-            res.json({ success: false, message: "No active markets found to backup." });
-        }
-    } catch (err) {
-        console.error("Manual Backup Error:", err);
-        res.status(500).json({ success: false, message: "Backup failed.", error: err.message });
-    }
+        await db.ref().update(batchUpdates);
+        res.json({ success: true, message: "Backup successful." });
+    } catch (err) { res.status(500).json({ success: false, message: "Backup failed." }); }
 });
-
-// Cron Job এর জন্য
-app.get('/ping', (_req, res) => {
-  res.send('UltraSmooth Manual Backup Mode Active');
-});
+app.get('/ping', (_req, res) => res.send('UltraSmooth v17 Stable'));
 
 const PORT = process.env.PORT || 3000;
-server.listen(PORT, () => console.log(`Server Manual Backup Mode active on ${PORT}`));
+server.listen(PORT, () => console.log(`Server v17 Stable active on ${PORT}`));
 
-// --- END: FULLY UPDATED server.js ---
+// --- END OF FILE ---
