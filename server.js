@@ -1,4 +1,4 @@
-// --- START: FULLY UPDATED server.js (v17-Realistic-Movement) ---
+// --- START: FULLY UPDATED server.js (v18-Pip-Movement) ---
 
 const express = require('express');
 const http = require('http');
@@ -29,8 +29,9 @@ const wss = new WebSocket.Server({ server });
 const MAX_CANDLES_IN_RAM = 3000;
 const TIMEFRAME = 60000; // 1 minute candles
 const TICK_MS = 300; // 🔥 প্রতি ৩০০ মিলিসেকেন্ডে চার্ট আপডেট
-const FIREBASE_BACKUP_INTERVAL = 60000; // 🔥 প্রতি ১ মিনিটে একবার ফায়ারবেসে ব্যাকআপ
+const FIREBASE_BACKUP_INTERVAL = 60000;
 const HISTORY_SEED_COUNT = 300;
+const PIP_SIZE = 0.00010; // 🔥 5-digit ব্রোকারের জন্য স্ট্যান্ডার্ড পিপ সাইজ
 
 const markets = {}; // সার্ভারের র‍্যামে ক্যান্ডেলগুলো থাকবে
 
@@ -63,7 +64,6 @@ function generateHistoricalCandle(timestamp, open) {
   };
 }
 
-// 🔥 সার্ভার রিস্টার্ট হলে ফায়ারবেস থেকে আগের প্রাইস রিস্টোর করার ফাংশন
 async function initializeNewMarket(marketId) {
   const path = marketPathFromId(marketId);
   let startPrice = 1.15;
@@ -75,9 +75,7 @@ async function initializeNewMarket(marketId) {
       startPrice = lastLive.price;
       console.log(`[Restored] ${marketId} from price: ${startPrice}`);
     }
-  } catch (e) {
-    console.error("Restore error:", e);
-  }
+  } catch (e) { console.error("Restore error:", e); }
 
   const nowPeriod = Math.floor(Date.now() / TIMEFRAME) * TIMEFRAME;
   const candles = [];
@@ -94,7 +92,8 @@ async function initializeNewMarket(marketId) {
     marketPath: path,
     history: candles,
     currentPrice: currentPrice,
-    ticksUntilNextMove: 0 // 🔥 ক্যান্ডেল মুভমেন্ট কন্ট্রোল করার জন্য নতুন কাউন্টার
+    ticksUntilNextMove: 0,
+    trendBias: 0 // 🔥 নতুন: প্রতি ক্যান্ডেলে ছোট ট্রেন্ড তৈরির জন্য
   };
 }
 
@@ -119,25 +118,41 @@ function ensureCurrentPeriodCandle(marketData, currentPeriod) {
       }
       lastCandle = newCandle;
     }
+    // 🔥🔥 নতুন ক্যান্ডেল শুরু হলে ট্রেন্ডের ঝোঁক রিসেট করুন
+    marketData.trendBias = (Math.random() - 0.5) * 0.4;
   }
   return lastCandle;
 }
 
+// 🔥🔥 বাস্তবসম্মত 'pip' ভিত্তিক মুভমেন্টের জন্য সম্পূর্ণ নতুন ফাংশন
 function updateCandlePrice(marketData, candle) {
-  const volatility = 0.00015;
-  let move = (Math.random() - 0.495) * (candle.open * volatility);
-  
-  // Mean reversion
-  const meanReversionForce = (candle.open - marketData.currentPrice) * 0.01;
-  move += meanReversionForce;
+  const maxPipMovePerTick = 2.5; // 🔥 প্রতি টিকে সর্বোচ্চ কত পিপ মুভ করতে পারে (টিউন করতে পারেন)
+  const biasStrength = 1.5;      // 🔥 ট্রেন্ডের প্রভাব কতটা শক্তিশালী হবে (টিউন করতে পারেন)
 
-  marketData.currentPrice += move;
+  // ট্রেন্ড বায়াসকে খুব ধীরে ধীরে র‍্যান্ডমভাবে পরিবর্তন করুন
+  marketData.trendBias += (Math.random() - 0.5) * 0.1; 
+  marketData.trendBias = Math.max(-1, Math.min(1, marketData.trendBias)); // বায়াসকে -1 এবং +1 এর মধ্যে সীমাবদ্ধ রাখুন
+
+  // একটি র‍্যান্ডম পিপ মুভমেন্ট তৈরি করুন
+  let pipChange = (Math.random() * 2 - 1) * maxPipMovePerTick; 
+  
+  // র‍্যান্ডম মুভমেন্টের সাথে ট্রেন্ড বায়াস যোগ করুন
+  pipChange += marketData.trendBias * biasStrength;
+
+  // চূড়ান্ত মুভমেন্টকে পূর্ণ পিপ সংখ্যায় পরিণত করুন (যেমন ১, -২, ০ পিপ)
+  const finalPipMove = Math.round(pipChange);
+
+  // দাম পরিবর্তন করুন
+  if (finalPipMove !== 0) {
+    marketData.currentPrice += (finalPipMove * PIP_SIZE);
+  }
+
+  // ক্যান্ডেলের বাকি ডেটা আপডেট করুন
   candle.close = roundPrice(marketData.currentPrice);
   candle.high = roundPrice(Math.max(candle.high, candle.close));
   candle.low = roundPrice(Math.min(candle.low, candle.close));
 }
 
-// 🔥 ফায়ারবেস আপডেট
 async function mirrorLivePriceToFirebase(marketData, candle) {
   try {
     await db.ref(`markets/${marketData.marketPath}/live`).set({
@@ -147,7 +162,6 @@ async function mirrorLivePriceToFirebase(marketData, candle) {
   } catch (err) {}
 }
 
-// 🔥 ব্যান্ডউইথ সেভার
 function broadcastCandle(marketId, candle) {
   const payload = JSON.stringify({ market: marketId, candle, serverTime: Date.now() });
   wss.clients.forEach((client) => {
@@ -157,7 +171,6 @@ function broadcastCandle(marketId, candle) {
   });
 }
 
-// Admin / Market লিসেনার
 db.ref('admin/markets').on('value', (snapshot) => {
   const fbMarkets = snapshot.val() || {};
   Object.keys(fbMarkets).forEach((id) => {
@@ -179,8 +192,6 @@ wss.on('connection', (ws) => {
     });
 });
 
-
-// 🔥 MAIN LOOP
 setInterval(() => {
   const now = Date.now();
   const currentPeriod = Math.floor(now / TIMEFRAME) * TIMEFRAME;
@@ -190,25 +201,16 @@ setInterval(() => {
     let candle = ensureCurrentPeriodCandle(marketData, currentPeriod);
     if (!candle) continue;
 
-    // 🔥 বাস্তবসম্মত মুভমেন্টের জন্য নতুন লজিক
     if (marketData.ticksUntilNextMove > 0) {
-      // যদি কাউন্টার ০ এর বেশি থাকে, তাহলে দাম পরিবর্তন না করে শুধু কাউন্টার কমানো হবে
       marketData.ticksUntilNextMove--;
     } else {
-      // যদি কাউন্টার ০ হয়, তাহলে দাম আপডেট করা হবে
       updateCandlePrice(marketData, candle);
-      
-      // এবং পরবর্তী মুভমেন্টের জন্য একটি র‍্যান্ডম সময় (কত টিক পর মুভ করবে) সেট করা হবে
-      // Math.random() * 3 মানে হলো ০, ১, বা ২ টিক পর্যন্ত দাম স্থির থাকতে পারে।
-      // এই সংখ্যাটি পরিবর্তন করে আপনি মুভমেন্টের ধরণ কন্ট্রোল করতে পারবেন।
       marketData.ticksUntilNextMove = Math.floor(Math.random() * 3); 
     }
     
-    // ব্রডকাস্ট সব সময় হবে, যাতে ক্লায়েন্ট বর্তমান (স্থির অথবা নতুন) দাম পায়
     broadcastCandle(marketId, candle);
   }
   
-  // ফায়ারবেসে ব্যাকআপ (প্রতি ১ মিনিটে একবার)
   if (now % FIREBASE_BACKUP_INTERVAL < TICK_MS) {
       for (const marketId in markets) {
           const marketData = markets[marketId];
@@ -220,20 +222,17 @@ setInterval(() => {
 
 }, TICK_MS);
 
-
-// API routes
 app.get('/api/history/:market', (req, res) => {
   const marketData = markets[req.params.market];
   if (!marketData) return res.status(404).json([]);
   res.json(marketData.history.map(cloneCandle));
 });
 
-// 🔥 CRITICAL FIX: Cron Job এর জন্য এই রুটটি যোগ করা হলো
 app.get('/ping', (_req, res) => {
-  res.send('UltraSmooth V17-Realistic-Movement active');
+  res.send('Pip-Movement V18 active');
 });
 
 const PORT = process.env.PORT || 3000;
-server.listen(PORT, () => console.log(`Server v17-Realistic-Movement active on ${PORT}`));
+server.listen(PORT, () => console.log(`Server v18-Pip-Movement active on ${PORT}`));
 
 // --- END: FULLY UPDATED server.js ---
