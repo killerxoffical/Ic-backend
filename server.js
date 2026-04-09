@@ -1,4 +1,4 @@
-// --- START: server.js (v21 - Full Admin Control Integration) ---
+// --- START: server.js (Fixed Admin Control Integration) ---
 
 const express = require('express');
 const http = require('http');
@@ -40,7 +40,6 @@ function roundPrice(v) { return parseFloat(Math.max(MIN_PRICE, v).toFixed(5)); }
 function marketPathFromId(marketId) { return String(marketId || '').replace(/[\.\/ ]/g, '-').toLowerCase(); }
 
 // --- Admin Control Listener ---
-// This continuously listens for admin commands from Firebase
 db.ref('admin/markets').on('value', (snapshot) => {
     const fbMarkets = snapshot.val() || {};
     Object.keys(fbMarkets).forEach(marketId => {
@@ -51,6 +50,20 @@ db.ref('admin/markets').on('value', (snapshot) => {
         }
     });
 });
+
+// Helper: Check if admin set a specific color for the current timeframe
+function getAdminTargetColor(marketId, currentPeriod) {
+    const adminPattern = adminPatterns[marketId];
+    if (adminPattern && adminPattern.isActive && currentPeriod >= adminPattern.startTime) {
+        // pattern config timeframe defaults to 60 seconds (60000 ms)
+        const tfMs = (adminPattern.timeframe * 1000) || 60000;
+        const patternIndex = Math.floor((currentPeriod - adminPattern.startTime) / tfMs);
+        if (patternIndex >= 0 && patternIndex < adminPattern.pattern.length) {
+            return adminPattern.pattern[patternIndex]; // 'GREEN' or 'RED'
+        }
+    }
+    return null;
+}
 
 // Candle Generation Logic
 function generateHistoricalCandle(timestamp, open) {
@@ -68,28 +81,6 @@ function generateHistoricalCandle(timestamp, open) {
     low: roundPrice(Math.min(safeOpen, close) - lowerWick),
     close: roundPrice(close)
   };
-}
-
-// Admin-Controlled Candle Generation
-function generateAdminCandle(timestamp, open, adminColor) {
-    const bodySize = open * (0.0001 + Math.random() * 0.0001); // Standard body size
-    const upperWick = open * (Math.random() * 0.00008);
-    const lowerWick = open * (Math.random() * 0.00008);
-
-    let close;
-    if (adminColor === 'GREEN') {
-        close = open + bodySize;
-    } else { // RED
-        close = open - bodySize;
-    }
-    
-    return {
-        timestamp,
-        open: roundPrice(open),
-        high: roundPrice(Math.max(open, close) + upperWick),
-        low: roundPrice(Math.min(open, close) - lowerWick),
-        close: roundPrice(close)
-    };
 }
 
 async function initializeNewMarket(marketId) {
@@ -120,29 +111,17 @@ async function initializeNewMarket(marketId) {
   };
 }
 
-// 🔥 Core Function: Checks for admin command before creating a new candle
 function ensureCurrentPeriodCandle(marketData, currentPeriod) {
   let lastCandle = marketData.history[marketData.history.length - 1];
   if (!lastCandle) return null;
 
   if (currentPeriod > lastCandle.timestamp) {
-    let newCandle;
-    const adminPattern = adminPatterns[marketData.marketId];
-
-    // Check if an admin pattern is active for this new candle
-    if (adminPattern && currentPeriod >= adminPattern.startTime) {
-        const patternIndex = Math.floor((currentPeriod - adminPattern.startTime) / TIMEFRAME);
-        if (patternIndex >= 0 && patternIndex < adminPattern.pattern.length) {
-            const adminColor = adminPattern.pattern[patternIndex];
-            newCandle = generateAdminCandle(currentPeriod, lastCandle.close, adminColor);
-            console.log(`[ADMIN] Market: ${marketData.marketId}, Time: ${new Date(currentPeriod).toLocaleTimeString()}, Set to: ${adminColor}`);
-        }
-    }
-    
-    // If no admin command, generate a normal historical candle
-    if (!newCandle) {
-        newCandle = generateHistoricalCandle(currentPeriod, lastCandle.close);
-    }
+    // Just create a normal starting candle, the 'updateRealisticPrice' will force the admin color
+    const newCandle = generateHistoricalCandle(currentPeriod, lastCandle.close);
+    // Overwrite close price to equal open price at the start of the minute
+    newCandle.close = newCandle.open;
+    newCandle.high = newCandle.open;
+    newCandle.low = newCandle.open;
 
     marketData.history.push(newCandle);
     if (marketData.history.length > MAX_CANDLES) marketData.history.shift();
@@ -151,8 +130,8 @@ function ensureCurrentPeriodCandle(marketData, currentPeriod) {
   return lastCandle;
 }
 
-// Realistic Tick Movement (same as before)
-function updateRealisticPrice(marketData, candle) {
+// 🔥 Core Fix: Forcing Admin Target Color 🔥
+function updateRealisticPrice(marketData, candle, targetColor) {
   if (Math.random() < 0.35) return; 
 
   const openPrice = candle.open;
@@ -165,15 +144,29 @@ function updateRealisticPrice(marketData, candle) {
   
   if (Math.random() < 0.1) finalMove *= 4;
 
-  marketData.currentPrice += finalMove;
-  marketData.lastMove = finalMove;
+  let projectedPrice = marketData.currentPrice + finalMove;
 
-  const dist = marketData.currentPrice - openPrice;
-  if (Math.abs(dist) > openPrice * 0.001) marketData.currentPrice -= finalMove * 1.5;
+  // 🟢🔴 ADMIN CONTROL ENFORCEMENT 🔴🟢
+  if (targetColor === 'GREEN') {
+      // For GREEN, price MUST stay ABOVE openPrice. 
+      // If random calculation brings it below Open, force it back up.
+      if (projectedPrice <= openPrice) {
+          projectedPrice = openPrice + (Math.random() * baseVolatility * 3);
+      }
+  } else if (targetColor === 'RED') {
+      // For RED, price MUST stay BELOW openPrice.
+      // If random calculation brings it above Open, force it back down.
+      if (projectedPrice >= openPrice) {
+          projectedPrice = openPrice - (Math.random() * baseVolatility * 3);
+      }
+  }
+
+  marketData.currentPrice = projectedPrice;
+  marketData.lastMove = projectedPrice - candle.close;
 
   candle.close = roundPrice(marketData.currentPrice);
-  candle.high = roundPrice(Math.max(candle.high, candle.close));
-  candle.low = roundPrice(Math.min(candle.low, candle.close));
+  candle.high = roundPrice(Math.max(candle.high, candle.close, candle.open));
+  candle.low = roundPrice(Math.min(candle.low, candle.close, candle.open));
 }
 
 function broadcastCandle(marketId, candle) {
@@ -235,10 +228,16 @@ setInterval(() => {
     let candle = ensureCurrentPeriodCandle(marketData, currentPeriod);
     if (!candle) continue;
 
-    updateRealisticPrice(marketData, candle);
+    // Check Admin Target Color before updating price
+    const targetColor = getAdminTargetColor(marketId, currentPeriod);
+
+    // Apply realistic update bounded by Admin constraints
+    updateRealisticPrice(marketData, candle, targetColor);
+    
     broadcastCandle(marketId, candle);
   }
 
+  // Backup to Firebase every minute
   if (currentMinute > lastSyncMinute) {
     lastSyncMinute = currentMinute;
     const batchUpdates = {};
@@ -253,13 +252,10 @@ setInterval(() => {
       }
     }
     db.ref().update(batchUpdates).catch(()=>{});
-    console.log(`[Batch Sync] ${Object.keys(markets).length} markets backed up.`);
   }
 }, TICK_MS);
 
-app.get('/ping', (_req, res) => res.send('UltraSmooth V21 - Full Admin Control Active'));
+app.get('/ping', (_req, res) => res.send('Admin Enforced Socket Server Running'));
 
 const PORT = process.env.PORT || 3000;
 server.listen(PORT, () => console.log(`Server running on ${PORT}`));
-
-// --- END OF FILE ---
