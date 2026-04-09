@@ -9,14 +9,14 @@ require('firebase/database');
 
 // Firebase Configuration
 const firebaseConfig = {
-  apiKey: "AIzaSyBspVTNDTLn2zuwwI7580vqHABrAjJl63o",
-  authDomain: "earning-xone-v1.firebaseapp.com",
-  databaseURL: "https://earning-xone-v1-default-rtdb.firebaseio.com",
-  projectId: "earning-xone-v1",
-  storageBucket: "earning-xone-v1.appspot.com",
-  messagingSenderId: "471994174185",
-  appId: "1:471994174185:web:eb45e6c24a66b40c34fe78"
-};
+            apiKey: "AIzaSyBUTMFblYIVovOe4F25XCFneJNTlVcoWCA",
+            authDomain: "ictex-trade.firebaseapp.com",
+            databaseURL: "https://ictex-trade-default-rtdb.firebaseio.com",
+            projectId: "ictex-trade",
+            storageBucket: "ictex-trade.appspot.com",
+            messagingSenderId: "755532704199",
+            appId: "1:755532704199:web:b27d7c9e7d0f4ac76291e2"
+        };
 
 if (!firebase.apps.length) firebase.initializeApp(firebaseConfig);
 const db = firebase.database();
