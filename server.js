@@ -1,4 +1,4 @@
-// --- START: server.js (Pre-calculated Target System) ---
+// --- START: server.js (Smooth Pre-Calculated Target Engine) ---
 
 const express = require('express');
 const http = require('http');
@@ -27,12 +27,12 @@ const wss = new WebSocket.Server({ server });
 
 const MAX_CANDLES = 1000;
 const TIMEFRAME = 60000;
-const TICK_MS = 300;
+const TICK_MS = 250; // Fast ticks for smoothness
 const MIN_PRICE = 0.00001;
 const HISTORY_SEED_COUNT = 300;
 
 const markets = {}; 
-const adminOverrides = {}; // Stores the next action for each market
+const adminOverrides = {}; 
 
 function roundPrice(v) { return parseFloat(Math.max(MIN_PRICE, v).toFixed(5)); }
 function marketPathFromId(marketId) { return String(marketId || '').replace(/[\.\/ ]/g, '-').toLowerCase(); }
@@ -45,55 +45,42 @@ db.ref('admin/market_overrides').on('value', (snapshot) => {
     });
 });
 
-// Pre-calculate the Target Candle based on Admin Command
-function generateTargetCandle(timestamp, openPrice, overrideCmd, prevCandle) {
-    const baseVol = openPrice * 0.00005;
+// 🔥 PRE-CALCULATE EXACT TARGET OHLC AT MINUTE START 🔥
+function generateTargetCandle(timestamp, openPrice, cmd, prevCandle) {
     let isGreen = Math.random() > 0.5;
-    let body = baseVol * (1 + Math.random() * 2);
+    let baseVol = openPrice * 0.00005;
+    
+    let prevBody = baseVol;
+    if (prevCandle) {
+        prevBody = Math.abs(prevCandle.close - prevCandle.open);
+        if (prevBody < baseVol * 0.2) prevBody = baseVol; // Prevent tiny references
+    }
+
+    let body = baseVol * (0.8 + Math.random());
     let upWick = baseVol * Math.random();
     let dnWick = baseVol * Math.random();
 
-    if (overrideCmd) {
-        const cmd = overrideCmd.type;
+    if (cmd) {
+        const type = cmd.type;
 
-        if (cmd === 'UP') {
-            isGreen = true;
+        if (type.includes('UP')) isGreen = true;
+        if (type.includes('DOWN')) isGreen = false;
+
+        // User Custom Logics: Inside, Breakout, 2X
+        if (type.includes('INSIDE')) {
+            body = prevBody * (0.3 + Math.random() * 0.3); // 30-60% of previous candle
+            upWick = baseVol * 0.2; dnWick = baseVol * 0.2;
+        } else if (type.includes('BREAKOUT')) {
+            body = prevBody * (1.2 + Math.random() * 0.4); // 120-160% of previous candle
+            upWick = baseVol * 0.5; dnWick = baseVol * 0.5;
+        } else if (type.includes('2X')) {
+            body = prevBody * (2.0 + Math.random() * 0.8); // 200-280% of previous candle
+            upWick = baseVol * 1.5; dnWick = baseVol * 1.5;
+        } else if (type === 'OPPOSITE_BREAKOUT') {
+            if (prevCandle) isGreen = prevCandle.close < prevCandle.open; // Flip color
+            body = prevBody * (1.3 + Math.random() * 0.5); // Breakout size
+        } else if (type === 'UP' || type === 'DOWN') {
             body = baseVol * (1.5 + Math.random());
-        } 
-        else if (cmd === 'DOWN') {
-            isGreen = false;
-            body = baseVol * (1.5 + Math.random());
-        } 
-        else if (cmd === 'OPPOSITE_BREAKOUT') {
-            if (prevCandle) {
-                const prevIsGreen = prevCandle.close >= prevCandle.open;
-                const prevBody = Math.abs(prevCandle.close - prevCandle.open);
-                isGreen = !prevIsGreen; // Opposite color
-                body = prevBody * (1.2 + Math.random()); // Bigger body for breakout
-                upWick = baseVol * 0.5;
-                dnWick = baseVol * 0.5;
-            } else {
-                isGreen = Math.random() > 0.5;
-                body = baseVol * 3;
-            }
-        } 
-        else if (cmd.startsWith('PATTERN_')) {
-            if (cmd === 'PATTERN_DOJI') {
-                body = baseVol * 0.1; upWick = baseVol * 3; dnWick = baseVol * 3;
-                isGreen = Math.random() > 0.5;
-            } else if (cmd === 'PATTERN_MARUBOZU_GREEN') {
-                isGreen = true; body = baseVol * 4; upWick = 0; dnWick = 0;
-            } else if (cmd === 'PATTERN_MARUBOZU_RED') {
-                isGreen = false; body = baseVol * 4; upWick = 0; dnWick = 0;
-            } else if (cmd === 'PATTERN_HAMMER') {
-                isGreen = true; body = baseVol * 1.5; upWick = 0; dnWick = baseVol * 3.5;
-            } else if (cmd === 'PATTERN_SHOOTING_STAR') {
-                isGreen = false; body = baseVol * 1.5; upWick = baseVol * 3.5; dnWick = 0;
-            } else if (cmd === 'PATTERN_BIG_PUMP') {
-                isGreen = true; body = baseVol * 6; upWick = baseVol; dnWick = baseVol;
-            } else if (cmd === 'PATTERN_BIG_DUMP') {
-                isGreen = false; body = baseVol * 6; upWick = baseVol; dnWick = baseVol;
-            }
         }
     }
 
@@ -101,7 +88,13 @@ function generateTargetCandle(timestamp, openPrice, overrideCmd, prevCandle) {
     const high = Math.max(openPrice, close) + upWick;
     const low = Math.min(openPrice, close) - dnWick;
 
-    return { timestamp, open: roundPrice(openPrice), close: roundPrice(close), high: roundPrice(high), low: roundPrice(low) };
+    return { 
+        timestamp, 
+        open: roundPrice(openPrice), 
+        close: roundPrice(close), 
+        high: roundPrice(high), 
+        low: roundPrice(low) 
+    };
 }
 
 async function initializeNewMarket(marketId) {
@@ -127,73 +120,86 @@ async function initializeNewMarket(marketId) {
         marketPath: path,
         history: candles,
         currentPrice: currentPrice,
-        targetCandle: null
+        targetCandle: null,
+        currentNoise: 0
     };
 }
 
+// Ensure the target is set at 00 seconds
 function ensureTargetCandle(marketData, currentPeriod) {
     let lastCandle = marketData.history[marketData.history.length - 1];
     
-    // If a new minute has started, calculate the target for this minute
     if (!marketData.targetCandle || marketData.targetCandle.timestamp !== currentPeriod) {
         
         let overrideCmd = null;
         if (adminOverrides[marketData.marketId]) {
             const cmd = adminOverrides[marketData.marketId];
-            // Check if command is for this specific minute
+            // Check if command is meant for this minute
             if (currentPeriod >= cmd.targetTime && currentPeriod < cmd.targetTime + 60000) {
                 overrideCmd = cmd;
-                console.log(`[ADMIN EXECUTE] Market: ${marketData.marketId}, Cmd: ${cmd.type}`);
+                console.log(`[EXECUTE] Market: ${marketData.marketId}, Cmd: ${cmd.type}`);
             }
         }
 
+        // Pre-calculate everything for the next 60 seconds
         const target = generateTargetCandle(currentPeriod, lastCandle.close, overrideCmd, lastCandle);
         marketData.targetCandle = target;
+        marketData.currentNoise = 0; // Reset noise
         
-        // Push the initial state of the new candle
+        // Push the starting state of the new candle
         const newCandle = { timestamp: currentPeriod, open: target.open, high: target.open, low: target.open, close: target.open };
         marketData.history.push(newCandle);
         if (marketData.history.length > MAX_CANDLES) marketData.history.shift();
         
         marketData.currentPrice = target.open;
     }
-    return marketData.history[marketData.history.length - 1];
 }
 
-// 🔥 Smooth Interpolation (No forcing, just gliding to the target)
+// 🔥 TIME-BASED SMOOTH INTERPOLATION (NO LAST-SECOND JUMPS) 🔥
 function updatePriceSmoothly(marketData, currentPeriod) {
     const target = marketData.targetCandle;
     if (!target) return;
 
+    const liveCandle = marketData.history[marketData.history.length - 1];
     const timeElapsed = Date.now() - currentPeriod;
-    const progress = Math.min(timeElapsed / TIMEFRAME, 1.0); // 0.0 to 1.0
+    const progress = Math.min(timeElapsed / 60000, 1.0); // 0.0 to 1.0
 
-    // Where the price "should" be based on time
-    const expectedPrice = target.open + ((target.close - target.open) * progress);
+    // Linear path from open to close based exactly on time
+    const expectedBasePath = target.open + ((target.close - target.open) * progress);
     
-    // Add random noise that gets smaller as time runs out
-    const noiseAllowed = (1 - progress) * (target.open * 0.0001);
-    const noise = (Math.random() - 0.5) * noiseAllowed;
+    // Add random noise (ticks) that shrinks to 0 as time runs out
+    const noiseMaxAllowed = (target.open * 0.00015) * (1 - progress); 
+    let tickDelta = (Math.random() - 0.5) * noiseMaxAllowed * 0.3;
+    
+    marketData.currentNoise += tickDelta;
 
-    let newPrice = expectedPrice + noise;
+    // Constrain noise
+    if (Math.abs(marketData.currentNoise) > noiseMaxAllowed) {
+        marketData.currentNoise *= 0.5;
+    }
 
-    // In the last 2 seconds, snap exactly to the target close to ensure accuracy
-    if (progress > 0.97) {
+    // Randomly spike to draw the high/low wicks during mid-minute
+    if (progress > 0.1 && progress < 0.8 && Math.random() < 0.05) {
+        if (Math.random() > 0.5) {
+            marketData.currentNoise = (target.high - expectedBasePath) * Math.random();
+        } else {
+            marketData.currentNoise = (target.low - expectedBasePath) * Math.random();
+        }
+    }
+
+    let newPrice = expectedBasePath + marketData.currentNoise;
+
+    // 🛡️ HARD LOCK AT 58 SECONDS (Glides perfectly, no jumps)
+    if (progress >= 0.97) {
         newPrice = target.close;
     }
 
     marketData.currentPrice = newPrice;
 
-    // Update the live candle
-    const liveCandle = marketData.history[marketData.history.length - 1];
+    // Update live candle
     liveCandle.close = roundPrice(newPrice);
-    
-    // Expand high/low naturally based on the target wicks
-    const expectedHigh = target.open + ((target.high - target.open) * progress);
-    const expectedLow = target.open + ((target.low - target.open) * progress);
-    
-    liveCandle.high = roundPrice(Math.max(liveCandle.high, liveCandle.close, expectedHigh));
-    liveCandle.low = roundPrice(Math.min(liveCandle.low, liveCandle.close, expectedLow));
+    liveCandle.high = roundPrice(Math.max(liveCandle.high, liveCandle.close, target.open));
+    liveCandle.low = roundPrice(Math.min(liveCandle.low, liveCandle.close, target.open));
 }
 
 function broadcastCandle(marketId, candle) {
@@ -230,15 +236,6 @@ wss.on('connection', (ws) => {
     });
 });
 
-app.get('/api/history/:marketId', (req, res) => {
-    const marketId = req.params.marketId;
-    if (markets[marketId] && markets[marketId].history) {
-        res.json(markets[marketId].history);
-    } else {
-        res.status(404).json({ error: 'Market not found' });
-    }
-});
-
 let lastSyncMinute = 0;
 setInterval(() => {
     const now = Date.now();
@@ -252,6 +249,7 @@ setInterval(() => {
         broadcastCandle(marketId, marketData.history[marketData.history.length - 1]);
     }
 
+    // Save to Firebase
     if (currentMinute > lastSyncMinute) {
         lastSyncMinute = currentMinute;
         const batchUpdates = {};
@@ -266,7 +264,6 @@ setInterval(() => {
     }
 }, TICK_MS);
 
-app.get('/ping', (_req, res) => res.send('Interpolation Engine V1 Running'));
-
+app.get('/ping', (_req, res) => res.send('Smooth Pre-Calculated Engine V3 Running'));
 const PORT = process.env.PORT || 3000;
 server.listen(PORT, () => console.log(`Server running on ${PORT}`));
