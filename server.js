@@ -1,4 +1,4 @@
-// --- START: server.js (Fixed Admin Control Integration) ---
+// --- START: server.js (100% Fixed Admin Control Integration) ---
 
 const express = require('express');
 const http = require('http');
@@ -55,7 +55,6 @@ db.ref('admin/markets').on('value', (snapshot) => {
 function getAdminTargetColor(marketId, currentPeriod) {
     const adminPattern = adminPatterns[marketId];
     if (adminPattern && adminPattern.isActive && currentPeriod >= adminPattern.startTime) {
-        // pattern config timeframe defaults to 60 seconds (60000 ms)
         const tfMs = (adminPattern.timeframe * 1000) || 60000;
         const patternIndex = Math.floor((currentPeriod - adminPattern.startTime) / tfMs);
         if (patternIndex >= 0 && patternIndex < adminPattern.pattern.length) {
@@ -116,23 +115,25 @@ function ensureCurrentPeriodCandle(marketData, currentPeriod) {
   if (!lastCandle) return null;
 
   if (currentPeriod > lastCandle.timestamp) {
-    // Just create a normal starting candle, the 'updateRealisticPrice' will force the admin color
+    // Generate new candle for the new minute
     const newCandle = generateHistoricalCandle(currentPeriod, lastCandle.close);
-    // Overwrite close price to equal open price at the start of the minute
     newCandle.close = newCandle.open;
     newCandle.high = newCandle.open;
     newCandle.low = newCandle.open;
 
     marketData.history.push(newCandle);
     if (marketData.history.length > MAX_CANDLES) marketData.history.shift();
+    
+    // Update internal price tracker to match the new open price
+    marketData.currentPrice = newCandle.open;
     return newCandle;
   }
   return lastCandle;
 }
 
-// 🔥 Core Fix: Forcing Admin Target Color 🔥
+// 🔥 100% BULLETPROOF ADMIN ENFORCEMENT 🔥
 function updateRealisticPrice(marketData, candle, targetColor) {
-  if (Math.random() < 0.35) return; 
+  if (Math.random() < 0.25) return; // Add realism by skipping some ticks
 
   const openPrice = candle.open;
   const baseVolatility = openPrice * 0.00005;
@@ -142,25 +143,29 @@ function updateRealisticPrice(marketData, candle, targetColor) {
   let jitter = (Math.random() - 0.5) * (baseVolatility * 0.2);
   let finalMove = impulse + recoil + jitter;
   
-  if (Math.random() < 0.1) finalMove *= 4;
+  if (Math.random() < 0.1) finalMove *= 3;
 
   let projectedPrice = marketData.currentPrice + finalMove;
 
-  // 🟢🔴 ADMIN CONTROL ENFORCEMENT 🔴🟢
+  // 🔴🟢 ADMIN CONTROL STRICT RULES 🔴🟢
   if (targetColor === 'GREEN') {
-      // For GREEN, price MUST stay ABOVE openPrice. 
-      // If random calculation brings it below Open, force it back up.
-      if (projectedPrice <= openPrice) {
-          projectedPrice = openPrice + (Math.random() * baseVolatility * 3);
+      // MIN_SAFE_GAP ensures that even after toFixed(5) rounding, price NEVER equals open
+      const MIN_SAFE_GAP = openPrice * 0.00005; 
+      
+      // If random calculation tries to pull the price down or make it equal to open, FORCE IT UP
+      if (projectedPrice <= openPrice + MIN_SAFE_GAP) {
+          projectedPrice = openPrice + MIN_SAFE_GAP + (Math.random() * baseVolatility * 2);
       }
   } else if (targetColor === 'RED') {
-      // For RED, price MUST stay BELOW openPrice.
-      // If random calculation brings it above Open, force it back down.
-      if (projectedPrice >= openPrice) {
-          projectedPrice = openPrice - (Math.random() * baseVolatility * 3);
+      const MIN_SAFE_GAP = openPrice * 0.00005; 
+      
+      // If random calculation tries to push the price up or make it equal to open, FORCE IT DOWN
+      if (projectedPrice >= openPrice - MIN_SAFE_GAP) {
+          projectedPrice = openPrice - MIN_SAFE_GAP - (Math.random() * baseVolatility * 2);
       }
   }
 
+  // Apply the final enforced price
   marketData.currentPrice = projectedPrice;
   marketData.lastMove = projectedPrice - candle.close;
 
@@ -183,7 +188,6 @@ db.ref('admin/markets').on('value', (snapshot) => {
   const fbMarkets = snapshot.val() || {};
   Object.keys(fbMarkets).forEach((marketId) => {
     const type = fbMarkets[marketId]?.type;
-    // Only initialize controllable markets
     if ((type === 'otc' || type === 'broker_real') && !markets[marketId]) {
       initializeNewMarket(marketId);
     }
@@ -196,7 +200,6 @@ wss.on('connection', (ws) => {
       const msg = JSON.parse(raw.toString());
       if (msg?.type === 'subscribe') {
         ws.subscribedMarket = msg.market;
-        // Send history on subscribe
         if (markets[msg.market]) {
             const historyPayload = { type: 'history', market: msg.market, candles: markets[msg.market].history.slice(-300) };
             ws.send(JSON.stringify(historyPayload));
@@ -231,7 +234,7 @@ setInterval(() => {
     // Check Admin Target Color before updating price
     const targetColor = getAdminTargetColor(marketId, currentPeriod);
 
-    // Apply realistic update bounded by Admin constraints
+    // Apply strict realistic update bounded by Admin constraints
     updateRealisticPrice(marketData, candle, targetColor);
     
     broadcastCandle(marketId, candle);
@@ -255,7 +258,9 @@ setInterval(() => {
   }
 }, TICK_MS);
 
-app.get('/ping', (_req, res) => res.send('Admin Enforced Socket Server Running'));
+app.get('/ping', (_req, res) => res.send('Admin Strict Enforced Socket Server Running'));
 
 const PORT = process.env.PORT || 3000;
 server.listen(PORT, () => console.log(`Server running on ${PORT}`));
+
+// --- END OF FILE ---
