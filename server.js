@@ -1,4 +1,4 @@
-// --- START: server.js (Pattern Engine & Perfect Timing V8) ---
+// --- START: server.js (WebSocket Chart & Perfect Timing V9) ---
 
 const express = require('express');
 const http = require('http');
@@ -88,6 +88,19 @@ function generateTargetPattern(timestamp, openPrice, action) {
         else if (action === 'PATTERN_LONG_LEGGED_DOJI') {
             isGreen = Math.random() > 0.5; body = baseVol * 0.1; upWick = baseVol * 4.0; dnWick = baseVol * 4.0;
         }
+        // ADVANCED MATH COMMANDS
+        else if (action.includes('UP_INSIDE') || action.includes('DOWN_INSIDE')) {
+            isGreen = action.includes('UP'); body = baseVol * 0.5; upWick = baseVol * 0.2; dnWick = baseVol * 0.2;
+        }
+        else if (action.includes('UP_BREAKOUT') || action.includes('DOWN_BREAKOUT')) {
+            isGreen = action.includes('UP'); body = baseVol * 1.5; upWick = baseVol * 0.3; dnWick = baseVol * 0.3;
+        }
+        else if (action.includes('UP_2X') || action.includes('DOWN_2X')) {
+            isGreen = action.includes('UP'); body = baseVol * 2.5; upWick = baseVol * 0.5; dnWick = baseVol * 0.5;
+        }
+        else if (action === 'OPPOSITE_BREAKOUT') {
+            isGreen = Math.random() > 0.5; body = baseVol * 1.5; // Will flip based on previous in ensureTargetCandle
+        }
     }
 
     const close = isGreen ? openPrice + body : openPrice - body;
@@ -131,31 +144,25 @@ async function initializeNewMarket(marketId) {
 function ensureTargetCandle(marketData, currentPeriod) {
     let lastCandle = marketData.history[marketData.history.length - 1];
     
-    // Check if the previous minute just ended, and if there was an active command to finalize
+    // Check if the previous minute just ended to save history
     if (marketData.targetCandle && marketData.targetCandle.timestamp !== currentPeriod) {
         if (marketData.activeCommand) {
             const cmd = marketData.activeCommand;
-            // CANDLE HAS FINISHED -> SAVE RESULTS TO HISTORY!
             db.ref(`admin/commands/${cmd.id}`).update({
                 status: 'Executed',
                 analytics: {
                     resultCandle: { 
-                        open: lastCandle.open, 
-                        high: lastCandle.high, 
-                        low: lastCandle.low, 
-                        close: lastCandle.close, 
+                        open: lastCandle.open, high: lastCandle.high, low: lastCandle.low, close: lastCandle.close, 
                         color: lastCandle.close >= lastCandle.open ? 'GREEN' : 'RED',
                         pattern: marketData.targetCandle.pattern
                     },
                     executedAt: Date.now()
                 }
             });
-            console.log(`[EXECUTED] Command ${cmd.action} finished and saved.`);
             marketData.activeCommand = null;
         }
     }
 
-    // When a NEW minute starts
     if (!marketData.targetCandle || marketData.targetCandle.timestamp !== currentPeriod) {
         
         let activeCmd = null;
@@ -167,7 +174,20 @@ function ensureTargetCandle(marketData, currentPeriod) {
             }
         }
 
-        const target = generateTargetPattern(currentPeriod, lastCandle.close, activeCmd?.action);
+        let target = generateTargetPattern(currentPeriod, lastCandle.close, activeCmd?.action);
+        
+        // Opposite breakout logic correction
+        if (activeCmd && activeCmd.action === 'OPPOSITE_BREAKOUT') {
+            const prevWasGreen = lastCandle.close >= lastCandle.open;
+            const prevBody = Math.abs(lastCandle.close - lastCandle.open);
+            const isGreen = !prevWasGreen;
+            const body = prevBody * (1.3 + Math.random() * 0.5);
+            const close = isGreen ? target.open + body : target.open - body;
+            target.close = roundPrice(close);
+            target.high = roundPrice(Math.max(target.open, close) + (body * 0.3));
+            target.low = roundPrice(Math.min(target.open, close) - (body * 0.3));
+            target.color = isGreen ? 'GREEN' : 'RED';
+        }
         
         marketData.targetCandle = target;
         marketData.currentNoise = 0; 
@@ -175,7 +195,6 @@ function ensureTargetCandle(marketData, currentPeriod) {
         marketData.hitLow = false;
         marketData.activeCommand = activeCmd;
         
-        // Update database to show it's currently running
         if (activeCmd) {
             db.ref(`admin/commands/${activeCmd.id}`).update({ status: 'Running' });
         }
@@ -208,21 +227,12 @@ function updatePriceSmoothly(marketData, currentPeriod) {
 
     let newPrice = expectedBasePath + marketData.currentNoise;
 
-    // 🔥 FORCE THE WICKS TO BE DRAWN DURING THE CANDLE LIFETIME 🔥
     if (progress > 0.2 && progress < 0.8) {
-        if (!marketData.hitHigh && Math.random() < 0.05) {
-            newPrice = target.high;
-            marketData.hitHigh = true;
-        } else if (!marketData.hitLow && Math.random() < 0.05) {
-            newPrice = target.low;
-            marketData.hitLow = true;
-        }
+        if (!marketData.hitHigh && Math.random() < 0.05) { newPrice = target.high; marketData.hitHigh = true; } 
+        else if (!marketData.hitLow && Math.random() < 0.05) { newPrice = target.low; marketData.hitLow = true; }
     }
 
-    // Hard lock at the last 2 seconds
-    if (progress >= 0.98) {
-        newPrice = target.close;
-    }
+    if (progress >= 0.98) { newPrice = target.close; }
 
     marketData.currentPrice = newPrice;
 
@@ -278,6 +288,7 @@ setInterval(() => {
         broadcastCandle(marketId, marketData.history[marketData.history.length - 1]);
     }
 
+    // ONLY SAVE LIVE PRICE FOR BACKUP (NO HEAVY CANDLE STORAGE)
     if (currentMinute > lastSyncMinute) {
         lastSyncMinute = currentMinute;
         const batchUpdates = {};
@@ -292,6 +303,6 @@ setInterval(() => {
     }
 }, TICK_MS);
 
-app.get('/ping', (_req, res) => res.send('Premium Pattern Engine V8 Running'));
+app.get('/ping', (_req, res) => res.send('No-Storage WebSocket Engine V9 Running'));
 const PORT = process.env.PORT || 3000;
 server.listen(PORT, () => console.log(`Server running on ${PORT}`));
