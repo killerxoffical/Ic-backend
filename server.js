@@ -52,7 +52,7 @@ function safeGetClose(marketData) {
 }
 
 function generateCandle(timestamp, openPrice, forcedColor = null) {
-    if (isNaN(openPrice)) openPrice = 1.25000; // Failsafe
+    if (isNaN(openPrice)) openPrice = 1.25000;
     const baseVol = openPrice * 0.00006;
     const bodySize = baseVol * (0.5 + Math.random());
     
@@ -101,7 +101,7 @@ async function initializeNewMarket(marketId) {
     
     markets[marketId] = {
         marketId, marketPath: path, history: candles, 
-        futureQueue: futureQueue, liveCandle: null, // Null to force initialization on first tick
+        futureQueue: futureQueue, liveCandle: null,
         mode: 'AUTO', manualCandlesLeft: 0, manualCooldownUntil: 0, noise: 0
     };
     console.log(`Initialized Market: ${marketId}`);
@@ -130,7 +130,7 @@ function applyAutoBotLogic(market) {
 }
 
 function processMarketTick(marketData, currentPeriod) {
-    if (!marketData || !marketData.futureQueue) return;
+    if (!marketData || !marketData.futureQueue || marketData.futureQueue.length === 0) return;
 
     const now = Date.now();
     
@@ -141,8 +141,11 @@ function processMarketTick(marketData, currentPeriod) {
         }
 
         let targetCandle = marketData.futureQueue.shift();
-        if (!targetCandle) targetCandle = generateCandle(currentPeriod, safeGetClose(marketData)); // Failsafe
-
+        
+        // This is the failsafe for the black screen issue
+        if (!targetCandle) {
+            targetCandle = generateCandle(currentPeriod, safeGetClose(marketData));
+        }
         targetCandle.timestamp = currentPeriod;
         
         marketData.liveCandle = { 
@@ -187,7 +190,6 @@ function processMarketTick(marketData, currentPeriod) {
     }
     if (progress >= 0.97) newPrice = live.targetClose; 
 
-    // Prevent NaN
     if (isNaN(newPrice)) newPrice = live.open;
 
     live.close = roundPrice(newPrice);
@@ -234,13 +236,17 @@ db.ref('admin/manual_override').on('child_added', (snapshot) => {
             let tempStart = safeGetClose(market);
             let currentPeriod = Math.floor(now / TIMEFRAME) * TIMEFRAME;
             
+            // Build the future queue based on admin directions
+            let newFutureQueue = [];
             for(let i=0; i<6; i++) {
                 let forceColor = data.directions[i] === 'UP' ? 'GREEN' : 'RED';
-                market.futureQueue[i] = generateCandle(currentPeriod + ((i+1)*TIMEFRAME), tempStart, forceColor);
-                tempStart = market.futureQueue[i].close;
+                let newCandle = generateCandle(currentPeriod + ((i+1)*TIMEFRAME), tempStart, forceColor);
+                newFutureQueue.push(newCandle);
+                tempStart = newCandle.close;
             }
+            market.futureQueue = newFutureQueue;
 
-            db.ref(`admin/manual_status/${data.marketId}`).update({ 
+            db.ref(`admin/manual_status/${data.marketId}`).set({ 
                 status: 'MANUAL', cooldownUntil: lockTime 
             });
         }
@@ -300,6 +306,6 @@ setInterval(() => {
     }
 }, TICK_MS);
 
-app.get('/ping', (_req, res) => res.send('Admin Server V3.1 Running (Crash Fixed)'));
+app.get('/ping', (_req, res) => res.send('Admin Server V3.2 Running (Crash Fixed)'));
 const PORT = process.env.PORT || 3000;
 server.listen(PORT, () => console.log(`Server running on ${PORT}`));
