@@ -6,6 +6,7 @@ const cors = require('cors');
 const firebase = require('firebase/app');
 require('firebase/database');
 
+// Firebase Config
 const firebaseConfig = {
     apiKey: "AIzaSyBUTMFblYIVovOe4F25XCFneJNTlVcoWCA",
     authDomain: "ictex-trade.firebaseapp.com",
@@ -21,8 +22,9 @@ app.use(cors());
 const server = http.createServer(app);
 const wss = new WebSocket.Server({ server });
 
+// Settings
 const TIMEFRAME = 60000; 
-const TICK_MS = 300; // Send updates frequently for smooth chart
+const TICK_MS = 300; // Faster updates for smoother chart
 const MAX_HISTORY = 300;
 
 const markets = {}; 
@@ -30,17 +32,21 @@ const adminSignals = {};
 
 function roundPrice(v) { return parseFloat(v.toFixed(5)); }
 
+// Listen for available markets
 db.ref('admin/markets').on('value', (snapshot) => {
     const fbMarkets = snapshot.val() || {};
     Object.keys(fbMarkets).forEach((marketId) => {
         if (fbMarkets[marketId].status === 'active' && !markets[marketId]) {
+            console.log(`[+] Initializing Market: ${marketId}`);
             initializeNewMarket(marketId);
         }
     });
 });
 
+// Listen for admin commands
 db.ref('admin/market_signals').on('value', (snapshot) => {
-    Object.assign(adminSignals, snapshot.val() || {});
+    const signals = snapshot.val() || {};
+    Object.assign(adminSignals, signals); // Copy signals to local memory
 });
 
 function initializeNewMarket(marketId) {
@@ -65,7 +71,7 @@ function buildCandle(timestamp, open, direction) {
         close = open + bodySize;
         high = close + (volatility * Math.random() * 0.5);
         low = open - (volatility * Math.random() * 0.3);
-    } else {
+    } else { // DOWN
         close = open - bodySize;
         high = open + (volatility * Math.random() * 0.3);
         low = close - (volatility * Math.random() * 0.5);
@@ -73,14 +79,14 @@ function buildCandle(timestamp, open, direction) {
     return { timestamp, open: roundPrice(open), high: roundPrice(high), low: roundPrice(low), close: roundPrice(close) };
 }
 
-// Main processing loop
+// Main loop to process all markets
 setInterval(() => {
     const now = Date.now();
     const currentPeriod = Math.floor(now / TIMEFRAME) * TIMEFRAME;
 
     for (const marketId in markets) {
         const m = markets[marketId];
-        let lastCandle = m.history[m.history.length - 1];
+        let lastCandle = m.history.length > 0 ? m.history[m.history.length - 1] : null;
 
         // Time to create a new, finalized candle
         if (!lastCandle || currentPeriod > lastCandle.timestamp) {
@@ -88,28 +94,30 @@ setInterval(() => {
             let direction = Math.random() > 0.5 ? 'UP' : 'DOWN';
 
             if (signal && (signal.type === 'UP' || signal.type === 'DOWN')) {
-                console.log(`[ADMIN] Executing ${signal.type} for ${marketId}`);
+                console.log(`✅ [ADMIN] Executing ${signal.type} for ${marketId}`);
                 direction = signal.type;
+                // Delete command after use
                 db.ref(`admin/market_signals/${marketId}`).remove();
                 delete adminSignals[marketId];
             }
             
-            const newCandle = buildCandle(currentPeriod, lastCandle.close, direction);
+            const newCandle = buildCandle(currentPeriod, lastCandle ? lastCandle.close : 1.15500, direction);
             m.history.push(newCandle);
-            if (m.history.length > MAX_HISTORY) m.history.shift();
+            if (m.history.length > MAX_HISTORY + 10) {
+                m.history.shift(); // Keep history from growing too big
+            }
             lastCandle = newCandle;
         }
 
-        // Live tick simulation
+        // --- Live Tick Simulation ---
         const timeIntoCandle = now - lastCandle.timestamp;
         const progress = Math.min(timeIntoCandle / TIMEFRAME, 1);
         
-        // Move current price towards the final close price over 1 minute
         let livePrice = lastCandle.open + (lastCandle.close - lastCandle.open) * progress;
-        livePrice += (Math.random() - 0.5) * (lastCandle.open * 0.00005); // Add jitter
+        livePrice += (Math.random() - 0.5) * (lastCandle.open * 0.00005); // Add jitter/noise
         m.currentPrice = roundPrice(livePrice);
 
-        // Update the live candle object for broadcasting
+        // This is the data that will be sent to the client
         const liveCandleData = {
             timestamp: lastCandle.timestamp,
             open: lastCandle.open,
@@ -128,15 +136,26 @@ setInterval(() => {
     }
 }, TICK_MS);
 
-// API to serve initial history
+// API endpoint for clients to get initial candle history
 app.get('/api/history/:marketId', (req, res) => {
     const marketId = req.params.marketId;
     if (markets[marketId]) {
         res.json(markets[marketId].history);
     } else {
-        res.status(404).json({ error: 'Market not found' });
+        res.status(404).json({ error: 'Market not found or not initialized yet' });
     }
 });
 
+wss.on('connection', (ws) => {
+    ws.on('message', (raw) => {
+        try {
+            const msg = JSON.parse(raw.toString());
+            if (msg.type === 'subscribe') {
+                ws.subscribedMarket = msg.market;
+            }
+        } catch (_) {}
+    });
+});
+
 const PORT = process.env.PORT || 3000;
-server.listen(PORT, () => console.log(`🚀 TradingView-Compatible Server running on port ${PORT}`));
+server.listen(PORT, () => console.log(`🚀 TradingView-Ready Server running on port ${PORT}`));
