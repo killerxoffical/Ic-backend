@@ -23,97 +23,112 @@ app.use(cors());
 const server = http.createServer(app);
 const wss = new WebSocket.Server({ server });
 
-const MAX_CANDLES = 300; // Keep only 300 candles in Server RAM (NO FIREBASE STORAGE)
-const TIMEFRAME = 60000; // 1 minute
-const TICK_MS = 250;
+const MAX_CANDLES = 300; 
+const TIMEFRAME = 60000; 
+const TICK_MS = 200;
 const MIN_PRICE = 0.00001;
 
 const markets = {}; 
 let adminCommands = {}; 
+let activeTradesData = {}; // Store active trades to calculate UP/DOWN volume
 
 function roundPrice(v) { return parseFloat(Math.max(MIN_PRICE, v).toFixed(5)); }
 function marketPathFromId(marketId) { return String(marketId || '').replace(/[\.\/ ]/g, '-').toLowerCase(); }
 
-// Listen for Admin Commands
+// 1. Fetch Admin Commands
 db.ref('admin/commands').on('value', (snapshot) => {
     adminCommands = snapshot.val() || {};
 });
 
-// 🔥 REST API FOR CLIENT APP (NO FIREBASE STORAGE NEEDED) 🔥
-app.get('/api/history/:market', (req, res) => {
-    const marketId = req.params.market;
-    if (markets[marketId]) {
-        res.json(markets[marketId].history);
-    } else {
-        res.json([]);
-    }
+// 2. Fetch Active Trades (For Auto Logic)
+db.ref('admin/markets').on('value', (snapshot) => {
+    const data = snapshot.val() || {};
+    activeTradesData = {};
+    Object.keys(data).forEach(marketId => {
+        activeTradesData[marketId] = data[marketId].activeTrades || {};
+    });
 });
 
-// 🔥 PRECISE PATTERN GENERATOR 🔥
-function generateTargetPattern(timestamp, prevCandle, action) {
-    const openPrice = prevCandle ? prevCandle.close : 1.15000; 
-    let baseVol = openPrice * 0.00006;
-    
-    let body = baseVol * (0.5 + Math.random());
-    let upWick = baseVol * Math.random();
-    let dnWick = baseVol * Math.random();
-    let isGreen = Math.random() > 0.5;
+// API for Client App
+app.get('/api/history/:market', (req, res) => {
+    const marketId = req.params.market;
+    if (markets[marketId]) res.json(markets[marketId].history);
+    else res.json([]);
+});
 
-    if (action) {
-        if (action === 'PATTERN_MARUBOZU_GREEN') { isGreen = true; body = baseVol * 3.5; upWick = 0; dnWick = 0; } 
-        else if (action === 'PATTERN_HAMMER') { isGreen = true; body = baseVol * 0.8; upWick = baseVol * 0.2; dnWick = baseVol * 3.0; }
-        else if (action === 'PATTERN_BULLISH_SPINNING') { isGreen = true; body = baseVol * 0.8; upWick = baseVol * 2.0; dnWick = baseVol * 2.0; }
-        else if (action === 'PATTERN_DRAGONFLY_DOJI') { isGreen = true; body = baseVol * 0.02; upWick = 0; dnWick = baseVol * 3.0; }
+// 🔥 PRECISE EXACT POINT GENERATOR + AUTO LOGIC 🔥
+function generateTargetCandle(timestamp, openPrice, marketId, actionStr) {
+    let targetClose;
+    let isGreen;
+    
+    // Check if Admin gave a POINT command (e.g. "+36" or "-25")
+    if (actionStr && !isNaN(parseInt(actionStr))) {
+        const points = parseInt(actionStr);
+        const pointValue = points * 0.00001; // 1 Point = 0.00001
         
-        else if (action === 'PATTERN_MARUBOZU_RED') { isGreen = false; body = baseVol * 3.5; upWick = 0; dnWick = 0; }
-        else if (action === 'PATTERN_SHOOTING_STAR') { isGreen = false; body = baseVol * 0.8; upWick = baseVol * 3.0; dnWick = baseVol * 0.2; }
-        else if (action === 'PATTERN_BEARISH_SPINNING') { isGreen = false; body = baseVol * 0.8; upWick = baseVol * 2.0; dnWick = baseVol * 2.0; }
-        else if (action === 'PATTERN_GRAVESTONE_DOJI') { isGreen = false; body = baseVol * 0.02; upWick = baseVol * 3.0; dnWick = 0; }
+        targetClose = openPrice + pointValue;
+        isGreen = targetClose >= openPrice;
+    } 
+    // AUTO LOGIC (If no admin command)
+    else {
+        let upVolume = 0;
+        let dnVolume = 0;
         
-        else if (action === 'PATTERN_STANDARD_DOJI') { isGreen = Math.random() > 0.5; body = baseVol * 0.02; upWick = baseVol * 1.5; dnWick = baseVol * 1.5; }
-        else if (action === 'PATTERN_LONG_LEGGED_DOJI') { isGreen = Math.random() > 0.5; body = baseVol * 0.05; upWick = baseVol * 3.5; dnWick = baseVol * 3.5; }
-        
-        else if (action.includes('UP_INSIDE') || action.includes('DOWN_INSIDE')) { isGreen = action.includes('UP'); body = baseVol * 0.5; upWick = baseVol * 0.2; dnWick = baseVol * 0.2; }
-        else if (action.includes('UP_BREAKOUT') || action.includes('DOWN_BREAKOUT')) { isGreen = action.includes('UP'); body = baseVol * 1.8; upWick = baseVol * 0.3; dnWick = baseVol * 0.3; }
-        else if (action.includes('UP_2X') || action.includes('DOWN_2X')) { isGreen = action.includes('UP'); body = baseVol * 3.0; upWick = baseVol * 0.5; dnWick = baseVol * 0.5; }
-        else if (action === 'OPPOSITE_BREAKOUT') {
-            if(prevCandle) {
-                const prevWasGreen = prevCandle.close >= prevCandle.open;
-                isGreen = !prevWasGreen; body = Math.abs(prevCandle.close - prevCandle.open) * (1.3 + Math.random() * 0.4);
-                upWick = body * 0.2; dnWick = body * 0.2;
-            } else { isGreen = Math.random() > 0.5; body = baseVol * 1.5; }
+        // Calculate volume for trades expiring in this minute
+        const trades = activeTradesData[marketId] || {};
+        const expiryTime = timestamp + 60000; 
+
+        Object.values(trades).forEach(trade => {
+            // Check if trade belongs to this candle
+            if (trade.timestamp && (trade.timestamp + 60000) === expiryTime) {
+                if (trade.direction === 'UP') upVolume += parseFloat(trade.amount);
+                if (trade.direction === 'DOWN') dnVolume += parseFloat(trade.amount);
+            }
+        });
+
+        // Broker Logic: Make the majority lose
+        if (upVolume > dnVolume) {
+            isGreen = false; // Force Red
+        } else if (dnVolume > upVolume) {
+            isGreen = true; // Force Green
+        } else {
+            isGreen = Math.random() > 0.5; // Random if no trades or equal
         }
+
+        // Generate normal body size for auto mode
+        const baseVol = openPrice * 0.00006;
+        const bodySize = baseVol * (0.5 + Math.random());
+        targetClose = isGreen ? openPrice + bodySize : openPrice - bodySize;
     }
 
-    const close = isGreen ? openPrice + body : openPrice - body;
-    const high = Math.max(openPrice, close) + upWick;
-    const low = Math.min(openPrice, close) - dnWick;
+    targetClose = roundPrice(targetClose);
 
-    return { timestamp, open: roundPrice(openPrice), close: roundPrice(close), high: roundPrice(high), low: roundPrice(low), color: isGreen ? 'GREEN' : 'RED', pattern: action || 'RANDOM' };
+    // Generate Wicks (High/Low) naturally around Open and Close
+    const wickMax = Math.abs(targetClose - openPrice) * 0.5;
+    const high = roundPrice(Math.max(openPrice, targetClose) + (Math.random() * wickMax));
+    const low = roundPrice(Math.min(openPrice, targetClose) - (Math.random() * wickMax));
+
+    return { timestamp, open: roundPrice(openPrice), close: targetClose, high, low, color: isGreen ? 'GREEN' : 'RED', pattern: actionStr || 'AUTO' };
 }
 
-// Initialize Market (Starts from exact last price without storing arrays in Firebase)
+// Initialize Market (Starts from exact last price)
 async function initializeNewMarket(marketId) {
     const path = marketPathFromId(marketId);
     let startPrice = 1.15000;
     
     try {
-        // Only read ONE value from Firebase to prevent chart jumps on server restart
         const snap = await db.ref(`markets/${path}/live`).once('value');
-        if (snap.exists() && snap.val().price) {
-            startPrice = snap.val().price;
-        }
+        if (snap.exists() && snap.val().price) startPrice = snap.val().price;
     } catch (e) {}
 
     const nowPeriod = Math.floor(Date.now() / TIMEFRAME) * TIMEFRAME;
     const candles = [];
-    let currentCandle = { close: startPrice };
+    let currentOpen = startPrice;
 
-    // Generate RAM-only history for clients
-    for (let i = MAX_CANDLES; i > 0; i--) {
-        const target = generateTargetPattern(nowPeriod - (i * TIMEFRAME), currentCandle, null);
-        currentCandle = target;
+    for (let i = HISTORY_SEED_COUNT; i > 0; i--) {
+        const target = generateTargetCandle(nowPeriod - (i * TIMEFRAME), currentOpen, marketId, null);
         candles.push({ timestamp: target.timestamp, open: target.open, high: target.high, low: target.low, close: target.close });
+        currentOpen = target.close; // Next open is previous close
     }
 
     markets[marketId] = {
@@ -131,16 +146,16 @@ async function initializeNewMarket(marketId) {
 function processMarketTick(marketData, currentPeriod) {
     const now = Date.now();
     
-    // 1. MINUTE CHANGED: Finalize old candle & Setup new candle
+    // 1. MINUTE CHANGED: Setup new candle
     if (!marketData.liveCandle || marketData.liveCandle.timestamp !== currentPeriod) {
         
-        // Push finished candle to RAM history (NOT FIREBASE)
+        // Finish old candle
         if (marketData.liveCandle) {
             const finishedCandle = { ...marketData.liveCandle };
             marketData.history.push(finishedCandle);
             if (marketData.history.length > MAX_CANDLES) marketData.history.shift();
 
-            // Update Admin Command Status in Firebase (So Admin History works)
+            // Update Admin Command Status
             if (marketData.activeCommand) {
                 const cmd = marketData.activeCommand;
                 const resultColor = finishedCandle.close >= finishedCandle.open ? 'GREEN' : 'RED';
@@ -150,7 +165,7 @@ function processMarketTick(marketData, currentPeriod) {
                         resultCandle: { 
                             open: finishedCandle.open, high: finishedCandle.high, 
                             low: finishedCandle.low, close: finishedCandle.close, 
-                            color: resultColor, pattern: marketData.targetPattern.pattern 
+                            color: resultColor, points: cmd.action 
                         },
                         executedAt: Date.now()
                     }
@@ -166,57 +181,46 @@ function processMarketTick(marketData, currentPeriod) {
             nextCmd = pendingCmds[0];
             db.ref(`admin/commands/${nextCmd.id}`).update({ status: 'Running', executedAt: currentPeriod });
         }
-        
         marketData.activeCommand = nextCmd;
 
         // Generate Target for New Minute
         const prevCandle = marketData.history[marketData.history.length - 1];
-        const target = generateTargetPattern(currentPeriod, prevCandle, nextCmd?.action);
+        const openPrice = prevCandle ? prevCandle.close : 1.15000;
+        
+        const target = generateTargetCandle(currentPeriod, openPrice, marketData.marketId, nextCmd?.action);
         marketData.targetPattern = target;
 
-        // Initialize Live Candle
-        marketData.liveCandle = {
-            timestamp: currentPeriod, open: target.open, high: target.open, low: target.open, close: target.open
-        };
+        marketData.liveCandle = { timestamp: currentPeriod, open: target.open, high: target.open, low: target.open, close: target.open };
         marketData.noise = 0;
         marketData.hitHigh = false;
         marketData.hitLow = false;
     }
 
-    // 2. ANIMATE LIVE CANDLE SMOOTHLY
+    // 2. ANIMATE LIVE CANDLE
     const target = marketData.targetPattern;
     const live = marketData.liveCandle;
     const timeElapsed = now - currentPeriod;
     const progress = Math.min(timeElapsed / 60000, 1.0); 
 
     const expectedBasePath = target.open + ((target.close - target.open) * progress);
-    const noiseMax = Math.abs(target.close - target.open) * 0.15 * (1 - progress); 
+    const noiseMax = Math.abs(target.close - target.open) * 0.20 * (1 - progress); 
     
     marketData.noise += (Math.random() - 0.5) * noiseMax;
     if (Math.abs(marketData.noise) > noiseMax) marketData.noise *= 0.5;
 
     let newPrice = expectedBasePath + marketData.noise;
 
-    // Force hit High and Low inside the timeframe
-    if (progress > 0.25 && progress < 0.75) {
+    if (progress > 0.2 && progress < 0.8) {
         if (!marketData.hitHigh && Math.random() < 0.05) { newPrice = target.high; marketData.hitHigh = true; } 
         else if (!marketData.hitLow && Math.random() < 0.05) { newPrice = target.low; marketData.hitLow = true; }
     }
 
-    // Snap to exact close price at the end (Last 2 seconds)
+    // Exact SNAP at the end of the minute
     if (progress >= 0.96) newPrice = target.close;
 
     live.close = roundPrice(newPrice);
     live.high = roundPrice(Math.max(live.high, live.close, newPrice));
     live.low = roundPrice(Math.min(live.low, live.close, newPrice));
-
-    if(target.color === 'GREEN') {
-        live.high = Math.min(live.high, target.high);
-        live.low = Math.max(live.low, target.low);
-    } else {
-        live.high = Math.min(live.high, target.high);
-        live.low = Math.max(live.low, target.low);
-    }
 }
 
 function broadcastCandle(marketId, candle) {
@@ -264,7 +268,7 @@ setInterval(() => {
         broadcastCandle(marketId, markets[marketId].liveCandle);
     }
 
-    // Save ONLY ONE LIVE PRICE to Firebase per minute (Virtually Zero Storage)
+    // Save Live Price to Firebase (For safe restart)
     if (currentMinute > lastSyncMinute) {
         lastSyncMinute = currentMinute;
         const batchUpdates = {};
@@ -278,6 +282,6 @@ setInterval(() => {
     }
 }, TICK_MS);
 
-app.get('/ping', (_req, res) => res.send('No-Storage WebSocket Engine Running'));
+app.get('/ping', (_req, res) => res.send('Point-Based Auto Server Running'));
 const PORT = process.env.PORT || 3000;
 server.listen(PORT, () => console.log(`Server running on ${PORT}`));
