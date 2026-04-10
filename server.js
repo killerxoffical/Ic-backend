@@ -39,14 +39,20 @@ db.ref('admin/markets').on('value', (snapshot) => {
     activeTradesData = {};
     Object.keys(data).forEach(marketId => {
         activeTradesData[marketId] = data[marketId].activeTrades || {};
-        // সব অ্যাক্টিভ মার্কেট ইনিশিয়ালাইজ নিশ্চিত করা
         if (!markets[marketId] && data[marketId].status !== 'inactive') {
             initializeNewMarket(marketId);
         }
     });
 });
 
+function safeGetClose(marketData) {
+    if (marketData && marketData.liveCandle && !isNaN(marketData.liveCandle.close)) return marketData.liveCandle.close;
+    if (marketData && marketData.history && marketData.history.length > 0) return marketData.history[marketData.history.length - 1].close;
+    return 1.25000;
+}
+
 function generateCandle(timestamp, openPrice, forcedColor = null) {
+    if (isNaN(openPrice)) openPrice = 1.25000; // Failsafe
     const baseVol = openPrice * 0.00006;
     const bodySize = baseVol * (0.5 + Math.random());
     
@@ -71,7 +77,7 @@ async function initializeNewMarket(marketId) {
     
     try {
         const snap = await db.ref(`markets/${path}/live`).once('value');
-        if (snap.exists() && snap.val().price) startPrice = snap.val().price;
+        if (snap.exists() && snap.val().price && !isNaN(snap.val().price)) startPrice = snap.val().price;
     } catch (e) { }
 
     const nowPeriod = Math.floor(Date.now() / TIMEFRAME) * TIMEFRAME;
@@ -92,15 +98,13 @@ async function initializeNewMarket(marketId) {
         futureQueue.push(fc);
         futureStartPrice = fc.close;
     }
-
-    // 초기 লাইভ ক্যান্ডেল সেট করা যেন অ্যাডমিন চার্ট ব্ল্যাক না হয়
-    let initialLive = generateCandle(nowPeriod, startPrice);
     
     markets[marketId] = {
         marketId, marketPath: path, history: candles, 
-        futureQueue: futureQueue, liveCandle: initialLive,
+        futureQueue: futureQueue, liveCandle: null, // Null to force initialization on first tick
         mode: 'AUTO', manualCandlesLeft: 0, manualCooldownUntil: 0, noise: 0
     };
+    console.log(`Initialized Market: ${marketId}`);
 }
 
 function applyAutoBotLogic(market) {
@@ -126,6 +130,8 @@ function applyAutoBotLogic(market) {
 }
 
 function processMarketTick(marketData, currentPeriod) {
+    if (!marketData || !marketData.futureQueue) return;
+
     const now = Date.now();
     
     if (!marketData.liveCandle || marketData.liveCandle.timestamp !== currentPeriod) {
@@ -135,6 +141,8 @@ function processMarketTick(marketData, currentPeriod) {
         }
 
         let targetCandle = marketData.futureQueue.shift();
+        if (!targetCandle) targetCandle = generateCandle(currentPeriod, safeGetClose(marketData)); // Failsafe
+
         targetCandle.timestamp = currentPeriod;
         
         marketData.liveCandle = { 
@@ -154,10 +162,7 @@ function processMarketTick(marketData, currentPeriod) {
             marketData.manualCandlesLeft--;
             if (marketData.manualCandlesLeft <= 0) {
                 marketData.mode = 'AUTO';
-                // ম্যানুয়াল ৬ ক্যান্ডেল শেষ হলে ডাটাবেজে স্ট্যাটাস অটো হবে, কিন্তু টাইমার চলতেই থাকবে
-                db.ref(`admin/manual_status/${marketData.marketId}`).update({ 
-                    status: 'AUTO' // cooldownUntil আপডেট করা হলো না, কারণ ওটা আগেই ২১ মিনিটের সেট করা আছে
-                });
+                db.ref(`admin/manual_status/${marketData.marketId}`).update({ status: 'AUTO' });
             }
         } else {
             applyAutoBotLogic(marketData);
@@ -181,6 +186,9 @@ function processMarketTick(marketData, currentPeriod) {
         else if (Math.random() < 0.05) newPrice = live.targetLow;
     }
     if (progress >= 0.97) newPrice = live.targetClose; 
+
+    // Prevent NaN
+    if (isNaN(newPrice)) newPrice = live.open;
 
     live.close = roundPrice(newPrice);
     live.high = roundPrice(Math.max(live.high, live.close, newPrice));
@@ -210,7 +218,6 @@ function broadcastData(marketId) {
     });
 }
 
-// 📌 অ্যাডমিনের ম্যানুয়াল ওভাররাইড কমান্ড (ফিক্সড)
 db.ref('admin/manual_override').on('child_added', (snapshot) => {
     const data = snapshot.val();
     if (data && markets[data.marketId]) {
@@ -221,11 +228,10 @@ db.ref('admin/manual_override').on('child_added', (snapshot) => {
             market.mode = 'MANUAL';
             market.manualCandlesLeft = 6;
             
-            // ৬ মিনিট ট্রেড + ১৫ মিনিট কুলডাউন = টোটাল ২১ মিনিট লক!
             const lockTime = now + (21 * 60 * 1000); 
             market.manualCooldownUntil = lockTime;
             
-            let tempStart = market.liveCandle ? market.liveCandle.close : market.history[market.history.length-1].close;
+            let tempStart = safeGetClose(market);
             let currentPeriod = Math.floor(now / TIMEFRAME) * TIMEFRAME;
             
             for(let i=0; i<6; i++) {
@@ -257,9 +263,7 @@ wss.on('connection', (ws) => {
                 ws.isAdmin = msg.isAdmin || false; 
                 if (markets[msg.market]) {
                     ws.send(JSON.stringify({ type: 'history', market: msg.market, candles: markets[msg.market].history }));
-                    
-                    // Initial Data push for admin to avoid black screen
-                    if(ws.isAdmin) {
+                    if(ws.isAdmin && markets[msg.market].liveCandle) {
                         ws.send(JSON.stringify({
                             type: 'admin_sync', market: msg.market,
                             liveCandle: markets[msg.market].liveCandle, futureQueue: markets[msg.market].futureQueue,
@@ -296,6 +300,6 @@ setInterval(() => {
     }
 }, TICK_MS);
 
-app.get('/ping', (_req, res) => res.send('Admin Server V3 Running'));
+app.get('/ping', (_req, res) => res.send('Admin Server V3.1 Running (Crash Fixed)'));
 const PORT = process.env.PORT || 3000;
 server.listen(PORT, () => console.log(`Server running on ${PORT}`));
