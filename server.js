@@ -1,4 +1,4 @@
-// --- START: server.js (Full Analytics & Strict Engine V5) ---
+// --- START: server.js (Ultimate Timing & Size Accuracy Engine V6) ---
 
 const express = require('express');
 const http = require('http');
@@ -44,7 +44,7 @@ db.ref('admin/market_overrides').on('value', (snapshot) => {
     });
 });
 
-// PRE-CALCULATE TARGET AND LOG ANALYTICS FOR ADMIN HISTORY
+// 🔥 PERFECT MATH BASED CANDLE GENERATOR 🔥
 function generateTargetCandle(timestamp, openPrice, cmd, prevCandle) {
     let isGreen = Math.random() > 0.5;
     let baseVol = openPrice * 0.00005;
@@ -53,7 +53,7 @@ function generateTargetCandle(timestamp, openPrice, cmd, prevCandle) {
     let prevColor = 'UNKNOWN';
     if (prevCandle) {
         prevBody = Math.abs(prevCandle.close - prevCandle.open);
-        if (prevBody < baseVol * 0.5) prevBody = baseVol;
+        if (prevBody < baseVol * 0.3) prevBody = baseVol; // Base limit if prev was doji
         prevColor = prevCandle.close >= prevCandle.open ? 'GREEN' : 'RED';
     }
 
@@ -67,34 +67,40 @@ function generateTargetCandle(timestamp, openPrice, cmd, prevCandle) {
         if (type.includes('UP')) isGreen = true;
         if (type.includes('DOWN')) isGreen = false;
 
+        // User Custom Logics: Inside, Breakout, 2X, Opposite
         if (type.includes('INSIDE')) {
-            body = prevBody * (0.50 + Math.random() * 0.25);
+            body = prevBody * (0.40 + Math.random() * 0.30); // 40% to 70% of previous
             upWick = body * 0.2; dnWick = body * 0.2;
         } 
         else if (type.includes('BREAKOUT')) {
-            body = prevBody * (1.25 + Math.random() * 0.50);
+            body = prevBody * (1.30 + Math.random() * 0.50); // 130% to 180% of previous
             upWick = body * 0.3; dnWick = body * 0.3;
         } 
         else if (type.includes('2X')) {
-            body = prevBody * (2.0 + Math.random() * 0.20);
+            body = prevBody * (2.0 + Math.random() * 0.20); // Exact 2X (200% to 220%)
             upWick = body * 0.5; dnWick = body * 0.5;
         } 
         else if (type === 'OPPOSITE_BREAKOUT') {
-            if (prevCandle) isGreen = prevCandle.close < prevCandle.open;
-            body = prevBody * (1.3 + Math.random() * 0.5); 
+            isGreen = (prevColor === 'RED'); // Opposite Color
+            body = prevBody * (1.30 + Math.random() * 0.50); // Breakout Size
+            upWick = body * 0.3; dnWick = body * 0.3;
         } 
         else if (type.startsWith('PATTERN_')) {
             if (type === 'PATTERN_DOJI') {
                 body = baseVol * 0.1; upWick = baseVol * 3; dnWick = baseVol * 3;
                 isGreen = Math.random() > 0.5;
             } else if (type === 'PATTERN_MARUBOZU_GREEN') {
-                isGreen = true; body = baseVol * 4; upWick = 0; dnWick = 0;
+                isGreen = true; body = prevBody * 1.5; upWick = 0; dnWick = 0;
             } else if (type === 'PATTERN_MARUBOZU_RED') {
-                isGreen = false; body = baseVol * 4; upWick = 0; dnWick = 0;
+                isGreen = false; body = prevBody * 1.5; upWick = 0; dnWick = 0;
             } else if (type === 'PATTERN_HAMMER') {
-                isGreen = true; body = baseVol * 1.5; upWick = 0; dnWick = baseVol * 3.5;
+                isGreen = true; body = prevBody * 1.2; upWick = 0; dnWick = body * 3.0;
             } else if (type === 'PATTERN_SHOOTING_STAR') {
-                isGreen = false; body = baseVol * 1.5; upWick = baseVol * 3.5; dnWick = 0;
+                isGreen = false; body = prevBody * 1.2; upWick = body * 3.0; dnWick = 0;
+            } else if (type === 'PATTERN_BIG_PUMP') {
+                isGreen = true; body = prevBody * 3; upWick = baseVol; dnWick = baseVol;
+            } else if (type === 'PATTERN_BIG_DUMP') {
+                isGreen = false; body = prevBody * 3; upWick = baseVol; dnWick = baseVol;
             }
         }
     }
@@ -103,22 +109,22 @@ function generateTargetCandle(timestamp, openPrice, cmd, prevCandle) {
     const high = Math.max(openPrice, close) + upWick;
     const low = Math.min(openPrice, close) - dnWick;
 
-    const resultCandle = { timestamp, open: roundPrice(openPrice), close: roundPrice(close), high: roundPrice(high), low: roundPrice(low) };
+    const target = { timestamp, open: roundPrice(openPrice), close: roundPrice(close), high: roundPrice(high), low: roundPrice(low) };
 
-    // 🔥 SAVE ANALYTICS FOR ADMIN PANEL HISTORY 🔥
+    // Create Analytics Payload (Will be saved ONLY when candle finishes)
+    let analyticsPayload = null;
     if (cmd && cmd.id) {
-        db.ref(`admin/market_overrides/${cmd.marketId}/status`).set('Executed');
-        db.ref(`admin/command_analytics/${cmd.id}`).set({
+        analyticsPayload = {
             command: cmd.type,
             targetTime: timestamp,
             marketId: cmd.marketId,
             prevCandle: { open: prevCandle?.open || openPrice, close: prevCandle?.close || openPrice, color: prevColor, size: prevBody },
-            targetCandle: { open: resultCandle.open, close: resultCandle.close, color: isGreen ? 'GREEN' : 'RED', size: body },
+            targetCandle: { open: target.open, close: target.close, color: isGreen ? 'GREEN' : 'RED', size: body },
             executedAt: Date.now()
-        });
+        };
     }
 
-    return resultCandle;
+    return { target, analyticsPayload };
 }
 
 async function initializeNewMarket(marketId) {
@@ -134,9 +140,9 @@ async function initializeNewMarket(marketId) {
     let currentPrice = startPrice;
 
     for (let i = HISTORY_SEED_COUNT; i > 0; i--) {
-        const c = generateTargetCandle(nowPeriod - (i * TIMEFRAME), currentPrice, null, null);
-        candles.push(c);
-        currentPrice = c.close;
+        const { target } = generateTargetCandle(nowPeriod - (i * TIMEFRAME), currentPrice, null, null);
+        candles.push(target);
+        currentPrice = target.close;
     }
 
     markets[marketId] = {
@@ -145,28 +151,45 @@ async function initializeNewMarket(marketId) {
         history: candles,
         currentPrice: currentPrice,
         targetCandle: null,
-        currentNoise: 0
+        currentNoise: 0,
+        pendingAnalytics: null // Holds data until candle completes
     };
 }
 
 function ensureTargetCandle(marketData, currentPeriod) {
     let lastCandle = marketData.history[marketData.history.length - 1];
+
+    // 🔥 SAVE ANALYTICS ONLY AFTER THE CANDLE FULLY CLOSES 🔥
+    if (marketData.pendingAnalytics && currentPeriod > marketData.pendingAnalytics.targetTime) {
+        const pa = marketData.pendingAnalytics;
+        db.ref(`admin/market_overrides/${pa.marketId}/status`).set('Executed');
+        db.ref(`admin/command_analytics/${pa.id}`).set(pa.payload);
+        marketData.pendingAnalytics = null; // Clear it after saving
+    }
     
     if (!marketData.targetCandle || marketData.targetCandle.timestamp !== currentPeriod) {
         
         let overrideCmd = null;
         if (adminOverrides[marketData.marketId]) {
             const cmd = adminOverrides[marketData.marketId];
-            // Match targetTime and ensure it hasn't been executed already
-            if (currentPeriod >= cmd.targetTime && currentPeriod < cmd.targetTime + 60000 && cmd.status !== 'Executed') {
+            if (currentPeriod === cmd.targetTime && cmd.status !== 'Executed') {
                 overrideCmd = cmd;
-                console.log(`[ADMIN EXECUTE] Market: ${marketData.marketId}, Cmd: ${cmd.type}`);
             }
         }
 
-        const target = generateTargetCandle(currentPeriod, lastCandle.close, overrideCmd, lastCandle);
+        const { target, analyticsPayload } = generateTargetCandle(currentPeriod, lastCandle.close, overrideCmd, lastCandle);
+        
         marketData.targetCandle = target;
         marketData.currentNoise = 0; 
+        
+        if (overrideCmd && analyticsPayload) {
+            marketData.pendingAnalytics = {
+                id: overrideCmd.id,
+                marketId: overrideCmd.marketId,
+                targetTime: currentPeriod,
+                payload: analyticsPayload
+            };
+        }
         
         const newCandle = { timestamp: currentPeriod, open: target.open, high: target.open, low: target.open, close: target.open };
         marketData.history.push(newCandle);
@@ -274,6 +297,6 @@ setInterval(() => {
     }
 }, TICK_MS);
 
-app.get('/ping', (_req, res) => res.send('Strict Engine with Full Analytics Running'));
+app.get('/ping', (_req, res) => res.send('Strict Engine V6 Running'));
 const PORT = process.env.PORT || 3000;
 server.listen(PORT, () => console.log(`Server running on ${PORT}`));
