@@ -18,13 +18,15 @@ if (!firebase.apps.length) firebase.initializeApp(firebaseConfig);
 const db = firebase.database();
 
 const app = express();
-app.use(cors());
+// 🔥 IMPORTANT: This allows your separately hosted app to connect
+app.use(cors()); 
+
 const server = http.createServer(app);
 const wss = new WebSocket.Server({ server });
 
 // Settings
 const TIMEFRAME = 60000; 
-const TICK_MS = 300; // Faster updates for smoother chart
+const TICK_MS = 300;
 const MAX_HISTORY = 300;
 
 const markets = {}; 
@@ -45,8 +47,7 @@ db.ref('admin/markets').on('value', (snapshot) => {
 
 // Listen for admin commands
 db.ref('admin/market_signals').on('value', (snapshot) => {
-    const signals = snapshot.val() || {};
-    Object.assign(adminSignals, signals); // Copy signals to local memory
+    Object.assign(adminSignals, snapshot.val() || {});
 });
 
 function initializeNewMarket(marketId) {
@@ -79,7 +80,7 @@ function buildCandle(timestamp, open, direction) {
     return { timestamp, open: roundPrice(open), high: roundPrice(high), low: roundPrice(low), close: roundPrice(close) };
 }
 
-// Main loop to process all markets
+// Main loop
 setInterval(() => {
     const now = Date.now();
     const currentPeriod = Math.floor(now / TIMEFRAME) * TIMEFRAME;
@@ -88,7 +89,6 @@ setInterval(() => {
         const m = markets[marketId];
         let lastCandle = m.history.length > 0 ? m.history[m.history.length - 1] : null;
 
-        // Time to create a new, finalized candle
         if (!lastCandle || currentPeriod > lastCandle.timestamp) {
             const signal = adminSignals[marketId];
             let direction = Math.random() > 0.5 ? 'UP' : 'DOWN';
@@ -96,38 +96,29 @@ setInterval(() => {
             if (signal && (signal.type === 'UP' || signal.type === 'DOWN')) {
                 console.log(`✅ [ADMIN] Executing ${signal.type} for ${marketId}`);
                 direction = signal.type;
-                // Delete command after use
                 db.ref(`admin/market_signals/${marketId}`).remove();
                 delete adminSignals[marketId];
             }
             
             const newCandle = buildCandle(currentPeriod, lastCandle ? lastCandle.close : 1.15500, direction);
             m.history.push(newCandle);
-            if (m.history.length > MAX_HISTORY + 10) {
-                m.history.shift(); // Keep history from growing too big
-            }
+            if (m.history.length > MAX_HISTORY + 10) m.history.shift();
             lastCandle = newCandle;
         }
 
-        // --- Live Tick Simulation ---
         const timeIntoCandle = now - lastCandle.timestamp;
         const progress = Math.min(timeIntoCandle / TIMEFRAME, 1);
-        
         let livePrice = lastCandle.open + (lastCandle.close - lastCandle.open) * progress;
-        livePrice += (Math.random() - 0.5) * (lastCandle.open * 0.00005); // Add jitter/noise
+        livePrice += (Math.random() - 0.5) * (lastCandle.open * 0.00005);
         m.currentPrice = roundPrice(livePrice);
 
-        // This is the data that will be sent to the client
         const liveCandleData = {
-            timestamp: lastCandle.timestamp,
-            open: lastCandle.open,
+            timestamp: lastCandle.timestamp, open: lastCandle.open,
             high: Math.max(lastCandle.high, m.currentPrice),
-            low: Math.min(lastCandle.low, m.currentPrice),
-            close: m.currentPrice,
+            low: Math.min(lastCandle.low, m.currentPrice), close: m.currentPrice,
         };
         
         const payload = JSON.stringify({ type: 'subscribed', market: marketId, candle: liveCandleData });
-
         wss.clients.forEach((c) => {
             if (c.readyState === WebSocket.OPEN && c.subscribedMarket === marketId) {
                 c.send(payload);
@@ -136,13 +127,13 @@ setInterval(() => {
     }
 }, TICK_MS);
 
-// API endpoint for clients to get initial candle history
+// API for initial history
 app.get('/api/history/:marketId', (req, res) => {
     const marketId = req.params.marketId;
     if (markets[marketId]) {
         res.json(markets[marketId].history);
     } else {
-        res.status(404).json({ error: 'Market not found or not initialized yet' });
+        res.status(404).json({ error: 'Market not found' });
     }
 });
 
@@ -150,12 +141,10 @@ wss.on('connection', (ws) => {
     ws.on('message', (raw) => {
         try {
             const msg = JSON.parse(raw.toString());
-            if (msg.type === 'subscribe') {
-                ws.subscribedMarket = msg.market;
-            }
+            if (msg.type === 'subscribe') ws.subscribedMarket = msg.market;
         } catch (_) {}
     });
 });
 
 const PORT = process.env.PORT || 3000;
-server.listen(PORT, () => console.log(`🚀 TradingView-Ready Server running on port ${PORT}`));
+server.listen(PORT, () => console.log(`🚀 Server for Separate Hosting is running on port ${PORT}`));
