@@ -1,5 +1,3 @@
-// --- START: server.js (WebSocket Chart & Perfect Timing V9) ---
-
 const express = require('express');
 const http = require('http');
 const WebSocket = require('ws');
@@ -99,7 +97,7 @@ function generateTargetPattern(timestamp, openPrice, action) {
             isGreen = action.includes('UP'); body = baseVol * 2.5; upWick = baseVol * 0.5; dnWick = baseVol * 0.5;
         }
         else if (action === 'OPPOSITE_BREAKOUT') {
-            isGreen = Math.random() > 0.5; body = baseVol * 1.5; // Will flip based on previous in ensureTargetCandle
+            isGreen = Math.random() > 0.5; body = baseVol * 1.5;
         }
     }
 
@@ -144,8 +142,10 @@ async function initializeNewMarket(marketId) {
 function ensureTargetCandle(marketData, currentPeriod) {
     let lastCandle = marketData.history[marketData.history.length - 1];
     
-    // Check if the previous minute just ended to save history
-    if (marketData.targetCandle && marketData.targetCandle.timestamp !== currentPeriod) {
+    // Check if the previous minute just ended (NEW CANDLE STARTED)
+    if (!marketData.targetCandle || marketData.targetCandle.timestamp !== currentPeriod) {
+        
+        // 1. Finalize the previous command (if any was running)
         if (marketData.activeCommand) {
             const cmd = marketData.activeCommand;
             db.ref(`admin/commands/${cmd.id}`).update({
@@ -161,19 +161,17 @@ function ensureTargetCandle(marketData, currentPeriod) {
             });
             marketData.activeCommand = null;
         }
-    }
 
-    if (!marketData.targetCandle || marketData.targetCandle.timestamp !== currentPeriod) {
-        
+        // 2. Look for the oldest PENDING command for THIS market
         let activeCmd = null;
-        for (const cmdId in adminCommands) {
-            const cmd = adminCommands[cmdId];
-            if (cmd.marketId === marketData.marketId && cmd.targetTime === currentPeriod && cmd.status === 'Pending') {
-                activeCmd = cmd;
-                break;
-            }
+        let pendingCmds = Object.values(adminCommands).filter(c => c.marketId === marketData.marketId && c.status === 'Pending');
+        if (pendingCmds.length > 0) {
+            // Sort by createdAt to execute the one that was requested first
+            pendingCmds.sort((a, b) => a.createdAt - b.createdAt);
+            activeCmd = pendingCmds[0];
         }
 
+        // 3. Generate the new candle pattern
         let target = generateTargetPattern(currentPeriod, lastCandle.close, activeCmd?.action);
         
         // Opposite breakout logic correction
@@ -195,8 +193,12 @@ function ensureTargetCandle(marketData, currentPeriod) {
         marketData.hitLow = false;
         marketData.activeCommand = activeCmd;
         
+        // Mark as running in Firebase
         if (activeCmd) {
-            db.ref(`admin/commands/${activeCmd.id}`).update({ status: 'Running' });
+            db.ref(`admin/commands/${activeCmd.id}`).update({ 
+                status: 'Running',
+                targetTime: currentPeriod // Record the exact minute it started running
+            });
         }
         
         const newCandle = { timestamp: currentPeriod, open: target.open, high: target.open, low: target.open, close: target.open };
@@ -288,7 +290,6 @@ setInterval(() => {
         broadcastCandle(marketId, marketData.history[marketData.history.length - 1]);
     }
 
-    // ONLY SAVE LIVE PRICE FOR BACKUP (NO HEAVY CANDLE STORAGE)
     if (currentMinute > lastSyncMinute) {
         lastSyncMinute = currentMinute;
         const batchUpdates = {};
@@ -303,6 +304,6 @@ setInterval(() => {
     }
 }, TICK_MS);
 
-app.get('/ping', (_req, res) => res.send('No-Storage WebSocket Engine V9 Running'));
+app.get('/ping', (_req, res) => res.send('No-Storage WebSocket Next-Candle Engine V10 Running'));
 const PORT = process.env.PORT || 3000;
 server.listen(PORT, () => console.log(`Server running on ${PORT}`));
