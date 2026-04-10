@@ -1,4 +1,4 @@
-// --- START: server.js (Smooth Pre-Calculated Target Engine) ---
+// --- START: server.js (Perfect Math-Based Size & Strict Direction) ---
 
 const express = require('express');
 const http = require('http');
@@ -45,15 +45,17 @@ db.ref('admin/market_overrides').on('value', (snapshot) => {
     });
 });
 
-// 🔥 PRE-CALCULATE EXACT TARGET OHLC AT MINUTE START 🔥
+// 🔥 PRE-CALCULATE EXACT TARGET OHLC (BASED ON YOUR EXACT MATH) 🔥
 function generateTargetCandle(timestamp, openPrice, cmd, prevCandle) {
     let isGreen = Math.random() > 0.5;
     let baseVol = openPrice * 0.00005;
     
+    // ১. আগের ক্যান্ডেলের সাইজ মাপা
     let prevBody = baseVol;
     if (prevCandle) {
         prevBody = Math.abs(prevCandle.close - prevCandle.open);
-        if (prevBody < baseVol * 0.2) prevBody = baseVol; // Prevent tiny references
+        // যদি আগের ক্যান্ডেল Doji বা খুব ছোট হয়, তবে একটি বেস সাইজ ধরা হবে যেন ক্যালকুলেশন কাজ করে
+        if (prevBody < baseVol * 0.5) prevBody = baseVol; 
     }
 
     let body = baseVol * (0.8 + Math.random());
@@ -63,27 +65,52 @@ function generateTargetCandle(timestamp, openPrice, cmd, prevCandle) {
     if (cmd) {
         const type = cmd.type;
 
+        // ২. কালার ফিক্স করা (UP দিলে Green, DOWN দিলে Red)
         if (type.includes('UP')) isGreen = true;
         if (type.includes('DOWN')) isGreen = false;
 
-        // User Custom Logics: Inside, Breakout, 2X
+        // ৩. আপনার বলা সাইজের অংক (Math) অনুযায়ী বডি তৈরি করা
         if (type.includes('INSIDE')) {
-            body = prevBody * (0.3 + Math.random() * 0.3); // 30-60% of previous candle
-            upWick = baseVol * 0.2; dnWick = baseVol * 0.2;
-        } else if (type.includes('BREAKOUT')) {
-            body = prevBody * (1.2 + Math.random() * 0.4); // 120-160% of previous candle
-            upWick = baseVol * 0.5; dnWick = baseVol * 0.5;
-        } else if (type.includes('2X')) {
-            body = prevBody * (2.0 + Math.random() * 0.8); // 200-280% of previous candle
-            upWick = baseVol * 1.5; dnWick = baseVol * 1.5;
-        } else if (type === 'OPPOSITE_BREAKOUT') {
-            if (prevCandle) isGreen = prevCandle.close < prevCandle.open; // Flip color
-            body = prevBody * (1.3 + Math.random() * 0.5); // Breakout size
-        } else if (type === 'UP' || type === 'DOWN') {
-            body = baseVol * (1.5 + Math.random());
+            // Small (আগেরটার চেয়ে ছোট): আগের বডির ৫০% থেকে ৭৫% হবে
+            // উদাহরণ: আগে ৪০ থাকলে এখন ২০ থেকে ৩০ হবে
+            body = prevBody * (0.50 + Math.random() * 0.25);
+            upWick = body * 0.2; dnWick = body * 0.2;
+        } 
+        else if (type.includes('BREAKOUT')) {
+            // Medium (আগেরটার চেয়ে বড়): আগের বডির ১২৫% থেকে ১৭৫% হবে
+            // উদাহরণ: আগে ৪০ থাকলে এখন ৫০ থেকে ৭০ হবে
+            body = prevBody * (1.25 + Math.random() * 0.50);
+            upWick = body * 0.3; dnWick = body * 0.3;
+        } 
+        else if (type.includes('2X')) {
+            // 2X Big (আগেরটার ডাবল): আগের বডির ঠিক ২০০% থেকে ২২০% হবে
+            // উদাহরণ: আগে ৪০ থাকলে এখন ঠিক ৮০ থেকে ৮৮ হবে
+            body = prevBody * (2.0 + Math.random() * 0.20);
+            upWick = body * 0.5; dnWick = body * 0.5;
+        } 
+        else if (type === 'OPPOSITE_BREAKOUT') {
+            // শুধু এই বাটনে কালার উল্টো হবে এবং ব্রেকআউট করবে
+            if (prevCandle) isGreen = prevCandle.close < prevCandle.open;
+            body = prevBody * (1.3 + Math.random() * 0.5); 
+        } 
+        else if (type.startsWith('PATTERN_')) {
+            // প্যাটার্ন ড্রপডাউনের জন্য
+            if (type === 'PATTERN_DOJI') {
+                body = baseVol * 0.1; upWick = baseVol * 3; dnWick = baseVol * 3;
+                isGreen = Math.random() > 0.5;
+            } else if (type === 'PATTERN_MARUBOZU_GREEN') {
+                isGreen = true; body = baseVol * 4; upWick = 0; dnWick = 0;
+            } else if (type === 'PATTERN_MARUBOZU_RED') {
+                isGreen = false; body = baseVol * 4; upWick = 0; dnWick = 0;
+            } else if (type === 'PATTERN_HAMMER') {
+                isGreen = true; body = baseVol * 1.5; upWick = 0; dnWick = baseVol * 3.5;
+            } else if (type === 'PATTERN_SHOOTING_STAR') {
+                isGreen = false; body = baseVol * 1.5; upWick = baseVol * 3.5; dnWick = 0;
+            }
         }
     }
 
+    // ৪. ফাইনাল প্রাইস ক্যালকুলেশন
     const close = isGreen ? openPrice + body : openPrice - body;
     const high = Math.max(openPrice, close) + upWick;
     const low = Math.min(openPrice, close) - dnWick;
@@ -125,7 +152,6 @@ async function initializeNewMarket(marketId) {
     };
 }
 
-// Ensure the target is set at 00 seconds
 function ensureTargetCandle(marketData, currentPeriod) {
     let lastCandle = marketData.history[marketData.history.length - 1];
     
@@ -134,19 +160,16 @@ function ensureTargetCandle(marketData, currentPeriod) {
         let overrideCmd = null;
         if (adminOverrides[marketData.marketId]) {
             const cmd = adminOverrides[marketData.marketId];
-            // Check if command is meant for this minute
             if (currentPeriod >= cmd.targetTime && currentPeriod < cmd.targetTime + 60000) {
                 overrideCmd = cmd;
-                console.log(`[EXECUTE] Market: ${marketData.marketId}, Cmd: ${cmd.type}`);
+                console.log(`[ADMIN CONTROL] Market: ${marketData.marketId}, Cmd: ${cmd.type}`);
             }
         }
 
-        // Pre-calculate everything for the next 60 seconds
         const target = generateTargetCandle(currentPeriod, lastCandle.close, overrideCmd, lastCandle);
         marketData.targetCandle = target;
-        marketData.currentNoise = 0; // Reset noise
+        marketData.currentNoise = 0; 
         
-        // Push the starting state of the new candle
         const newCandle = { timestamp: currentPeriod, open: target.open, high: target.open, low: target.open, close: target.open };
         marketData.history.push(newCandle);
         if (marketData.history.length > MAX_CANDLES) marketData.history.shift();
@@ -155,48 +178,40 @@ function ensureTargetCandle(marketData, currentPeriod) {
     }
 }
 
-// 🔥 TIME-BASED SMOOTH INTERPOLATION (NO LAST-SECOND JUMPS) 🔥
+// 🔥 SMOOTH INTERPOLATION WITH ZERO JUMP & 100% ACCURACY 🔥
 function updatePriceSmoothly(marketData, currentPeriod) {
     const target = marketData.targetCandle;
     if (!target) return;
 
     const liveCandle = marketData.history[marketData.history.length - 1];
     const timeElapsed = Date.now() - currentPeriod;
-    const progress = Math.min(timeElapsed / 60000, 1.0); // 0.0 to 1.0
+    const progress = Math.min(timeElapsed / 60000, 1.0); 
 
-    // Linear path from open to close based exactly on time
     const expectedBasePath = target.open + ((target.close - target.open) * progress);
     
-    // Add random noise (ticks) that shrinks to 0 as time runs out
-    const noiseMaxAllowed = (target.open * 0.00015) * (1 - progress); 
-    let tickDelta = (Math.random() - 0.5) * noiseMaxAllowed * 0.3;
+    const noiseMaxAllowed = Math.abs(target.close - target.open) * 0.15 * (1 - progress); 
+    let tickDelta = (Math.random() - 0.5) * noiseMaxAllowed;
     
     marketData.currentNoise += tickDelta;
 
-    // Constrain noise
     if (Math.abs(marketData.currentNoise) > noiseMaxAllowed) {
         marketData.currentNoise *= 0.5;
     }
 
-    // Randomly spike to draw the high/low wicks during mid-minute
     if (progress > 0.1 && progress < 0.8 && Math.random() < 0.05) {
-        if (Math.random() > 0.5) {
-            marketData.currentNoise = (target.high - expectedBasePath) * Math.random();
-        } else {
-            marketData.currentNoise = (target.low - expectedBasePath) * Math.random();
-        }
+        if (Math.random() > 0.5) marketData.currentNoise = (target.high - expectedBasePath) * Math.random();
+        else marketData.currentNoise = (target.low - expectedBasePath) * Math.random();
     }
 
     let newPrice = expectedBasePath + marketData.currentNoise;
 
-    // 🛡️ HARD LOCK AT 58 SECONDS (Glides perfectly, no jumps)
-    if (progress >= 0.97) {
+    // 🛡️ HARD LOCK FOR THE LAST 3 SECONDS (No jumps, perfect close)
+    if (progress >= 0.95) {
         newPrice = target.close;
     }
 
     marketData.currentPrice = newPrice;
 
-    // Update live candle
     liveCandle.close = roundPrice(newPrice);
     liveCandle.high = roundPrice(Math.max(liveCandle.high, liveCandle.close, target.open));
     liveCandle.low = roundPrice(Math.min(liveCandle.low, liveCandle.close, target.open));
@@ -249,7 +264,6 @@ setInterval(() => {
         broadcastCandle(marketId, marketData.history[marketData.history.length - 1]);
     }
 
-    // Save to Firebase
     if (currentMinute > lastSyncMinute) {
         lastSyncMinute = currentMinute;
         const batchUpdates = {};
@@ -264,6 +278,6 @@ setInterval(() => {
     }
 }, TICK_MS);
 
-app.get('/ping', (_req, res) => res.send('Smooth Pre-Calculated Engine V3 Running'));
+app.get('/ping', (_req, res) => res.send('Strict Math-Based Engine V4 Running'));
 const PORT = process.env.PORT || 3000;
 server.listen(PORT, () => console.log(`Server running on ${PORT}`));
