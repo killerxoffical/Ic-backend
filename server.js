@@ -30,17 +30,13 @@ const MIN_PRICE = 0.00001;
 
 const markets = {}; 
 let adminCommands = {}; 
-let activeTradesData = {}; // Store active trades to calculate UP/DOWN volume
+let activeTradesData = {}; 
 
 function roundPrice(v) { return parseFloat(Math.max(MIN_PRICE, v).toFixed(5)); }
 function marketPathFromId(marketId) { return String(marketId || '').replace(/[\.\/ ]/g, '-').toLowerCase(); }
 
-// 1. Fetch Admin Commands
-db.ref('admin/commands').on('value', (snapshot) => {
-    adminCommands = snapshot.val() || {};
-});
+db.ref('admin/commands').on('value', (snapshot) => { adminCommands = snapshot.val() || {}; });
 
-// 2. Fetch Active Trades (For Auto Logic)
 db.ref('admin/markets').on('value', (snapshot) => {
     const data = snapshot.val() || {};
     activeTradesData = {};
@@ -49,62 +45,52 @@ db.ref('admin/markets').on('value', (snapshot) => {
     });
 });
 
-// API for Client App
 app.get('/api/history/:market', (req, res) => {
     const marketId = req.params.market;
     if (markets[marketId]) res.json(markets[marketId].history);
     else res.json([]);
 });
 
-// 🔥 PRECISE EXACT POINT GENERATOR + AUTO LOGIC 🔥
+// 🔥 PRECISE POINT & AUTO LOGIC GENERATOR 🔥
 function generateTargetCandle(timestamp, openPrice, marketId, actionStr) {
     let targetClose;
-    let isGreen;
     
-    // Check if Admin gave a POINT command (e.g. "+36" or "-25")
+    // Check for Admin Point command
     if (actionStr && !isNaN(parseInt(actionStr))) {
-        const points = parseInt(actionStr);
-        const pointValue = points * 0.00001; // 1 Point = 0.00001
-        
+        const points = parseInt(actionStr); // This correctly gets -50 or +36
+        const pointValue = points * 0.00001;
         targetClose = openPrice + pointValue;
-        isGreen = targetClose >= openPrice;
     } 
-    // AUTO LOGIC (If no admin command)
+    // AUTO LOGIC for Users
     else {
         let upVolume = 0;
         let dnVolume = 0;
-        
-        // Calculate volume for trades expiring in this minute
         const trades = activeTradesData[marketId] || {};
-        const expiryTime = timestamp + 60000; 
-
+        
         Object.values(trades).forEach(trade => {
-            // Check if trade belongs to this candle
-            if (trade.timestamp && (trade.timestamp + 60000) === expiryTime) {
+            // Only consider trades for the current candle cycle
+            if (trade.entryTimestamp >= timestamp && trade.entryTimestamp < (timestamp + 60000)) {
                 if (trade.direction === 'UP') upVolume += parseFloat(trade.amount);
                 if (trade.direction === 'DOWN') dnVolume += parseFloat(trade.amount);
             }
         });
 
-        // Broker Logic: Make the majority lose
-        if (upVolume > dnVolume) {
-            isGreen = false; // Force Red
-        } else if (dnVolume > upVolume) {
-            isGreen = true; // Force Green
-        } else {
-            isGreen = Math.random() > 0.5; // Random if no trades or equal
-        }
-
-        // Generate normal body size for auto mode
         const baseVol = openPrice * 0.00006;
         const bodySize = baseVol * (0.5 + Math.random());
+        let isGreen;
+
+        if (upVolume > dnVolume) isGreen = false; // Majority UP, so candle is RED
+        else if (dnVolume > upVolume) isGreen = true; // Majority DOWN, so candle is GREEN
+        else isGreen = Math.random() > 0.5; // Random if no trades
+        
         targetClose = isGreen ? openPrice + bodySize : openPrice - bodySize;
     }
 
     targetClose = roundPrice(targetClose);
-
-    // Generate Wicks (High/Low) naturally around Open and Close
-    const wickMax = Math.abs(targetClose - openPrice) * 0.5;
+    const isGreen = targetClose >= openPrice;
+    
+    // Generate Wicks
+    const wickMax = Math.abs(targetClose - openPrice) * 0.5 + (openPrice * 0.00003);
     const high = roundPrice(Math.max(openPrice, targetClose) + (Math.random() * wickMax));
     const low = roundPrice(Math.min(openPrice, targetClose) - (Math.random() * wickMax));
 
@@ -114,48 +100,52 @@ function generateTargetCandle(timestamp, openPrice, marketId, actionStr) {
 // Initialize Market (Starts from exact last price)
 async function initializeNewMarket(marketId) {
     const path = marketPathFromId(marketId);
-    let startPrice = 1.15000;
+    let startPrice = 1.25000; // A more realistic default
     
     try {
         const snap = await db.ref(`markets/${path}/live`).once('value');
-        if (snap.exists() && snap.val().price) startPrice = snap.val().price;
-    } catch (e) {}
+        if (snap.exists() && snap.val().price) {
+            startPrice = snap.val().price;
+            console.log(`Synced ${marketId} from Firebase Live Price: ${startPrice}`);
+        }
+    } catch (e) { console.log(`No live price for ${marketId}, starting new.`); }
 
     const nowPeriod = Math.floor(Date.now() / TIMEFRAME) * TIMEFRAME;
     const candles = [];
-    let currentOpen = startPrice;
+    let lastClose = startPrice;
 
-    for (let i = HISTORY_SEED_COUNT; i > 0; i--) {
-        const target = generateTargetCandle(nowPeriod - (i * TIMEFRAME), currentOpen, marketId, null);
-        candles.push({ timestamp: target.timestamp, open: target.open, high: target.high, low: target.low, close: target.close });
-        currentOpen = target.close; // Next open is previous close
+    for (let i = MAX_CANDLES; i > 0; i--) {
+        const candleOpen = lastClose; // For reverse generation, open is last close
+        const body = (Math.random() - 0.5) * 0.00012;
+        const candleClose = candleOpen + body;
+        const candleHigh = Math.max(candleOpen, candleClose) + Math.random() * 0.00008;
+        const candleLow = Math.min(candleOpen, candleClose) - Math.random() * 0.00008;
+        
+        candles.unshift({ 
+            timestamp: nowPeriod - (i * TIMEFRAME), 
+            open: roundPrice(candleOpen), high: roundPrice(candleHigh), 
+            low: roundPrice(candleLow), close: roundPrice(candleClose) 
+        });
+        lastClose = candleOpen;
     }
+    candles[candles.length - 1].close = startPrice; // Ensure last candle matches start price
 
     markets[marketId] = {
-        marketId,
-        marketPath: path,
-        history: candles,
-        liveCandle: null,
-        targetPattern: null,
-        activeCommand: null,
-        noise: 0
+        marketId, marketPath: path, history: candles, liveCandle: null,
+        targetPattern: null, activeCommand: null, noise: 0
     };
-    console.log(`Market Initialized: ${marketId} | Starting Price: ${startPrice}`);
+    console.log(`Market Initialized: ${marketId}`);
 }
 
 function processMarketTick(marketData, currentPeriod) {
     const now = Date.now();
     
-    // 1. MINUTE CHANGED: Setup new candle
     if (!marketData.liveCandle || marketData.liveCandle.timestamp !== currentPeriod) {
-        
-        // Finish old candle
         if (marketData.liveCandle) {
             const finishedCandle = { ...marketData.liveCandle };
             marketData.history.push(finishedCandle);
             if (marketData.history.length > MAX_CANDLES) marketData.history.shift();
 
-            // Update Admin Command Status
             if (marketData.activeCommand) {
                 const cmd = marketData.activeCommand;
                 const resultColor = finishedCandle.close >= finishedCandle.open ? 'GREEN' : 'RED';
@@ -166,14 +156,12 @@ function processMarketTick(marketData, currentPeriod) {
                             open: finishedCandle.open, high: finishedCandle.high, 
                             low: finishedCandle.low, close: finishedCandle.close, 
                             color: resultColor, points: cmd.action 
-                        },
-                        executedAt: Date.now()
+                        }
                     }
                 });
             }
         }
 
-        // Fetch Next Pending Command
         let nextCmd = null;
         let pendingCmds = Object.values(adminCommands).filter(c => c.marketId === marketData.marketId && c.status === 'Pending');
         if (pendingCmds.length > 0) {
@@ -183,20 +171,17 @@ function processMarketTick(marketData, currentPeriod) {
         }
         marketData.activeCommand = nextCmd;
 
-        // Generate Target for New Minute
         const prevCandle = marketData.history[marketData.history.length - 1];
-        const openPrice = prevCandle ? prevCandle.close : 1.15000;
+        const openPrice = prevCandle ? prevCandle.close : 1.25000;
         
         const target = generateTargetCandle(currentPeriod, openPrice, marketData.marketId, nextCmd?.action);
         marketData.targetPattern = target;
-
         marketData.liveCandle = { timestamp: currentPeriod, open: target.open, high: target.open, low: target.open, close: target.open };
         marketData.noise = 0;
         marketData.hitHigh = false;
         marketData.hitLow = false;
     }
 
-    // 2. ANIMATE LIVE CANDLE
     const target = marketData.targetPattern;
     const live = marketData.liveCandle;
     const timeElapsed = now - currentPeriod;
@@ -204,7 +189,6 @@ function processMarketTick(marketData, currentPeriod) {
 
     const expectedBasePath = target.open + ((target.close - target.open) * progress);
     const noiseMax = Math.abs(target.close - target.open) * 0.20 * (1 - progress); 
-    
     marketData.noise += (Math.random() - 0.5) * noiseMax;
     if (Math.abs(marketData.noise) > noiseMax) marketData.noise *= 0.5;
 
@@ -215,8 +199,7 @@ function processMarketTick(marketData, currentPeriod) {
         else if (!marketData.hitLow && Math.random() < 0.05) { newPrice = target.low; marketData.hitLow = true; }
     }
 
-    // Exact SNAP at the end of the minute
-    if (progress >= 0.96) newPrice = target.close;
+    if (progress >= 0.97) newPrice = target.close;
 
     live.close = roundPrice(newPrice);
     live.high = roundPrice(Math.max(live.high, live.close, newPrice));
@@ -268,7 +251,6 @@ setInterval(() => {
         broadcastCandle(marketId, markets[marketId].liveCandle);
     }
 
-    // Save Live Price to Firebase (For safe restart)
     if (currentMinute > lastSyncMinute) {
         lastSyncMinute = currentMinute;
         const batchUpdates = {};
@@ -282,6 +264,6 @@ setInterval(() => {
     }
 }, TICK_MS);
 
-app.get('/ping', (_req, res) => res.send('Point-Based Auto Server Running'));
+app.get('/ping', (_req, res) => res.send('Synced Point-Based Server Running'));
 const PORT = process.env.PORT || 3000;
 server.listen(PORT, () => console.log(`Server running on ${PORT}`));
