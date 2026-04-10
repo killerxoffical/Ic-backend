@@ -1,4 +1,4 @@
-// --- START: server.js (Ultimate Timing & Size Accuracy Engine V6) ---
+// --- START: server.js (Future Scheduling & 10s Delay Engine V7) ---
 
 const express = require('express');
 const http = require('http');
@@ -32,19 +32,17 @@ const MIN_PRICE = 0.00001;
 const HISTORY_SEED_COUNT = 300;
 
 const markets = {}; 
-const adminOverrides = {}; 
+let adminCommands = {}; 
 
 function roundPrice(v) { return parseFloat(Math.max(MIN_PRICE, v).toFixed(5)); }
 function marketPathFromId(marketId) { return String(marketId || '').replace(/[\.\/ ]/g, '-').toLowerCase(); }
 
-db.ref('admin/market_overrides').on('value', (snapshot) => {
-    const data = snapshot.val() || {};
-    Object.keys(data).forEach(marketId => {
-        adminOverrides[marketId] = data[marketId];
-    });
+// Listen for ALL Admin Commands globally
+db.ref('admin/commands').on('value', (snapshot) => {
+    adminCommands = snapshot.val() || {};
 });
 
-// 🔥 PERFECT MATH BASED CANDLE GENERATOR 🔥
+// 🔥 CORE LOGIC: CALCULATE TARGET BASED ON PREVIOUS CANDLE 🔥
 function generateTargetCandle(timestamp, openPrice, cmd, prevCandle) {
     let isGreen = Math.random() > 0.5;
     let baseVol = openPrice * 0.00005;
@@ -53,7 +51,7 @@ function generateTargetCandle(timestamp, openPrice, cmd, prevCandle) {
     let prevColor = 'UNKNOWN';
     if (prevCandle) {
         prevBody = Math.abs(prevCandle.close - prevCandle.open);
-        if (prevBody < baseVol * 0.3) prevBody = baseVol; // Base limit if prev was doji
+        if (prevBody < baseVol * 0.2) prevBody = baseVol; // Base limit
         prevColor = prevCandle.close >= prevCandle.open ? 'GREEN' : 'RED';
     }
 
@@ -62,27 +60,27 @@ function generateTargetCandle(timestamp, openPrice, cmd, prevCandle) {
     let dnWick = baseVol * Math.random();
 
     if (cmd) {
-        const type = cmd.type;
+        const type = cmd.action;
 
         if (type.includes('UP')) isGreen = true;
         if (type.includes('DOWN')) isGreen = false;
 
-        // User Custom Logics: Inside, Breakout, 2X, Opposite
+        // MATH LOGIC (Based on User's Request)
         if (type.includes('INSIDE')) {
-            body = prevBody * (0.40 + Math.random() * 0.30); // 40% to 70% of previous
+            body = prevBody * (0.50 + Math.random() * 0.25); // 50-75% of previous
             upWick = body * 0.2; dnWick = body * 0.2;
         } 
         else if (type.includes('BREAKOUT')) {
-            body = prevBody * (1.30 + Math.random() * 0.50); // 130% to 180% of previous
+            body = prevBody * (1.25 + Math.random() * 0.50); // 125-175% of previous
             upWick = body * 0.3; dnWick = body * 0.3;
         } 
         else if (type.includes('2X')) {
-            body = prevBody * (2.0 + Math.random() * 0.20); // Exact 2X (200% to 220%)
+            body = prevBody * (2.0 + Math.random() * 0.20); // 200-220% (Double Size)
             upWick = body * 0.5; dnWick = body * 0.5;
         } 
         else if (type === 'OPPOSITE_BREAKOUT') {
-            isGreen = (prevColor === 'RED'); // Opposite Color
-            body = prevBody * (1.30 + Math.random() * 0.50); // Breakout Size
+            isGreen = (prevColor === 'RED'); // Reverse color
+            body = prevBody * (1.30 + Math.random() * 0.50); // Breakout
             upWick = body * 0.3; dnWick = body * 0.3;
         } 
         else if (type.startsWith('PATTERN_')) {
@@ -97,10 +95,6 @@ function generateTargetCandle(timestamp, openPrice, cmd, prevCandle) {
                 isGreen = true; body = prevBody * 1.2; upWick = 0; dnWick = body * 3.0;
             } else if (type === 'PATTERN_SHOOTING_STAR') {
                 isGreen = false; body = prevBody * 1.2; upWick = body * 3.0; dnWick = 0;
-            } else if (type === 'PATTERN_BIG_PUMP') {
-                isGreen = true; body = prevBody * 3; upWick = baseVol; dnWick = baseVol;
-            } else if (type === 'PATTERN_BIG_DUMP') {
-                isGreen = false; body = prevBody * 3; upWick = baseVol; dnWick = baseVol;
             }
         }
     }
@@ -111,16 +105,11 @@ function generateTargetCandle(timestamp, openPrice, cmd, prevCandle) {
 
     const target = { timestamp, open: roundPrice(openPrice), close: roundPrice(close), high: roundPrice(high), low: roundPrice(low) };
 
-    // Create Analytics Payload (Will be saved ONLY when candle finishes)
     let analyticsPayload = null;
     if (cmd && cmd.id) {
         analyticsPayload = {
-            command: cmd.type,
-            targetTime: timestamp,
-            marketId: cmd.marketId,
             prevCandle: { open: prevCandle?.open || openPrice, close: prevCandle?.close || openPrice, color: prevColor, size: prevBody },
-            targetCandle: { open: target.open, close: target.close, color: isGreen ? 'GREEN' : 'RED', size: body },
-            executedAt: Date.now()
+            targetCandle: { open: target.open, close: target.close, color: isGreen ? 'GREEN' : 'RED', size: body }
         };
     }
 
@@ -151,44 +140,39 @@ async function initializeNewMarket(marketId) {
         history: candles,
         currentPrice: currentPrice,
         targetCandle: null,
-        currentNoise: 0,
-        pendingAnalytics: null // Holds data until candle completes
+        currentNoise: 0
     };
 }
 
 function ensureTargetCandle(marketData, currentPeriod) {
     let lastCandle = marketData.history[marketData.history.length - 1];
-
-    // 🔥 SAVE ANALYTICS ONLY AFTER THE CANDLE FULLY CLOSES 🔥
-    if (marketData.pendingAnalytics && currentPeriod > marketData.pendingAnalytics.targetTime) {
-        const pa = marketData.pendingAnalytics;
-        db.ref(`admin/market_overrides/${pa.marketId}/status`).set('Executed');
-        db.ref(`admin/command_analytics/${pa.id}`).set(pa.payload);
-        marketData.pendingAnalytics = null; // Clear it after saving
-    }
     
+    // When a new minute starts
     if (!marketData.targetCandle || marketData.targetCandle.timestamp !== currentPeriod) {
         
-        let overrideCmd = null;
-        if (adminOverrides[marketData.marketId]) {
-            const cmd = adminOverrides[marketData.marketId];
-            if (currentPeriod === cmd.targetTime && cmd.status !== 'Executed') {
-                overrideCmd = cmd;
+        let activeCmd = null;
+        
+        // Find if admin scheduled a command for this exact market and minute
+        for (const cmdId in adminCommands) {
+            const cmd = adminCommands[cmdId];
+            if (cmd.marketId === marketData.marketId && cmd.targetTime === currentPeriod && cmd.status === 'Pending') {
+                activeCmd = cmd;
+                break;
             }
         }
 
-        const { target, analyticsPayload } = generateTargetCandle(currentPeriod, lastCandle.close, overrideCmd, lastCandle);
+        const { target, analyticsPayload } = generateTargetCandle(currentPeriod, lastCandle.close, activeCmd, lastCandle);
         
         marketData.targetCandle = target;
         marketData.currentNoise = 0; 
         
-        if (overrideCmd && analyticsPayload) {
-            marketData.pendingAnalytics = {
-                id: overrideCmd.id,
-                marketId: overrideCmd.marketId,
-                targetTime: currentPeriod,
-                payload: analyticsPayload
-            };
+        // Execute the command in database immediately with results
+        if (activeCmd && analyticsPayload) {
+            console.log(`[EXECUTE] Market: ${marketData.marketId}, Action: ${activeCmd.action}`);
+            db.ref(`admin/commands/${activeCmd.id}`).update({
+                status: 'Executed',
+                analytics: analyticsPayload
+            });
         }
         
         const newCandle = { timestamp: currentPeriod, open: target.open, high: target.open, low: target.open, close: target.open };
@@ -199,17 +183,30 @@ function ensureTargetCandle(marketData, currentPeriod) {
     }
 }
 
+// 🔥 10s WAIT + 50s MOVE LOGIC 🔥
 function updatePriceSmoothly(marketData, currentPeriod) {
     const target = marketData.targetCandle;
     if (!target) return;
 
     const liveCandle = marketData.history[marketData.history.length - 1];
     const timeElapsed = Date.now() - currentPeriod;
-    const progress = Math.min(timeElapsed / 60000, 1.0); 
+    
+    let progress = 0;
+    let noiseMaxAllowed = 0;
+
+    // First 10 Seconds: Just hover around the open price (Simulating calculation)
+    if (timeElapsed <= 10000) {
+        progress = 0;
+        noiseMaxAllowed = target.open * 0.00002; // Tiny noise
+    } 
+    // Next 50 Seconds: Move towards the target
+    else {
+        // Map 10,000ms - 60,000ms to 0.0 - 1.0 progress
+        progress = Math.min((timeElapsed - 10000) / 50000, 1.0); 
+        noiseMaxAllowed = Math.abs(target.close - target.open) * 0.15 * (1 - progress); 
+    }
 
     const expectedBasePath = target.open + ((target.close - target.open) * progress);
-    
-    const noiseMaxAllowed = Math.abs(target.close - target.open) * 0.15 * (1 - progress); 
     let tickDelta = (Math.random() - 0.5) * noiseMaxAllowed;
     
     marketData.currentNoise += tickDelta;
@@ -218,14 +215,10 @@ function updatePriceSmoothly(marketData, currentPeriod) {
         marketData.currentNoise *= 0.5;
     }
 
-    if (progress > 0.1 && progress < 0.8 && Math.random() < 0.05) {
-        if (Math.random() > 0.5) marketData.currentNoise = (target.high - expectedBasePath) * Math.random();
-        else marketData.currentNoise = (target.low - expectedBasePath) * Math.random();
-    }
-
     let newPrice = expectedBasePath + marketData.currentNoise;
 
-    if (progress >= 0.95) {
+    // Hard lock at the last 2 seconds
+    if (progress >= 0.98) {
         newPrice = target.close;
     }
 
@@ -297,6 +290,6 @@ setInterval(() => {
     }
 }, TICK_MS);
 
-app.get('/ping', (_req, res) => res.send('Strict Engine V6 Running'));
+app.get('/ping', (_req, res) => res.send('Future Target Engine V7 Running'));
 const PORT = process.env.PORT || 3000;
 server.listen(PORT, () => console.log(`Server running on ${PORT}`));
