@@ -23,11 +23,10 @@ app.use(cors());
 const server = http.createServer(app);
 const wss = new WebSocket.Server({ server });
 
-const MAX_CANDLES = 1000;
-const TIMEFRAME = 60000;
-const TICK_MS = 200;
+const MAX_CANDLES = 300; // Keep only 300 candles in Server RAM (NO FIREBASE STORAGE)
+const TIMEFRAME = 60000; // 1 minute
+const TICK_MS = 250;
 const MIN_PRICE = 0.00001;
-const HISTORY_SEED_COUNT = 150;
 
 const markets = {}; 
 let adminCommands = {}; 
@@ -35,79 +34,54 @@ let adminCommands = {};
 function roundPrice(v) { return parseFloat(Math.max(MIN_PRICE, v).toFixed(5)); }
 function marketPathFromId(marketId) { return String(marketId || '').replace(/[\.\/ ]/g, '-').toLowerCase(); }
 
-// Listen for ALL Admin Commands globally
+// Listen for Admin Commands
 db.ref('admin/commands').on('value', (snapshot) => {
     adminCommands = snapshot.val() || {};
 });
 
-// 🔥 CORE LOGIC: PRECISE PATTERN GENERATOR 🔥
+// 🔥 REST API FOR CLIENT APP (NO FIREBASE STORAGE NEEDED) 🔥
+app.get('/api/history/:market', (req, res) => {
+    const marketId = req.params.market;
+    if (markets[marketId]) {
+        res.json(markets[marketId].history);
+    } else {
+        res.json([]);
+    }
+});
+
+// 🔥 PRECISE PATTERN GENERATOR 🔥
 function generateTargetPattern(timestamp, prevCandle, action) {
-    const openPrice = prevCandle ? prevCandle.close : 1.15000;
+    const openPrice = prevCandle ? prevCandle.close : 1.15000; 
     let baseVol = openPrice * 0.00006;
     
-    // Default Random Candle
     let body = baseVol * (0.5 + Math.random());
     let upWick = baseVol * Math.random();
     let dnWick = baseVol * Math.random();
     let isGreen = Math.random() > 0.5;
 
     if (action) {
-        // BULLISH PATTERNS (GREEN)
-        if (action === 'PATTERN_MARUBOZU_GREEN') {
-            isGreen = true; body = baseVol * 3.5; upWick = 0; dnWick = 0;
-        } 
-        else if (action === 'PATTERN_HAMMER' || action === 'PATTERN_BULLISH_PINBAR') {
-            isGreen = true; body = baseVol * 0.8; upWick = baseVol * 0.2; dnWick = baseVol * 3.0;
-        }
-        else if (action === 'PATTERN_BULLISH_SPINNING') {
-            isGreen = true; body = baseVol * 0.8; upWick = baseVol * 2.0; dnWick = baseVol * 2.0;
-        }
-        else if (action === 'PATTERN_DRAGONFLY_DOJI') {
-            isGreen = true; body = baseVol * 0.02; upWick = 0; dnWick = baseVol * 3.0;
-        }
-
-        // BEARISH PATTERNS (RED)
-        else if (action === 'PATTERN_MARUBOZU_RED') {
-            isGreen = false; body = baseVol * 3.5; upWick = 0; dnWick = 0;
-        }
-        else if (action === 'PATTERN_SHOOTING_STAR' || action === 'PATTERN_BEARISH_PINBAR') {
-            isGreen = false; body = baseVol * 0.8; upWick = baseVol * 3.0; dnWick = baseVol * 0.2;
-        }
-        else if (action === 'PATTERN_BEARISH_SPINNING') {
-            isGreen = false; body = baseVol * 0.8; upWick = baseVol * 2.0; dnWick = baseVol * 2.0;
-        }
-        else if (action === 'PATTERN_GRAVESTONE_DOJI') {
-            isGreen = false; body = baseVol * 0.02; upWick = baseVol * 3.0; dnWick = 0;
-        }
-
-        // NEUTRAL
-        else if (action === 'PATTERN_STANDARD_DOJI') {
-            isGreen = Math.random() > 0.5; body = baseVol * 0.02; upWick = baseVol * 1.5; dnWick = baseVol * 1.5;
-        }
-        else if (action === 'PATTERN_LONG_LEGGED_DOJI') {
-            isGreen = Math.random() > 0.5; body = baseVol * 0.05; upWick = baseVol * 3.5; dnWick = baseVol * 3.5;
-        }
+        if (action === 'PATTERN_MARUBOZU_GREEN') { isGreen = true; body = baseVol * 3.5; upWick = 0; dnWick = 0; } 
+        else if (action === 'PATTERN_HAMMER') { isGreen = true; body = baseVol * 0.8; upWick = baseVol * 0.2; dnWick = baseVol * 3.0; }
+        else if (action === 'PATTERN_BULLISH_SPINNING') { isGreen = true; body = baseVol * 0.8; upWick = baseVol * 2.0; dnWick = baseVol * 2.0; }
+        else if (action === 'PATTERN_DRAGONFLY_DOJI') { isGreen = true; body = baseVol * 0.02; upWick = 0; dnWick = baseVol * 3.0; }
         
-        // ADVANCED BREAKOUTS
-        else if (action.includes('UP_INSIDE') || action.includes('DOWN_INSIDE')) {
-            isGreen = action.includes('UP'); body = baseVol * 0.5; upWick = baseVol * 0.2; dnWick = baseVol * 0.2;
-        }
-        else if (action.includes('UP_BREAKOUT') || action.includes('DOWN_BREAKOUT')) {
-            isGreen = action.includes('UP'); body = baseVol * 1.8; upWick = baseVol * 0.3; dnWick = baseVol * 0.3;
-        }
-        else if (action.includes('UP_2X') || action.includes('DOWN_2X')) {
-            isGreen = action.includes('UP'); body = baseVol * 3.0; upWick = baseVol * 0.5; dnWick = baseVol * 0.5;
-        }
+        else if (action === 'PATTERN_MARUBOZU_RED') { isGreen = false; body = baseVol * 3.5; upWick = 0; dnWick = 0; }
+        else if (action === 'PATTERN_SHOOTING_STAR') { isGreen = false; body = baseVol * 0.8; upWick = baseVol * 3.0; dnWick = baseVol * 0.2; }
+        else if (action === 'PATTERN_BEARISH_SPINNING') { isGreen = false; body = baseVol * 0.8; upWick = baseVol * 2.0; dnWick = baseVol * 2.0; }
+        else if (action === 'PATTERN_GRAVESTONE_DOJI') { isGreen = false; body = baseVol * 0.02; upWick = baseVol * 3.0; dnWick = 0; }
+        
+        else if (action === 'PATTERN_STANDARD_DOJI') { isGreen = Math.random() > 0.5; body = baseVol * 0.02; upWick = baseVol * 1.5; dnWick = baseVol * 1.5; }
+        else if (action === 'PATTERN_LONG_LEGGED_DOJI') { isGreen = Math.random() > 0.5; body = baseVol * 0.05; upWick = baseVol * 3.5; dnWick = baseVol * 3.5; }
+        
+        else if (action.includes('UP_INSIDE') || action.includes('DOWN_INSIDE')) { isGreen = action.includes('UP'); body = baseVol * 0.5; upWick = baseVol * 0.2; dnWick = baseVol * 0.2; }
+        else if (action.includes('UP_BREAKOUT') || action.includes('DOWN_BREAKOUT')) { isGreen = action.includes('UP'); body = baseVol * 1.8; upWick = baseVol * 0.3; dnWick = baseVol * 0.3; }
+        else if (action.includes('UP_2X') || action.includes('DOWN_2X')) { isGreen = action.includes('UP'); body = baseVol * 3.0; upWick = baseVol * 0.5; dnWick = baseVol * 0.5; }
         else if (action === 'OPPOSITE_BREAKOUT') {
             if(prevCandle) {
                 const prevWasGreen = prevCandle.close >= prevCandle.open;
-                const prevBody = Math.abs(prevCandle.close - prevCandle.open);
-                isGreen = !prevWasGreen;
-                body = prevBody * (1.3 + Math.random() * 0.4);
+                isGreen = !prevWasGreen; body = Math.abs(prevCandle.close - prevCandle.open) * (1.3 + Math.random() * 0.4);
                 upWick = body * 0.2; dnWick = body * 0.2;
-            } else {
-                isGreen = Math.random() > 0.5; body = baseVol * 1.5;
-            }
+            } else { isGreen = Math.random() > 0.5; body = baseVol * 1.5; }
         }
     }
 
@@ -118,13 +92,25 @@ function generateTargetPattern(timestamp, prevCandle, action) {
     return { timestamp, open: roundPrice(openPrice), close: roundPrice(close), high: roundPrice(high), low: roundPrice(low), color: isGreen ? 'GREEN' : 'RED', pattern: action || 'RANDOM' };
 }
 
+// Initialize Market (Starts from exact last price without storing arrays in Firebase)
 async function initializeNewMarket(marketId) {
     const path = marketPathFromId(marketId);
+    let startPrice = 1.15000;
+    
+    try {
+        // Only read ONE value from Firebase to prevent chart jumps on server restart
+        const snap = await db.ref(`markets/${path}/live`).once('value');
+        if (snap.exists() && snap.val().price) {
+            startPrice = snap.val().price;
+        }
+    } catch (e) {}
+
     const nowPeriod = Math.floor(Date.now() / TIMEFRAME) * TIMEFRAME;
     const candles = [];
-    let currentCandle = null;
+    let currentCandle = { close: startPrice };
 
-    for (let i = HISTORY_SEED_COUNT; i > 0; i--) {
+    // Generate RAM-only history for clients
+    for (let i = MAX_CANDLES; i > 0; i--) {
         const target = generateTargetPattern(nowPeriod - (i * TIMEFRAME), currentCandle, null);
         currentCandle = target;
         candles.push({ timestamp: target.timestamp, open: target.open, high: target.high, low: target.low, close: target.close });
@@ -139,6 +125,7 @@ async function initializeNewMarket(marketId) {
         activeCommand: null,
         noise: 0
     };
+    console.log(`Market Initialized: ${marketId} | Starting Price: ${startPrice}`);
 }
 
 function processMarketTick(marketData, currentPeriod) {
@@ -147,12 +134,13 @@ function processMarketTick(marketData, currentPeriod) {
     // 1. MINUTE CHANGED: Finalize old candle & Setup new candle
     if (!marketData.liveCandle || marketData.liveCandle.timestamp !== currentPeriod) {
         
-        // Push finished candle to history and execute command
+        // Push finished candle to RAM history (NOT FIREBASE)
         if (marketData.liveCandle) {
             const finishedCandle = { ...marketData.liveCandle };
             marketData.history.push(finishedCandle);
             if (marketData.history.length > MAX_CANDLES) marketData.history.shift();
 
+            // Update Admin Command Status in Firebase (So Admin History works)
             if (marketData.activeCommand) {
                 const cmd = marketData.activeCommand;
                 const resultColor = finishedCandle.close >= finishedCandle.open ? 'GREEN' : 'RED';
@@ -170,7 +158,7 @@ function processMarketTick(marketData, currentPeriod) {
             }
         }
 
-        // Fetch Next Command
+        // Fetch Next Pending Command
         let nextCmd = null;
         let pendingCmds = Object.values(adminCommands).filter(c => c.marketId === marketData.marketId && c.status === 'Pending');
         if (pendingCmds.length > 0) {
@@ -182,17 +170,13 @@ function processMarketTick(marketData, currentPeriod) {
         marketData.activeCommand = nextCmd;
 
         // Generate Target for New Minute
-        const prevCandle = marketData.history.length > 0 ? marketData.history[marketData.history.length - 1] : null;
+        const prevCandle = marketData.history[marketData.history.length - 1];
         const target = generateTargetPattern(currentPeriod, prevCandle, nextCmd?.action);
         marketData.targetPattern = target;
 
         // Initialize Live Candle
         marketData.liveCandle = {
-            timestamp: currentPeriod,
-            open: target.open,
-            high: target.open,
-            low: target.open,
-            close: target.open
+            timestamp: currentPeriod, open: target.open, high: target.open, low: target.open, close: target.open
         };
         marketData.noise = 0;
         marketData.hitHigh = false;
@@ -219,14 +203,13 @@ function processMarketTick(marketData, currentPeriod) {
         else if (!marketData.hitLow && Math.random() < 0.05) { newPrice = target.low; marketData.hitLow = true; }
     }
 
-    // Snap to exact close price at the end
-    if (progress >= 0.97) newPrice = target.close;
+    // Snap to exact close price at the end (Last 2 seconds)
+    if (progress >= 0.96) newPrice = target.close;
 
     live.close = roundPrice(newPrice);
     live.high = roundPrice(Math.max(live.high, live.close, newPrice));
     live.low = roundPrice(Math.min(live.low, live.close, newPrice));
 
-    // Ensure it never crosses hard targets
     if(target.color === 'GREEN') {
         live.high = Math.min(live.high, target.high);
         live.low = Math.max(live.low, target.low);
@@ -262,7 +245,7 @@ wss.on('connection', (ws) => {
             if (msg?.type === 'subscribe') {
                 ws.subscribedMarket = msg.market;
                 if (markets[msg.market]) {
-                    const historyPayload = { type: 'history', market: msg.market, candles: markets[msg.market].history.slice(-300) };
+                    const historyPayload = { type: 'history', market: msg.market, candles: markets[msg.market].history };
                     ws.send(JSON.stringify(historyPayload));
                 }
             }
@@ -281,6 +264,7 @@ setInterval(() => {
         broadcastCandle(marketId, markets[marketId].liveCandle);
     }
 
+    // Save ONLY ONE LIVE PRICE to Firebase per minute (Virtually Zero Storage)
     if (currentMinute > lastSyncMinute) {
         lastSyncMinute = currentMinute;
         const batchUpdates = {};
@@ -294,6 +278,6 @@ setInterval(() => {
     }
 }, TICK_MS);
 
-app.get('/ping', (_req, res) => res.send('WebSocket Perfect Next-Candle Engine Running'));
+app.get('/ping', (_req, res) => res.send('No-Storage WebSocket Engine Running'));
 const PORT = process.env.PORT || 3000;
 server.listen(PORT, () => console.log(`Server running on ${PORT}`));
