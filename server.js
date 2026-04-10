@@ -1,4 +1,4 @@
-// --- START: server.js (Perfect Math-Based Size & Strict Direction) ---
+// --- START: server.js (Full Analytics & Strict Engine V5) ---
 
 const express = require('express');
 const http = require('http');
@@ -27,7 +27,7 @@ const wss = new WebSocket.Server({ server });
 
 const MAX_CANDLES = 1000;
 const TIMEFRAME = 60000;
-const TICK_MS = 250; // Fast ticks for smoothness
+const TICK_MS = 250;
 const MIN_PRICE = 0.00001;
 const HISTORY_SEED_COUNT = 300;
 
@@ -37,7 +37,6 @@ const adminOverrides = {};
 function roundPrice(v) { return parseFloat(Math.max(MIN_PRICE, v).toFixed(5)); }
 function marketPathFromId(marketId) { return String(marketId || '').replace(/[\.\/ ]/g, '-').toLowerCase(); }
 
-// Listen for Admin Commands
 db.ref('admin/market_overrides').on('value', (snapshot) => {
     const data = snapshot.val() || {};
     Object.keys(data).forEach(marketId => {
@@ -45,17 +44,17 @@ db.ref('admin/market_overrides').on('value', (snapshot) => {
     });
 });
 
-// 🔥 PRE-CALCULATE EXACT TARGET OHLC (BASED ON YOUR EXACT MATH) 🔥
+// PRE-CALCULATE TARGET AND LOG ANALYTICS FOR ADMIN HISTORY
 function generateTargetCandle(timestamp, openPrice, cmd, prevCandle) {
     let isGreen = Math.random() > 0.5;
     let baseVol = openPrice * 0.00005;
     
-    // ১. আগের ক্যান্ডেলের সাইজ মাপা
     let prevBody = baseVol;
+    let prevColor = 'UNKNOWN';
     if (prevCandle) {
         prevBody = Math.abs(prevCandle.close - prevCandle.open);
-        // যদি আগের ক্যান্ডেল Doji বা খুব ছোট হয়, তবে একটি বেস সাইজ ধরা হবে যেন ক্যালকুলেশন কাজ করে
-        if (prevBody < baseVol * 0.5) prevBody = baseVol; 
+        if (prevBody < baseVol * 0.5) prevBody = baseVol;
+        prevColor = prevCandle.close >= prevCandle.open ? 'GREEN' : 'RED';
     }
 
     let body = baseVol * (0.8 + Math.random());
@@ -65,36 +64,26 @@ function generateTargetCandle(timestamp, openPrice, cmd, prevCandle) {
     if (cmd) {
         const type = cmd.type;
 
-        // ২. কালার ফিক্স করা (UP দিলে Green, DOWN দিলে Red)
         if (type.includes('UP')) isGreen = true;
         if (type.includes('DOWN')) isGreen = false;
 
-        // ৩. আপনার বলা সাইজের অংক (Math) অনুযায়ী বডি তৈরি করা
         if (type.includes('INSIDE')) {
-            // Small (আগেরটার চেয়ে ছোট): আগের বডির ৫০% থেকে ৭৫% হবে
-            // উদাহরণ: আগে ৪০ থাকলে এখন ২০ থেকে ৩০ হবে
             body = prevBody * (0.50 + Math.random() * 0.25);
             upWick = body * 0.2; dnWick = body * 0.2;
         } 
         else if (type.includes('BREAKOUT')) {
-            // Medium (আগেরটার চেয়ে বড়): আগের বডির ১২৫% থেকে ১৭৫% হবে
-            // উদাহরণ: আগে ৪০ থাকলে এখন ৫০ থেকে ৭০ হবে
             body = prevBody * (1.25 + Math.random() * 0.50);
             upWick = body * 0.3; dnWick = body * 0.3;
         } 
         else if (type.includes('2X')) {
-            // 2X Big (আগেরটার ডাবল): আগের বডির ঠিক ২০০% থেকে ২২০% হবে
-            // উদাহরণ: আগে ৪০ থাকলে এখন ঠিক ৮০ থেকে ৮৮ হবে
             body = prevBody * (2.0 + Math.random() * 0.20);
             upWick = body * 0.5; dnWick = body * 0.5;
         } 
         else if (type === 'OPPOSITE_BREAKOUT') {
-            // শুধু এই বাটনে কালার উল্টো হবে এবং ব্রেকআউট করবে
             if (prevCandle) isGreen = prevCandle.close < prevCandle.open;
             body = prevBody * (1.3 + Math.random() * 0.5); 
         } 
         else if (type.startsWith('PATTERN_')) {
-            // প্যাটার্ন ড্রপডাউনের জন্য
             if (type === 'PATTERN_DOJI') {
                 body = baseVol * 0.1; upWick = baseVol * 3; dnWick = baseVol * 3;
                 isGreen = Math.random() > 0.5;
@@ -110,18 +99,26 @@ function generateTargetCandle(timestamp, openPrice, cmd, prevCandle) {
         }
     }
 
-    // ৪. ফাইনাল প্রাইস ক্যালকুলেশন
     const close = isGreen ? openPrice + body : openPrice - body;
     const high = Math.max(openPrice, close) + upWick;
     const low = Math.min(openPrice, close) - dnWick;
 
-    return { 
-        timestamp, 
-        open: roundPrice(openPrice), 
-        close: roundPrice(close), 
-        high: roundPrice(high), 
-        low: roundPrice(low) 
-    };
+    const resultCandle = { timestamp, open: roundPrice(openPrice), close: roundPrice(close), high: roundPrice(high), low: roundPrice(low) };
+
+    // 🔥 SAVE ANALYTICS FOR ADMIN PANEL HISTORY 🔥
+    if (cmd && cmd.id) {
+        db.ref(`admin/market_overrides/${cmd.marketId}/status`).set('Executed');
+        db.ref(`admin/command_analytics/${cmd.id}`).set({
+            command: cmd.type,
+            targetTime: timestamp,
+            marketId: cmd.marketId,
+            prevCandle: { open: prevCandle?.open || openPrice, close: prevCandle?.close || openPrice, color: prevColor, size: prevBody },
+            targetCandle: { open: resultCandle.open, close: resultCandle.close, color: isGreen ? 'GREEN' : 'RED', size: body },
+            executedAt: Date.now()
+        });
+    }
+
+    return resultCandle;
 }
 
 async function initializeNewMarket(marketId) {
@@ -160,9 +157,10 @@ function ensureTargetCandle(marketData, currentPeriod) {
         let overrideCmd = null;
         if (adminOverrides[marketData.marketId]) {
             const cmd = adminOverrides[marketData.marketId];
-            if (currentPeriod >= cmd.targetTime && currentPeriod < cmd.targetTime + 60000) {
+            // Match targetTime and ensure it hasn't been executed already
+            if (currentPeriod >= cmd.targetTime && currentPeriod < cmd.targetTime + 60000 && cmd.status !== 'Executed') {
                 overrideCmd = cmd;
-                console.log(`[ADMIN CONTROL] Market: ${marketData.marketId}, Cmd: ${cmd.type}`);
+                console.log(`[ADMIN EXECUTE] Market: ${marketData.marketId}, Cmd: ${cmd.type}`);
             }
         }
 
@@ -178,7 +176,6 @@ function ensureTargetCandle(marketData, currentPeriod) {
     }
 }
 
-// 🔥 SMOOTH INTERPOLATION WITH ZERO JUMP & 100% ACCURACY 🔥
 function updatePriceSmoothly(marketData, currentPeriod) {
     const target = marketData.targetCandle;
     if (!target) return;
@@ -205,7 +202,6 @@ function updatePriceSmoothly(marketData, currentPeriod) {
 
     let newPrice = expectedBasePath + marketData.currentNoise;
 
-    // 🛡️ HARD LOCK FOR THE LAST 3 SECONDS (No jumps, perfect close)
     if (progress >= 0.95) {
         newPrice = target.close;
     }
@@ -278,6 +274,6 @@ setInterval(() => {
     }
 }, TICK_MS);
 
-app.get('/ping', (_req, res) => res.send('Strict Math-Based Engine V4 Running'));
+app.get('/ping', (_req, res) => res.send('Strict Engine with Full Analytics Running'));
 const PORT = process.env.PORT || 3000;
 server.listen(PORT, () => console.log(`Server running on ${PORT}`));
