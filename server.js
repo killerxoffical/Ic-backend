@@ -5,7 +5,6 @@ const cors = require('cors');
 const firebase = require('firebase/app');
 require('firebase/database');
 
-// --- CONFIGURATION ---
 const mainConfig = { databaseURL: "https://ictex-trade-default-rtdb.firebaseio.com" };
 const adminConfig = { databaseURL: "https://earning-xone-v1-default-rtdb.firebaseio.com" };
 
@@ -23,88 +22,75 @@ const TIMEFRAME = 60000;
 const CANDLE_PATH_STEPS = 1000;
 const markets = {};
 
-// ১. মার্কেট ইনিশিয়ালাইজেশন
+// মার্কেট লোড
 mainDb.ref('admin/markets').on('value', snapshot => {
     const data = snapshot.val() || {};
     Object.keys(data).forEach(id => {
         if (data[id].status === 'active' && !markets[id]) {
-            markets[id] = { history: [{ timestamp: 0, close: 1.15500 }], lastSync: 0 };
+            markets[id] = { history: [{ timestamp: 0, open:1.15, high:1.15, low:1.15, close: 1.15500, path: new Array(1000).fill(1.155) }] };
         }
     });
 });
 
-// ২. ক্যান্ডেল জেনারেশন ইঞ্জিন (Path with 1000 points)
 function generateCandle(timestamp, open, type) {
-    const volatility = open * 0.0004;
-    const bodySize = volatility * (0.8 + Math.random());
-    const close = (type === "UP") ? open + bodySize : open - bodySize;
-    const high = Math.max(open, close) + (volatility * 0.2);
-    const low = Math.min(open, close) - (volatility * 0.2);
-
+    const vol = open * 0.0005;
+    const body = vol * (0.8 + Math.random());
+    const close = (type === "UP") ? open + body : open - body;
+    const high = Math.max(open, close) + (vol * 0.2);
+    const low = Math.min(open, close) - (vol * 0.2);
     const path = [];
     for (let i = 0; i < CANDLE_PATH_STEPS; i++) {
-        const progress = i / (CANDLE_PATH_STEPS - 1);
-        let p = open + (close - open) * progress;
-        p += (Math.random() - 0.5) * (volatility * 0.1);
+        let p = open + (close - open) * (i / 999);
+        p += (Math.random() - 0.5) * (vol * 0.1);
         path.push(parseFloat(p.toFixed(5)));
     }
     return { timestamp, open, high, low, close, path, isForced: true };
 }
 
-// ৩. মেইন লুপ
 setInterval(async () => {
     const now = Date.now();
-    const currentPeriod = Math.floor(now / TIMEFRAME) * TIMEFRAME;
-    const timeIntoCandle = now - currentPeriod;
+    const period = Math.floor(now / TIMEFRAME) * TIMEFRAME;
+    const elapsed = now - period;
 
-    for (const marketId in markets) {
-        const m = markets[marketId];
-        let lastCandle = m.history[m.history.length - 1];
+    for (const id in markets) {
+        const m = markets[id];
+        let last = m.history[m.history.length - 1];
 
-        // ক্যান্ডেল রোলওভার (১ মিনিট পর পর)
-        if (currentPeriod > lastCandle.timestamp) {
-            const planSnap = await adminDb.ref(`candle_plans/${marketId}`).once('value');
-            const plan = planSnap.val();
-
-            let types = ["UP", "DOWN", "UP", "DOWN", "UP", "DOWN"];
-            let currentIndex = 0;
+        if (period > last.timestamp) {
+            const snap = await adminDb.ref(`candle_plans/${id}`).once('value');
+            const plan = snap.val();
+            let nextType = "UP";
+            let idx = 0;
 
             if (plan) {
-                types = plan.pattern;
-                currentIndex = plan.currentIndex;
-                // যদি ৬টা শেষ হয়ে যায়, নতুন অটো প্ল্যান বানাও
-                if (currentIndex >= 6) {
-                    currentIndex = 0;
-                    types = types.sort(() => Math.random() - 0.5); // র‍্যান্ডমাইজ
-                    await adminDb.ref(`candle_plans/${marketId}`).update({ pattern: types, currentIndex: 0 });
+                idx = plan.currentIndex;
+                if (idx >= 6) {
+                    idx = 0;
+                    await adminDb.ref(`candle_plans/${id}/currentIndex`).set(0);
                 }
+                nextType = plan.pattern[idx];
+                await adminDb.ref(`candle_plans/${id}/currentIndex`).set(idx + 1);
             }
 
-            const nextType = types[currentIndex];
-            const newCandle = generateCandle(currentPeriod, lastCandle.close, nextType);
-            
-            m.history.push(newCandle);
-            if (m.history.length > 10) m.history.shift();
-            
-            // অ্যাডমিন ডিবির ইনডেক্স বাড়ানো
-            adminDb.ref(`candle_plans/${marketId}/currentIndex`).set(currentIndex + 1);
+            const newC = generateCandle(period, last.close, nextType);
+            m.history.push(newC);
+            if (m.history.length > 50) m.history.shift();
             
             // মেইন ডিবির লাইভ প্রাইস আপডেট (Monitor এর জন্য)
-            const path = String(marketId).replace(/[\.\/ ]/g, '-').toLowerCase();
-            mainDb.ref(`markets/${path}/live`).set({ price: newCandle.open, timestamp: now });
+            const path = String(id).replace(/[\.\/ ]/g, '-').toLowerCase();
+            mainDb.ref(`markets/${path}/live`).set({ price: newC.open, timestamp: now });
         }
 
-        // লাইভ টিক পাঠানো (Path index অনুযায়ী)
-        const pathIndex = Math.min(CANDLE_PATH_STEPS - 1, Math.floor((timeIntoCandle / TIMEFRAME) * CANDLE_PATH_STEPS));
-        const livePrice = m.history[m.history.length - 1].path[pathIndex];
+        const pIdx = Math.min(999, Math.floor((elapsed / TIMEFRAME) * 1000));
+        const livePrice = m.history[m.history.length - 1].path[pIdx];
         
         const payload = JSON.stringify({
-            type: 'subscribed', market: marketId,
+            type: 'subscribed', market: id,
             candle: { ...m.history[m.history.length - 1], close: livePrice }
         });
 
-        wss.clients.forEach(client => {
-            if (client.readyState === WebSocket.OPEN && client.subscribedMarket === marketId) client.send(payload);
+        wss.clients.forEach(c => {
+            if (c.readyState === WebSocket.OPEN && c.subscribedMarket === id) c.send(payload);
         });
     }
 }, 300);
@@ -116,4 +102,4 @@ wss.on('connection', ws => {
     });
 });
 
-server.listen(process.env.PORT || 3000, () => console.log("Server Live"));
+server.listen(process.env.PORT || 3000);
