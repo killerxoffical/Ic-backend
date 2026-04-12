@@ -5,7 +5,6 @@ const cors = require('cors');
 const firebase = require('firebase/app');
 require('firebase/database');
 
-// --- Firebase Configuration ---
 const firebaseConfig = {
     apiKey: "AIzaSyBUTMFblYIVovOe4F25XCFneJNTlVcoWCA",
     authDomain: "ictex-trade.firebaseapp.com",
@@ -28,60 +27,96 @@ const MAX_CANDLES = 500;
 const TIMEFRAME = 60000;
 const TICK_MS = 250;
 const MIN_PRICE = 0.00001;
-const HISTORY_SEED_COUNT = 300;
 
 const markets = {}; 
-let activeAdminCommands = {}; 
+let pendingCommands = {}; // কমান্ড এখানে এসে অপেক্ষা করবে
 
 function roundPrice(v) { return parseFloat(Math.max(MIN_PRICE, v).toFixed(5)); }
-function marketPathFromId(marketId) { return String(marketId || '').replace(/[\.\/ ]/g, '-').toLowerCase(); }
 
-// --- Listen to Admin Pattern Commands ---
-db.ref('admin/market_control').on('value', (snapshot) => {
-    activeAdminCommands = snapshot.val() || {};
+// ফায়ারবেস থেকে কমান্ড রিসিভ করা
+db.ref('admin/pending_patterns').on('value', (snapshot) => {
+    pendingCommands = snapshot.val() || {};
 });
 
-// --- 🎯 PATTERN MATH GENERATOR 🎯 ---
-function generatePatternCandle(openPrice, patternType) {
-    const baseVol = openPrice * 0.00015; // মার্কেটের নরমাল ভলিউম
-    let c, h, l;
-    let color = 'GREEN';
-
-    switch(patternType) {
+// 🎯 ১. টার্গেট OHLC জেনারেটর 🎯
+function generateTargetOHLC(openPrice, pattern) {
+    const vol = openPrice * 0.00015; // মার্কেটের সাধারণ ভলিউম
+    let O = openPrice, C, H, L;
+    
+    switch(pattern) {
         case 'MARUBOZU_GREEN':
-            c = openPrice + (baseVol * 3); h = c; l = openPrice; color = 'GREEN'; break;
+            C = O + (vol * 4); H = C; L = O; break;
         case 'MARUBOZU_RED':
-            c = openPrice - (baseVol * 3); h = openPrice; l = c; color = 'RED'; break;
-        case 'HAMMER_GREEN':
-            c = openPrice + (baseVol * 0.5); h = c + (baseVol * 0.1); l = openPrice - (baseVol * 2.5); color = 'GREEN'; break;
-        case 'HAMMER_RED':
-            c = openPrice - (baseVol * 0.5); h = openPrice + (baseVol * 0.1); l = c - (baseVol * 2.5); color = 'RED'; break;
-        case 'SHOOTING_STAR_GREEN':
-            c = openPrice + (baseVol * 0.5); h = c + (baseVol * 2.5); l = openPrice - (baseVol * 0.1); color = 'GREEN'; break;
-        case 'SHOOTING_STAR_RED':
-            c = openPrice - (baseVol * 0.5); h = openPrice + (baseVol * 2.5); l = c - (baseVol * 0.1); color = 'RED'; break;
-        case 'DOJI':
+            C = O - (vol * 4); H = O; L = C; break;
+            
+        case 'HAMMER_GREEN': // নিচে লম্বা লেজ, উপরে ছোট বডি
+            C = O + (vol * 1); H = C + (vol * 0.2); L = O - (vol * 5); break;
+        case 'HAMMER_RED': // নিচে লম্বা লেজ, উপরে ছোট লাল বডি
+            C = O - (vol * 1); H = O + (vol * 0.2); L = C - (vol * 5); break;
+            
+        case 'SHOOTING_STAR_GREEN': // উপরে লম্বা লেজ, নিচে ছোট বডি
+            C = O + (vol * 1); H = C + (vol * 5); L = O - (vol * 0.2); break;
+        case 'SHOOTING_STAR_RED': // উপরে লম্বা লেজ, নিচে ছোট লাল বডি
+            C = O - (vol * 1); H = O + (vol * 5); L = C - (vol * 0.2); break;
+            
+        case 'DOJI_GREEN': // ওপেন এবং ক্লোজ প্রায় সমান, দুইদিকে লেজ
+            C = O + (vol * 0.1); H = O + (vol * 3); L = O - (vol * 3); break;
+        case 'DOJI_RED': // ওপেন এবং ক্লোজ প্রায় সমান, দুইদিকে লেজ
+            C = O - (vol * 0.1); H = O + (vol * 3); L = O - (vol * 3); break;
+            
+        default: // NORMAL (Random)
             let isUp = Math.random() > 0.5;
-            c = openPrice + (isUp ? 1 : -1) * (baseVol * 0.05); 
-            h = openPrice + (baseVol * 2); 
-            l = openPrice - (baseVol * 2); 
-            color = isUp ? 'GREEN' : 'RED';
-            break;
-        default: // NORMAL RANDOM
-            let rIsUp = Math.random() > 0.5;
-            let body = baseVol * (0.5 + Math.random());
-            c = rIsUp ? openPrice + body : openPrice - body;
-            h = Math.max(openPrice, c) + (baseVol * Math.random());
-            l = Math.min(openPrice, c) - (baseVol * Math.random());
-            color = rIsUp ? 'GREEN' : 'RED';
+            let body = vol * (0.5 + Math.random());
+            C = isUp ? O + body : O - body;
+            H = Math.max(O, C) + (vol * Math.random() * 2);
+            L = Math.min(O, C) - (vol * Math.random() * 2);
+            pattern = 'NORMAL';
     }
-
-    return { open: roundPrice(openPrice), close: roundPrice(c), high: roundPrice(h), low: roundPrice(l), color, pattern: patternType };
+    return { open: roundPrice(O), high: roundPrice(H), low: roundPrice(L), close: roundPrice(C), pattern };
 }
 
-// --- Initialize Market ---
+// 🎯 ২. রিয়েলিস্টিক অ্যানিমেশন রুট (Waypoint Engine) 🎯
+function calculateCurrentPrice(target, progress) {
+    const { open: O, high: H, low: L, close: C, pattern } = target;
+    let basePrice;
+
+    if (pattern.includes('HAMMER')) {
+        // প্রথমে Low তে যাবে, তারপর Close এ উঠবে
+        if (progress < 0.5) basePrice = O + (L - O) * (progress / 0.5);
+        else basePrice = L + (C - L) * ((progress - 0.5) / 0.5);
+    } 
+    else if (pattern.includes('SHOOTING_STAR')) {
+        // প্রথমে High তে যাবে, তারপর Close এ নামবে
+        if (progress < 0.5) basePrice = O + (H - O) * (progress / 0.5);
+        else basePrice = H + (C - H) * ((progress - 0.5) / 0.5);
+    }
+    else if (pattern.includes('DOJI')) {
+        // High -> Low -> Close
+        if (progress < 0.33) basePrice = O + (H - O) * (progress / 0.33);
+        else if (progress < 0.66) basePrice = H + (L - H) * ((progress - 0.33) / 0.33);
+        else basePrice = L + (C - L) * ((progress - 0.66) / 0.34);
+    }
+    else {
+        // NORMAL বা MARUBOZU (সরাসরি ওপেন থেকে ক্লোজ)
+        basePrice = O + (C - O) * progress;
+    }
+
+    // হালকা কাঁপুনি (Noise) যোগ করা যাতে রোবোটিক না লাগে
+    const noiseAllowed = Math.abs(H - L) * 0.15 * (1 - progress);
+    let finalPrice = basePrice + ((Math.random() - 0.5) * noiseAllowed);
+
+    // লিমিটের বাইরে যেন না যায়
+    finalPrice = Math.max(L, Math.min(H, finalPrice));
+    
+    // একদম শেষে (59 সেকেন্ডে) ক্লোজ প্রাইসে ফিক্সড করে দেওয়া
+    if (progress >= 0.98) finalPrice = C;
+
+    return finalPrice;
+}
+
+
 async function initializeNewMarket(marketId) {
-    const path = marketPathFromId(marketId);
+    const path = marketId.replace(/[\.\/ ]/g, '-').toLowerCase();
     let startPrice = 1.15;
     try { const liveSnap = await db.ref(`markets/${path}/live`).once('value'); if (liveSnap.val()?.price) startPrice = liveSnap.val().price; } catch (e) {}
 
@@ -89,84 +124,55 @@ async function initializeNewMarket(marketId) {
     const candles = [];
     let currentPrice = startPrice;
 
-    for (let i = HISTORY_SEED_COUNT; i > 0; i--) {
-        const pData = generatePatternCandle(currentPrice, 'NORMAL');
-        candles.push({ timestamp: nowPeriod - (i * TIMEFRAME), open: pData.open, high: pData.high, low: pData.low, close: pData.close });
-        currentPrice = pData.close;
+    for (let i = 300; i > 0; i--) {
+        const p = generateTargetOHLC(currentPrice, 'NORMAL');
+        candles.push({ timestamp: nowPeriod - (i * TIMEFRAME), open: p.open, high: p.high, low: p.low, close: p.close });
+        currentPrice = p.close;
     }
-    markets[marketId] = { marketId, marketPath: path, history: candles, targetCandle: null, currentPrice: startPrice };
+    markets[marketId] = { marketId, marketPath: path, history: candles, target: null };
 }
 
-// --- Set Target at 00 Seconds ---
-function ensureTargetCandle(marketData, currentPeriod) {
+function processMarketTick(marketData, currentPeriod) {
     let lastCandle = marketData.history[marketData.history.length - 1];
-    
-    if (!marketData.targetCandle || marketData.targetCandle.timestamp !== currentPeriod) {
-        let openPrice = lastCandle ? lastCandle.close : 1.15;
-        let targetData;
 
-        // চেক করুন ডাটাবেজে Pending কমান্ড আছে কি না
-        const cmd = activeAdminCommands[marketData.marketId];
-        if (cmd && cmd.status === 'pending') {
-            // কমান্ড অনুযায়ী প্যাটার্ন জেনারেট করুন
-            targetData = generatePatternCandle(openPrice, cmd.pattern);
+    // নতুন মিনিট শুরু হলে
+    if (!marketData.target || marketData.target.timestamp !== currentPeriod) {
+        let openPrice = lastCandle ? lastCandle.close : 1.15;
+        let selectedPattern = 'NORMAL';
+
+        // চেক করুন অ্যাডমিন কোনো কমান্ড দিয়ে রেখেছে কি না
+        if (pendingCommands[marketData.marketId]) {
+            selectedPattern = pendingCommands[marketData.marketId];
+            console.log(`[ADMIN] Executing ${selectedPattern} on ${marketData.marketId}`);
             
-            // কমান্ডটিকে Pending থেকে Executing এ আপডেট করুন, যাতে এটি শুধু একবারই কাজ করে
-            db.ref(`admin/market_control/${marketData.marketId}`).update({ status: 'executing', executedAt: currentPeriod });
-            console.log(`[ADMIN] ${marketData.marketId} Drawing Pattern: ${cmd.pattern}`);
-        } else {
-            // কমান্ড না থাকলে নরমাল রেন্ডম ক্যান্ডেল
-            targetData = generatePatternCandle(openPrice, 'NORMAL');
+            // কমান্ডটি ফায়ারবেস থেকে মুছে দিন, যাতে এটি শুধু একবারই কাজ করে
+            db.ref(`admin/pending_patterns/${marketData.marketId}`).remove();
         }
 
-        marketData.targetCandle = { timestamp: currentPeriod, ...targetData };
-        marketData.currentPrice = openPrice;
+        // টার্গেট জেনারেট করা
+        marketData.target = { timestamp: currentPeriod, ...generateTargetOHLC(openPrice, selectedPattern) };
         
-        marketData.history.push({ timestamp: currentPeriod, open: targetData.open, high: targetData.open, low: targetData.open, close: targetData.open });
+        // নতুন ক্যান্ডেল পুশ করা
+        marketData.history.push({ timestamp: currentPeriod, open: openPrice, high: openPrice, low: openPrice, close: openPrice });
         if (marketData.history.length > MAX_CANDLES) marketData.history.shift();
+        
+        lastCandle = marketData.history[marketData.history.length - 1];
     }
-}
 
-// --- Draw the Pattern Smoothly ---
-function updatePriceSmoothly(marketData, currentPeriod) {
-    const target = marketData.targetCandle;
-    if (!target) return;
-
-    const liveCandle = marketData.history[marketData.history.length - 1];
+    // প্রাইস আপডেট করা
     const timeElapsed = Date.now() - currentPeriod;
     const progress = Math.min(timeElapsed / 60000, 1.0); 
+    
+    const newPrice = calculateCurrentPrice(marketData.target, progress);
 
-    // প্যাটার্ন রিয়েলিস্টিক করার জন্য Waypoints (প্রাইস কোন দিকে আগে যাবে)
-    let targetWaypoint;
-    if (progress < 0.4) {
-        // প্রথম ২৪ সেকেন্ডে শ্যাডো (Wick) তৈরি করবে
-        targetWaypoint = (target.close > target.open) ? target.low : target.high;
-    } else if (progress < 0.7) {
-        // পরের ১৮ সেকেন্ডে বিপরীত শ্যাডো তৈরি করবে
-        targetWaypoint = (target.close > target.open) ? target.high : target.low;
-    } else {
-        // শেষ ১৮ সেকেন্ডে ক্লোজ প্রাইসের দিকে যাবে
-        targetWaypoint = target.close;
-    }
-
-    // প্রাইস মুভমেন্ট এবং নয়েজ
-    const volatility = Math.abs(target.high - target.low) || (target.open * 0.0001);
-    marketData.currentPrice += (targetWaypoint - marketData.currentPrice) * 0.05; 
-    marketData.currentPrice += (Math.random() - 0.5) * (volatility * 0.1); 
-
-    // প্রাইস যাতে হাই এবং লো এর বাইরে না যায় তা নিশ্চিত করা
-    marketData.currentPrice = Math.max(target.low, Math.min(target.high, marketData.currentPrice));
-
-    if (progress >= 0.98) marketData.currentPrice = target.close; // শেষ মুহূর্তে ক্লোজে ফিক্স
-
-    liveCandle.close = roundPrice(marketData.currentPrice);
-    liveCandle.high = roundPrice(Math.max(liveCandle.high, liveCandle.close, marketData.currentPrice));
-    liveCandle.low = roundPrice(Math.min(liveCandle.low, liveCandle.close, marketData.currentPrice));
+    lastCandle.close = roundPrice(newPrice);
+    lastCandle.high = roundPrice(Math.max(lastCandle.high, newPrice));
+    lastCandle.low = roundPrice(Math.min(lastCandle.low, newPrice));
 }
 
 function broadcastCandle(marketId, candle) {
     const payload = JSON.stringify({ market: marketId, candle, serverTime: Date.now() });
-    wss.clients.forEach(client => { if (client.readyState === WebSocket.OPEN && client.subscribedMarket === marketId) client.send(payload); });
+    wss.clients.forEach(c => { if (c.readyState === WebSocket.OPEN && c.subscribedMarket === marketId) c.send(payload); });
 }
 
 db.ref('admin/markets').on('value', (snapshot) => {
@@ -186,37 +192,31 @@ wss.on('connection', (ws) => {
     });
 });
 
-// Cloudflare CDN Header
 app.get('/api/history/:marketId', (req, res) => {
-    const marketId = req.params.marketId;
-    if (markets[marketId] && markets[marketId].history) {
-        res.setHeader('Cache-Control', 'public, max-age=15, s-maxage=60');
-        res.json(markets[marketId].history.slice(-300));
-    } else { res.status(404).json({ error: 'Market not found' }); }
+    if (markets[req.params.marketId]) {
+        res.setHeader('Cache-Control', 'public, max-age=15, s-maxage=60'); // Cloudflare Cache
+        res.json(markets[req.params.marketId].history.slice(-300));
+    } else res.status(404).json({ error: 'Market not found' });
 });
 
-let lastSyncMinute = 0;
 setInterval(() => {
     const now = Date.now();
     const currentPeriod = Math.floor(now / TIMEFRAME) * TIMEFRAME;
-    const currentMinute = Math.floor(now / 60000);
 
     for (const marketId in markets) {
-        ensureTargetCandle(markets[marketId], currentPeriod);
-        updatePriceSmoothly(markets[marketId], currentPeriod);
+        processMarketTick(markets[marketId], currentPeriod);
         broadcastCandle(marketId, markets[marketId].history[markets[marketId].history.length - 1]);
-    }
-
-    if (currentMinute > lastSyncMinute) {
-        lastSyncMinute = currentMinute;
-        const batchUpdates = {};
-        for (const marketId in markets) {
-            const lastC = markets[marketId].history[markets[marketId].history.length-1];
-            if (lastC) batchUpdates[`markets/${markets[marketId].marketPath}/live`] = { price: lastC.close, timestamp: lastC.timestamp };
-        }
-        db.ref().update(batchUpdates).catch(()=>{});
     }
 }, TICK_MS);
 
-app.get('/ping', (_req, res) => res.send('Server Running - Pattern Injector Active'));
+setInterval(() => {
+    const batchUpdates = {};
+    for (const marketId in markets) {
+        const lastC = markets[marketId].history[markets[marketId].history.length-1];
+        if (lastC) batchUpdates[`markets/${markets[marketId].marketPath}/live`] = { price: lastC.close, timestamp: lastC.timestamp };
+    }
+    db.ref().update(batchUpdates).catch(()=>{});
+}, 60000);
+
+app.get('/ping', (_req, res) => res.send('Pattern Injector Active'));
 server.listen(process.env.PORT || 3000, () => console.log(`Server started`));
