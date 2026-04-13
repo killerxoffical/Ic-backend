@@ -1,4 +1,4 @@
-// --- START: server.js (v23 - Natural Market Movement + Admin Control) ---
+// --- START: server.js (v24 - Ultra Realistic Market + Perfect Admin Shapes) ---
 
 const express = require('express');
 const http = require('http');
@@ -36,11 +36,9 @@ const HISTORY_SEED_COUNT = 300;
 const markets = {}; 
 const adminPatterns = {}; 
 
-// Helper functions
 function roundPrice(v) { return parseFloat(Math.max(MIN_PRICE, v).toFixed(5)); }
 function marketPathFromId(marketId) { return String(marketId || '').replace(/[\.\/ ]/g, '-').toLowerCase(); }
 
-// --- Admin Control Listener ---
 db.ref('admin/markets').on('value', (snapshot) => {
     const fbMarkets = snapshot.val() || {};
     Object.keys(fbMarkets).forEach(marketId => {
@@ -52,98 +50,67 @@ db.ref('admin/markets').on('value', (snapshot) => {
     });
 });
 
-// 1. Normal Candle Generation (Natural & Random)
-function generateHistoricalCandle(timestamp, open, isLive = false) {
-    const safeOpen = Math.max(MIN_PRICE, open);
+// 🔥 Universal Target Generator (For both Admin and Natural Candles) 🔥
+function generateCandleTargets(timestamp, open, command) {
+    let isGreen, bodySize, upperWick, lowerWick, patternType;
+    
+    // Base Volatility
+    const baseVol = open * (0.0001 + Math.random() * 0.0002);
 
-    // If it's a live normal candle, we just set the open price. 
-    // The tick logic will build its shape naturally.
-    if (isLive) {
-        return {
-            timestamp,
-            open: roundPrice(safeOpen),
-            high: roundPrice(safeOpen),
-            low: roundPrice(safeOpen),
-            close: roundPrice(safeOpen),
-            isPredetermined: false // <-- This tells the server to move it randomly
-        };
+    // If no command, pick a natural realistic shape
+    if (command === 'NATURAL') {
+        const r = Math.random();
+        if (r < 0.1) command = 'DOJI';
+        else if (r < 0.2) command = Math.random() > 0.5 ? 'GREEN_HAMMER' : 'RED_HAMMER';
+        else if (r < 0.3) command = Math.random() > 0.5 ? 'GREEN_SHOOTING_STAR' : 'RED_SHOOTING_STAR';
+        else if (r < 0.4) command = Math.random() > 0.5 ? 'BULLISH_MARUBOZU' : 'BEARISH_MARUBOZU';
+        else command = Math.random() > 0.5 ? 'GREEN' : 'RED';
     }
-
-    // Historical generation with mixed sizes for a realistic background
-    const isGreen = Math.random() > 0.5;
-    const rand = Math.random();
-    let bodyFactor;
-    
-    if (rand < 0.15) bodyFactor = 0.00002; // Doji / small
-    else if (rand < 0.4) bodyFactor = 0.00006; // Medium-small
-    else if (rand < 0.8) bodyFactor = 0.00015; // Normal
-    else bodyFactor = 0.0003; // Big body
-
-    const body = bodyFactor * safeOpen;
-    const close = isGreen ? safeOpen + body : safeOpen - body;
-    const upperWick = (Math.random() * 0.00015) * safeOpen;
-    const lowerWick = (Math.random() * 0.00015) * safeOpen;
-
-    return {
-        timestamp,
-        open: roundPrice(safeOpen),
-        high: roundPrice(Math.max(safeOpen, close) + upperWick),
-        low: roundPrice(Math.min(safeOpen, close) - lowerWick),
-        close: roundPrice(close)
-    };
-}
-
-// 2. Admin-Controlled Dynamic Candle Generation (Targeted Shape)
-function generateDynamicCandle(timestamp, open, command) {
-    let bodySize, upperWick, lowerWick, close, high, low;
-    
-    const stdBody = open * (0.0001 + Math.random() * 0.0001);
-    const stdWick = open * (Math.random() * 0.00008);
 
     switch (command) {
         case 'GREEN':
-            bodySize = stdBody; close = open + bodySize; upperWick = stdWick; lowerWick = stdWick; break;
+            bodySize = baseVol; upperWick = baseVol * Math.random(); lowerWick = baseVol * Math.random(); isGreen = true; patternType = 'NORMAL'; break;
         case 'RED':
-            bodySize = stdBody; close = open - bodySize; upperWick = stdWick; lowerWick = stdWick; break;
+            bodySize = baseVol; upperWick = baseVol * Math.random(); lowerWick = baseVol * Math.random(); isGreen = false; patternType = 'NORMAL'; break;
         case 'BULLISH_MARUBOZU':
-            bodySize = open * (0.00025 + Math.random() * 0.0001); close = open + bodySize; upperWick = 0; lowerWick = 0; break;
+            bodySize = baseVol * 1.8; upperWick = 0; lowerWick = 0; isGreen = true; patternType = 'MARUBOZU'; break;
         case 'BEARISH_MARUBOZU':
-            bodySize = open * (0.00025 + Math.random() * 0.0001); close = open - bodySize; upperWick = 0; lowerWick = 0; break;
+            bodySize = baseVol * 1.8; upperWick = 0; lowerWick = 0; isGreen = false; patternType = 'MARUBOZU'; break;
         case 'GREEN_HAMMER':
-            bodySize = open * (0.00005 + Math.random() * 0.00005); close = open + bodySize; upperWick = open * (Math.random() * 0.00002); lowerWick = bodySize * (2 + Math.random() * 1.5); break;
+            bodySize = baseVol * 0.3; upperWick = baseVol * 0.1; lowerWick = baseVol * 1.8; isGreen = true; patternType = 'HAMMER'; break;
         case 'RED_HAMMER':
-            bodySize = open * (0.00005 + Math.random() * 0.00005); close = open - bodySize; upperWick = open * (Math.random() * 0.00002); lowerWick = bodySize * (2 + Math.random() * 1.5); break;
+            bodySize = baseVol * 0.3; upperWick = baseVol * 0.1; lowerWick = baseVol * 1.8; isGreen = false; patternType = 'HAMMER'; break;
         case 'GREEN_SHOOTING_STAR':
-            bodySize = open * (0.00005 + Math.random() * 0.00005); close = open + bodySize; upperWick = bodySize * (2 + Math.random() * 1.5); lowerWick = open * (Math.random() * 0.00002); break;
+            bodySize = baseVol * 0.3; upperWick = baseVol * 1.8; lowerWick = baseVol * 0.1; isGreen = true; patternType = 'SHOOTING_STAR'; break;
         case 'RED_SHOOTING_STAR':
-            bodySize = open * (0.00005 + Math.random() * 0.00005); close = open - bodySize; upperWick = bodySize * (2 + Math.random() * 1.5); lowerWick = open * (Math.random() * 0.00002); break;
+            bodySize = baseVol * 0.3; upperWick = baseVol * 1.8; lowerWick = baseVol * 0.1; isGreen = false; patternType = 'SHOOTING_STAR'; break;
         case 'DOJI':
-            bodySize = open * (Math.random() * 0.00001); close = Math.random() > 0.5 ? open + bodySize : open - bodySize; upperWick = open * (0.00005 + Math.random() * 0.0001); lowerWick = open * (0.00005 + Math.random() * 0.0001); break;
-        default: 
-            close = command === 'RED' ? open - stdBody : open + stdBody; upperWick = stdWick; lowerWick = stdWick;
+            bodySize = baseVol * 0.05; upperWick = baseVol * 1.2; lowerWick = baseVol * 1.2; isGreen = Math.random() > 0.5; patternType = 'DOJI'; break;
+        default:
+            bodySize = baseVol; upperWick = baseVol * 0.5; lowerWick = baseVol * 0.5; isGreen = true; patternType = 'NORMAL';
     }
-    
-    high = Math.max(open, close) + upperWick;
-    low = Math.min(open, close) - lowerWick;
+
+    const close = isGreen ? open + bodySize : open - bodySize;
+    const high = Math.max(open, close) + upperWick;
+    const low = Math.min(open, close) - lowerWick;
 
     return {
         timestamp,
         open: roundPrice(open),
-        high: roundPrice(open), 
-        low: roundPrice(open), 
-        close: roundPrice(open), 
-        isPredetermined: true, // <-- This tells the server to strictly follow the target
+        high: roundPrice(open), // Starts at open for live animation
+        low: roundPrice(open),  // Starts at open for live animation
+        close: roundPrice(open),// Starts at open for live animation
         targetHigh: roundPrice(high),
         targetLow: roundPrice(low),
         targetClose: roundPrice(close),
-        pattern: command
+        pattern: patternType,
+        isGreen: isGreen
     };
 }
 
 async function initializeNewMarket(marketId) {
     const path = marketPathFromId(marketId);
     let startPrice = 1.15;
-
     try {
         const liveSnap = await db.ref(`markets/${path}/live`).once('value');
         if (liveSnap.val()?.price) startPrice = liveSnap.val().price;
@@ -153,50 +120,43 @@ async function initializeNewMarket(marketId) {
     const candles = [];
     let currentPrice = startPrice;
 
+    // Seed History (Instant static render)
     for (let i = HISTORY_SEED_COUNT; i > 0; i--) {
-        const c = generateHistoricalCandle(nowPeriod - (i * TIMEFRAME), currentPrice, false);
-        candles.push(c);
-        currentPrice = c.close;
+        const target = generateCandleTargets(nowPeriod - (i * TIMEFRAME), currentPrice, 'NATURAL');
+        candles.push({
+            timestamp: target.timestamp, open: target.open, high: target.targetHigh, low: target.targetLow, close: target.targetClose
+        });
+        currentPrice = target.targetClose;
     }
 
     markets[marketId] = {
-        marketId,
-        marketPath: path,
-        history: candles,
-        currentPrice: currentPrice,
-        lastMove: 0
+        marketId, marketPath: path, history: candles, currentPrice: currentPrice
     };
 }
 
-// Check for admin command before creating a new candle
 function ensureCurrentPeriodCandle(marketData, currentPeriod) {
     let lastCandle = marketData.history[marketData.history.length - 1];
     if (!lastCandle) return null;
 
     if (currentPeriod > lastCandle.timestamp) {
-        let newCandle;
+        let command = 'NATURAL';
         
         if (marketData.nextCandleCommand) {
-            newCandle = generateDynamicCandle(currentPeriod, lastCandle.close, marketData.nextCandleCommand);
-            console.log(`[ADMIN] Market: ${marketData.marketId}, Time: ${new Date(currentPeriod).toLocaleTimeString()}, Command: ${marketData.nextCandleCommand}`);
-            marketData.nextCandleCommand = null; // Clear command
+            command = marketData.nextCandleCommand;
+            console.log(`[ADMIN COMMAND] Executing ${command} for ${marketData.marketId}`);
+            marketData.nextCandleCommand = null; 
         } 
         else {
             const adminPattern = adminPatterns[marketData.marketId];
             if (adminPattern && currentPeriod >= adminPattern.startTime) {
                 const patternIndex = Math.floor((currentPeriod - adminPattern.startTime) / TIMEFRAME);
                 if (patternIndex >= 0 && patternIndex < adminPattern.pattern.length) {
-                    const adminColor = adminPattern.pattern[patternIndex];
-                    newCandle = generateDynamicCandle(currentPeriod, lastCandle.close, adminColor);
+                    command = adminPattern.pattern[patternIndex];
                 }
             }
         }
         
-        // If no admin command, create a normal, natural candle
-        if (!newCandle) {
-            newCandle = generateHistoricalCandle(currentPeriod, lastCandle.close, true);
-        }
-
+        const newCandle = generateCandleTargets(currentPeriod, lastCandle.close, command);
         marketData.history.push(newCandle);
         if (marketData.history.length > MAX_CANDLES) marketData.history.shift();
         return newCandle;
@@ -204,46 +164,56 @@ function ensureCurrentPeriodCandle(marketData, currentPeriod) {
     return lastCandle;
 }
 
-// Tick Movement Controller (Handles both Natural and Admin modes)
+// 🔥 Ultimate Realistic Path Animation 🔥
 function updateRealisticPrice(marketData, candle, currentPeriod) {
     const now = Date.now();
     const timeElapsed = Math.max(0, now - currentPeriod);
+    const progress = Math.min(timeElapsed / TIMEFRAME, 1.0);
 
-    if (candle.isPredetermined) {
-        // --- ADMIN MODE: Guided movement to target ---
-        const progress = Math.min(timeElapsed / TIMEFRAME, 1.0);
-        const idealPrice = candle.open + (candle.targetClose - candle.open) * progress;
-        const noiseFactor = 1 - progress; 
-        const noise = (Math.random() - 0.5) * (candle.open * 0.0001) * noiseFactor;
+    let idealPrice = candle.open;
+    const { pattern, isGreen, targetHigh, targetLow, targetClose, open } = candle;
 
-        marketData.currentPrice = idealPrice + noise;
-        marketData.currentPrice = Math.min(marketData.currentPrice, candle.targetHigh);
-        marketData.currentPrice = Math.max(marketData.currentPrice, candle.targetLow);
-
-        // Lock exactly on target in the last second
-        if (timeElapsed >= TIMEFRAME - 1000) {
-            marketData.currentPrice = candle.targetClose;
+    // Pathing Engine: Guides the price accurately to form the correct wicks and bodies
+    if (pattern === 'HAMMER') {
+        if (progress < 0.4) idealPrice = open + (targetLow - open) * (progress / 0.4); // Go down to wick
+        else idealPrice = targetLow + (targetClose - targetLow) * ((progress - 0.4) / 0.6); // Go up to close
+    } 
+    else if (pattern === 'SHOOTING_STAR') {
+        if (progress < 0.4) idealPrice = open + (targetHigh - open) * (progress / 0.4); // Go up to wick
+        else idealPrice = targetHigh + (targetClose - targetHigh) * ((progress - 0.4) / 0.6); // Go down to close
+    } 
+    else if (pattern === 'DOJI') {
+        if (progress < 0.3) idealPrice = open + (targetHigh - open) * (progress / 0.3); // Up
+        else if (progress < 0.7) idealPrice = targetHigh + (targetLow - targetHigh) * ((progress - 0.3) / 0.4); // Down
+        else idealPrice = targetLow + (targetClose - targetLow) * ((progress - 0.7) / 0.3); // Back to middle
+    } 
+    else if (pattern === 'MARUBOZU') {
+        idealPrice = open + (targetClose - open) * progress; // Straight shot
+    } 
+    else { // NORMAL (Classic Candle)
+        if (isGreen) {
+            if (progress < 0.2) idealPrice = open + (targetLow - open) * (progress / 0.2); // Lower wick
+            else if (progress < 0.8) idealPrice = targetLow + (targetHigh - targetLow) * ((progress - 0.2) / 0.6); // Body to High
+            else idealPrice = targetHigh + (targetClose - targetHigh) * ((progress - 0.8) / 0.2); // Settle to close
+        } else {
+            if (progress < 0.2) idealPrice = open + (targetHigh - open) * (progress / 0.2); // Upper wick
+            else if (progress < 0.8) idealPrice = targetHigh + (targetLow - targetHigh) * ((progress - 0.2) / 0.6); // Body to Low
+            else idealPrice = targetLow + (targetClose - targetLow) * ((progress - 0.8) / 0.2); // Settle to close
         }
-    } else {
-        // --- NATURAL MODE: Realistic Random Walk ---
-        const openPrice = candle.open;
-        const baseVolatility = openPrice * 0.00004;
+    }
 
-        let impulse = (Math.random() - 0.5) * baseVolatility * 2.0;
-        let recoil = -(marketData.lastMove || 0) * 0.25; 
-        let jitter = (Math.random() - 0.5) * (baseVolatility * 0.2);
-        let finalMove = impulse + recoil + jitter;
-        
-        if (Math.random() < 0.08) finalMove *= 3.5; // Occasional natural spike
+    // Add Natural Jitter (Noise)
+    const noiseFactor = Math.sin(progress * Math.PI); // More jitter in middle, stable at start/end
+    const noise = (Math.random() - 0.5) * (open * 0.0001) * noiseFactor;
+    marketData.currentPrice = idealPrice + noise;
 
-        marketData.currentPrice += finalMove;
-        marketData.lastMove = finalMove;
+    // Safety bounds
+    marketData.currentPrice = Math.min(marketData.currentPrice, targetHigh);
+    marketData.currentPrice = Math.max(marketData.currentPrice, targetLow);
 
-        // Prevent it from wandering ridiculously far in a single minute
-        const dist = marketData.currentPrice - openPrice;
-        if (Math.abs(dist) > openPrice * 0.0008) {
-            marketData.currentPrice -= finalMove * 1.5; 
-        }
+    // Final Snap to Target
+    if (timeElapsed >= TIMEFRAME - 1000) {
+        marketData.currentPrice = targetClose;
     }
 
     candle.close = roundPrice(marketData.currentPrice);
@@ -260,7 +230,7 @@ function broadcastCandle(marketId, candle) {
     });
 }
 
-// Market listener
+// Listeners & Express Endpoints
 db.ref('admin/markets').on('value', (snapshot) => {
     const fbMarkets = snapshot.val() || {};
     Object.keys(fbMarkets).forEach((marketId) => {
@@ -295,21 +265,18 @@ app.get('/api/history/:marketId', (req, res) => {
     }
 });
 
-// Admin Command Endpoint
 app.post('/api/admin/command', (req, res) => {
     const { marketId, command } = req.body;
-    if (!marketId || !command) {
-        return res.status(400).json({ error: 'Missing marketId or command' });
-    }
+    if (!marketId || !command) return res.status(400).json({ error: 'Missing marketId or command' });
     if (markets[marketId]) {
         markets[marketId].nextCandleCommand = command;
-        res.json({ success: true, message: `Command ${command} received for ${marketId}` });
+        res.json({ success: true, message: `Command ${command} received` });
     } else {
         res.status(404).json({ error: 'Market not found' });
     }
 });
 
-// Main Loop
+// Main Animation Loop
 let lastSyncMinute = 0;
 setInterval(() => {
     const now = Date.now();
@@ -332,18 +299,14 @@ setInterval(() => {
             const m = markets[marketId];
             const lastC = m.history[m.history.length-1];
             if (lastC) {
-                batchUpdates[`markets/${m.marketPath}/live`] = {
-                    price: lastC.close,
-                    timestamp: lastC.timestamp
-                };
+                batchUpdates[`markets/${m.marketPath}/live`] = { price: lastC.close, timestamp: lastC.timestamp };
             }
         }
         db.ref().update(batchUpdates).catch(()=>{});
-        console.log(`[Batch Sync] ${Object.keys(markets).length} markets backed up.`);
     }
 }, TICK_MS);
 
-app.get('/ping', (_req, res) => res.send('UltraSmooth V23 - Natural & Admin Active'));
+app.get('/ping', (_req, res) => res.send('UltraSmooth V24 - Ultra Realistic & Admin Active'));
 
 const PORT = process.env.PORT || 3000;
 server.listen(PORT, () => console.log(`Server running on ${PORT}`));
