@@ -1,4 +1,4 @@
-// --- START: server.js (v26 - Backend Auto-Pilot & Direct Firebase Admin Command) ---
+// --- START: server.js (v27 - Backend Auto-Pilot & Fixed Market IDs) ---
 
 const express = require('express');
 const http = require('http');
@@ -48,8 +48,7 @@ db.ref('admin/markets').on('value', (snapshot) => {
     const fbMarkets = snapshot.val() || {};
     
     Object.keys(fbMarkets).forEach(marketKey => {
-        if (marketKey.startsWith('-')) return; // Ignore junk IDs
-
+        // এখানে কোনো ব্লক নেই, সবগুলো Firebase Push ID (-Oo...) একসেপ্ট করবে
         const nodeData = fbMarkets[marketKey] || {};
 
         if (!markets[marketKey]) {
@@ -63,7 +62,7 @@ db.ref('admin/markets').on('value', (snapshot) => {
         // Listen for Direct Admin Commands from HTML Panel
         if (nodeData.nextCandleCommand && markets[marketKey]) {
             markets[marketKey].nextCandleCommand = nodeData.nextCandleCommand;
-            console.log(`[ADMIN COMMAND] Market: ${marketKey} => Forcing Pattern: ${nodeData.nextCandleCommand}`);
+            console.log(`[ADMIN COMMAND] Market: ${nodeData.name || marketKey} => Forcing Pattern: ${nodeData.nextCandleCommand}`);
             // Delete command from firebase so it only executes once
             db.ref(`admin/markets/${marketKey}/nextCandleCommand`).remove().catch(()=>{});
         }
@@ -207,21 +206,15 @@ function updateRealisticPrice(marketData, candle, currentPeriod) {
     
     if (candle.isPredetermined) {
         const progress = Math.min(timeElapsed / TIMEFRAME, 1.0);
-        
-        // Easing function (starts fast, slows down near the end)
         const easeProgress = 1 - Math.pow(1 - progress, 3); 
-        
-        // Base route to target
         let idealPrice = candle.open + (candle.targetClose - candle.open) * easeProgress;
         
-        // Natural Noise Generation (makes it look like a real market)
-        const noiseFactor = 1 - Math.pow(progress, 2); // Noise stops at the very end
+        const noiseFactor = 1 - Math.pow(progress, 2); 
         const volatility = candle.open * 0.00008;
         const noise = (Math.sin(now / 200) + Math.cos(now / 350)) * volatility * noiseFactor;
         
         marketData.currentPrice = idealPrice + noise;
 
-        // Ensure price doesn't break the high/low wick boundaries
         marketData.currentPrice = Math.min(marketData.currentPrice, candle.targetHigh);
         marketData.currentPrice = Math.max(marketData.currentPrice, candle.targetLow);
 
@@ -273,7 +266,6 @@ setInterval(() => {
         broadcastCandle(marketId, candle);
     }
 
-    // Sync to Firebase every 1.5s
     if (now - lastSyncTime > 1500) {
         lastSyncTime = now;
         const batchUpdates = {};
@@ -287,7 +279,7 @@ setInterval(() => {
     }
 }, TICK_MS);
 
-app.get('/ping', (_req, res) => res.send('Backend V26 - Smart Auto-Pilot & Direct Admin'));
+app.get('/ping', (_req, res) => res.send('Backend V27 - Smart Auto-Pilot & Fixed Market IDs'));
 const PORT = process.env.PORT || 3000;
 server.listen(PORT, () => console.log(`Server running on ${PORT}`));
 
