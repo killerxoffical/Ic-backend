@@ -1,4 +1,4 @@
-// --- START: server.js (v24 - Auto ID Support & Mobile Admin Fix) ---
+// --- START: server.js (v25 - Live Price Sync & Admin Fix) ---
 
 const express = require('express');
 const http = require('http');
@@ -41,14 +41,15 @@ const activeTradesDb = {};
 function roundPrice(v) { return parseFloat(Math.max(MIN_PRICE, v).toFixed(5)); }
 function marketPathFromId(marketId) { return String(marketId || '').replace(/[\.\/ ]/g, '-').toLowerCase(); }
 
-// --- Admin Control Listener (Support for Firebase Push IDs) ---
+// --- Admin Control Listener ---
 db.ref('admin/markets').on('value', (snapshot) => {
     const fbMarkets = snapshot.val() || {};
     
     Object.keys(fbMarkets).forEach(marketKey => {
+        if (marketKey.startsWith('-')) return;
+
         const nodeData = fbMarkets[marketKey] || {};
 
-        // ইনিশিয়ালাইজ না থাকলে চালু করো
         if (!markets[marketKey]) {
             console.log(`[SYSTEM] Initializing new market: ${nodeData.name || marketKey}`);
             initializeNewMarket(marketKey);
@@ -62,17 +63,14 @@ db.ref('admin/markets').on('value', (snapshot) => {
         activeTradesDb[marketKey] = nodeData.activeTrades || {};
         marketSettings[marketKey] = nodeData.settings || { smartMode: true, winRatio: 0.70 };
 
-        // Process direct manual command from Firebase
         if (nodeData.nextCandleCommand && markets[marketKey]) {
             markets[marketKey].nextCandleCommand = nodeData.nextCandleCommand;
             console.log(`[ADMIN COMMAND] Next Candle for ${nodeData.name || marketKey} => ${nodeData.nextCandleCommand}`);
-            // Clear it from firebase so it only fires once
             db.ref(`admin/markets/${marketKey}/nextCandleCommand`).remove().catch(()=>{});
         }
     });
 });
 
-// 1. Normal Candle Generation
 function generateHistoricalCandle(timestamp, open, isLive = false) {
     const safeOpen = Math.max(MIN_PRICE, open);
     const isGreen = Math.random() > 0.5;
@@ -101,7 +99,6 @@ function generateHistoricalCandle(timestamp, open, isLive = false) {
     return { timestamp, open: roundPrice(safeOpen), high: roundPrice(high), low: roundPrice(low), close: roundPrice(close) };
 }
 
-// 2. Admin-Controlled Dynamic Candle Generation
 function generateDynamicCandle(timestamp, open, command) {
     let bodySize, upperWick, lowerWick, close, high, low;
     const stdBody = open * (0.0001 + Math.random() * 0.0001);
@@ -300,11 +297,10 @@ app.get('/api/history/:marketId', (req, res) => {
     }
 });
 
-let lastSyncMinute = 0;
+let lastSyncTime = 0;
 setInterval(() => {
     const now = Date.now();
     const currentPeriod = Math.floor(now / TIMEFRAME) * TIMEFRAME;
-    const currentMinute = Math.floor(now / 60000);
 
     for (const marketId in markets) {
         const marketData = markets[marketId];
@@ -315,24 +311,26 @@ setInterval(() => {
         broadcastCandle(marketId, candle);
     }
 
-    if (currentMinute > lastSyncMinute) {
-        lastSyncMinute = currentMinute;
+    // Update Firebase every 1.5 seconds so Admin Panel gets Live Prices smoothly
+    if (now - lastSyncTime > 1500) {
+        lastSyncTime = now;
         const batchUpdates = {};
         for (const marketId in markets) {
             const m = markets[marketId];
-            const lastC = m.history[m.history.length-1];
-            if (lastC) {
+            if (m.currentPrice) {
                 batchUpdates[`markets/${m.marketPath}/live`] = {
-                    price: lastC.close,
-                    timestamp: lastC.timestamp
+                    price: m.currentPrice,
+                    timestamp: Date.now()
                 };
             }
         }
-        db.ref().update(batchUpdates).catch(()=>{});
+        if (Object.keys(batchUpdates).length > 0) {
+            db.ref().update(batchUpdates).catch(()=>{});
+        }
     }
 }, TICK_MS);
 
-app.get('/ping', (_req, res) => res.send('UltraSmooth V24 - Mobile Admin & Auto ID Support'));
+app.get('/ping', (_req, res) => res.send('UltraSmooth V25 - Live Price & Admin Fix'));
 
 const PORT = process.env.PORT || 3000;
 server.listen(PORT, () => console.log(`Server running on ${PORT}`));
