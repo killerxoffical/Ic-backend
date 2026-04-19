@@ -45,15 +45,26 @@ function marketPathFromId(marketId) { return String(marketId || '').replace(/[\.
 // --- Admin Control Listener ---
 db.ref('admin/markets').on('value', (snapshot) => {
     const fbMarkets = snapshot.val() || {};
-    Object.keys(fbMarkets).forEach(marketId => {
-        if (fbMarkets[marketId]?.pattern_config?.isActive) {
-            adminPatterns[marketId] = fbMarkets[marketId].pattern_config;
+    Object.keys(fbMarkets).forEach(fbKey => {
+        const nodeData = fbMarkets[fbKey] || {};
+        // If the frontend used a push token, extract the real marketId. Otherwise use fbKey.
+        const marketId = nodeData.marketId || fbKey;
+
+        if (nodeData.pattern_config?.isActive) {
+            adminPatterns[marketId] = nodeData.pattern_config;
         } else {
             delete adminPatterns[marketId]; 
         }
-        // Capture active trades for Smart Algorithmic Control
-        activeTradesDb[marketId] = fbMarkets[marketId]?.activeTrades || {};
-        marketSettings[marketId] = fbMarkets[marketId]?.settings || { smartMode: true, winRatio: 0.70 };
+        activeTradesDb[marketId] = nodeData.activeTrades || {};
+        marketSettings[marketId] = nodeData.settings || { smartMode: true, winRatio: 0.70 };
+
+        // Process direct manual command from Firebase instead of API
+        if (nodeData.nextCandleCommand && markets[marketId]) {
+            markets[marketId].nextCandleCommand = nodeData.nextCandleCommand;
+            console.log(`[FIREBASE] Admin commanded Next Candle for ${marketId} to be ${nodeData.nextCandleCommand}`);
+            // Clear it from firebase so it only fires once
+            db.ref(`admin/markets/${fbKey}/nextCandleCommand`).remove().catch(()=>{});
+        }
     });
 });
 
