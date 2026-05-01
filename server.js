@@ -383,6 +383,110 @@ app.get('/api/history/:marketId', (req, res) => {
 });
 
 // --- REST API ENDPOINT ---
+app.post('/api/trade/place', async (req, res) => {
+    const { uid, marketId, direction, amount, payoutRate, expirySettings } = req.body;
+
+    if (!uid || !marketId || !direction || !amount || !payoutRate || !expirySettings) {
+        return res.status(400).json({ success: false, error: 'Missing required trade data.' });
+    }
+
+    const market = markets[marketId];
+    if (!market || market.history.length === 0) {
+        return res.status(404).json({ success: false, error: 'Market not found or not ready.' });
+    }
+
+    try {
+        const liveBaseCandle = market.history[market.history.length - 1];
+        const openPrice = liveBaseCandle.close;
+
+        const now = Date.now();
+        let expiryTimestamp;
+        let resolveOnNextOpen = false;
+        
+        const timeIntoCandle = (now - liveBaseCandle.timestamp);
+
+        if (expirySettings.type === 'time') {
+            const candleEndTime = liveBaseCandle.timestamp + TIMEFRAME;
+            const candlesToWait = Math.floor(expirySettings.value / 60); // Assuming value is in seconds
+
+            if (timeIntoCandle < 30000) { // First half of candle
+                expiryTimestamp = candleEndTime + ((candlesToWait - 1) * TIMEFRAME);
+            } else { // Second half
+                 expiryTimestamp = candleEndTime + (candlesToWait * TIMEFRAME);
+            }
+            resolveOnNextOpen = true;
+        } else {
+            expiryTimestamp = now + (expirySettings.value * 1000);
+        }
+
+        const userRef = db.ref(`users/${uid}`);
+        const userSnapshot = await userRef.once('value');
+        const userData = userSnapshot.val();
+
+        if (!userData || userData.accountStatus !== 'active') {
+            return res.status(403).json({ success: false, error: 'Account not active.' });
+        }
+
+        const realBalance = userData.realBalance || 0;
+        const bonusBalance = userData.bonusBalance || 0;
+
+        if (amount > (realBalance + bonusBalance)) {
+            return res.status(402).json({ success: false, error: 'Insufficient balance.' });
+        }
+
+        const realDeduction = Math.min(amount, realBalance);
+        const bonusDeduction = amount - realDeduction;
+
+        await userRef.update({
+            realBalance: realBalance - realDeduction,
+            bonusBalance: bonusBalance - bonusDeduction
+        });
+
+        const activeTradesRef = db.ref(`users/${uid}/activeTrades`);
+        const newBetRef = activeTradesRef.push();
+        const betData = { 
+            id: newBetRef.key, 
+            amount, 
+            realAmount: realDeduction, 
+            bonusAmount: bonusDeduction, 
+            direction, 
+            openPrice, 
+            expiryTimestamp, 
+            expiryType: expirySettings.type, 
+            entryTimestamp: liveBaseCandle.timestamp, 
+            payoutRate, 
+            market: market.marketId,
+            marketId: market.marketId,
+            resolveOnNextOpen
+        };
+        
+        const updates = {};
+        updates[`users/${uid}/activeTrades/${betData.id}`] = betData;
+        updates[`admin/markets/${marketId}/activeTrades/${betData.id}`] = { amount, direction, uid, timestamp: betData.entryTimestamp };
+        
+        await db.ref().update(updates);
+        
+        res.json({ success: true, trade: betData });
+
+    } catch (error) {
+        console.error("Error placing trade on server:", error);
+        // Attempt to refund user if error occurred after balance deduction
+        // This is a simplified refund, a more robust system might be needed for production
+        const userRef = db.ref(`users/${uid}`);
+        const userSnapshot = await userRef.once('value');
+        const userData = userSnapshot.val();
+        const realBalance = userData.realBalance || 0;
+        const bonusBalance = userData.bonusBalance || 0;
+        const realDeduction = Math.min(amount, realBalance);
+        const bonusDeduction = amount - realDeduction;
+        await userRef.update({
+            realBalance: realBalance + realDeduction,
+            bonusBalance: bonusBalance + bonusDeduction
+        });
+        res.status(500).json({ success: false, error: 'Server error while placing trade.' });
+    }
+});
+
 app.post('/api/admin/command', (req, res) => {
     const { marketId, command } = req.body;
     if (!marketId || !command) {
