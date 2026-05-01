@@ -49,16 +49,45 @@ function roundPrice(v) { return parseFloat(Math.max(MIN_PRICE, v).toFixed(5)); }
 function marketPathFromId(marketId) { return String(marketId || '').replace(/[\.\/ ]/g, '-').toLowerCase(); }
 
 // --- Firebase Listeners ---
+const marketListeners = {};
+
 db.ref('admin/markets').on('value', (snapshot) => {
     const fbMarkets = snapshot.val() || {};
-    Object.keys(fbMarkets).forEach(marketId => {
-        const nodeData = fbMarkets[marketId] || {};
-        
-        activeTradesDb[marketId] = nodeData.activeTrades || {};
+    const currentMarketIds = Object.keys(markets);
+    const fbMarketIds = Object.keys(fbMarkets);
 
-        const type = nodeData.type;
+    // Add new markets and attach listeners
+    fbMarketIds.forEach(marketId => {
+        const nodeData = fbMarkets[marketId];
+        const type = nodeData?.type;
+
+        // Initialize new market if it's new and of the correct type
         if ((type === 'otc' || type === 'broker_real') && !markets[marketId]) {
             initializeNewMarket(marketId);
+            console.log(`Initialized new market: ${marketId}`);
+        }
+
+        // Attach a real-time listener for activeTrades if not already attached
+        if (!marketListeners[marketId]) {
+            const tradesRef = db.ref(`admin/markets/${marketId}/activeTrades`);
+            tradesRef.on('value', (tradesSnapshot) => {
+                activeTradesDb[marketId] = tradesSnapshot.val() || {};
+                // console.log(`Active trades for ${marketId} updated:`, Object.keys(activeTradesDb[marketId]).length);
+            });
+            marketListeners[marketId] = tradesRef;
+        }
+    });
+
+    // Clean up listeners for removed markets
+    currentMarketIds.forEach(marketId => {
+        if (!fbMarketIds.includes(marketId)) {
+            if (marketListeners[marketId]) {
+                marketListeners[marketId].off(); // Detach listener
+                delete marketListeners[marketId];
+            }
+            delete markets[marketId];
+            delete activeTradesDb[marketId];
+            console.log(`Cleaned up removed market: ${marketId}`);
         }
     });
 });
