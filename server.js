@@ -401,100 +401,112 @@ setInterval(() => {
 async function resolveExpiredTrades() {
     const now = Date.now();
     const updates = {};
-    const tradeResolutionPromises = [];
 
-    for (const marketId in activeTradesDb) {
-        for (const tradeId in activeTradesDb[marketId]) {
-            const adminTrade = activeTradesDb[marketId][tradeId];
-            
-            // Create a promise for each trade resolution
-            const resolutionPromise = db.ref(`users/${adminTrade.uid}/activeTrades/${tradeId}`).once('value').then(async (tradeSnap) => {
-                const trade = tradeSnap.val();
+    try {
+        // Query all users' active trades that have expired
+        const activeTradesSnapshot = await db.ref('users').orderByChild('activeTrades').startAt(null).once('value');
+        if (!activeTradesSnapshot.exists()) return;
 
-                // If trade is already resolved or not yet expired, skip it
-                if (!trade || trade.expiryTimestamp > now) {
-                    if (trade && now > trade.expiryTimestamp + 60000) { // Failsafe for stuck trades
-                         updates[`users/${adminTrade.uid}/activeTrades/${tradeId}`] = null;
-                         updates[`admin/markets/${marketId}/activeTrades/${tradeId}`] = null;
-                    }
-                    return;
+        const tradeResolutionPromises = [];
+
+        activeTradesSnapshot.forEach(userSnapshot => {
+            const uid = userSnapshot.key;
+            const userData = userSnapshot.val();
+            const activeTrades = userData.activeTrades;
+
+            if (!activeTrades) return;
+
+            for (const tradeId in activeTrades) {
+                const trade = activeTrades[tradeId];
+                const marketId = trade.marketId;
+
+                // If trade is not expired, skip it. Add a 120s failsafe for stuck trades.
+                if (trade.expiryTimestamp > now && now < trade.expiryTimestamp + 120000) {
+                    continue;
                 }
 
-                let closingPrice;
-                const history = markets[marketId]?.history;
-                if (!history || history.length === 0) return; // No market data to resolve
+                // Create a promise for each trade to resolve concurrently
+                const resolutionPromise = (async () => {
+                    let closingPrice;
+                    const history = markets[marketId]?.history;
+                    if (!history || history.length === 0) return; // Cannot resolve without market data
 
-                if (trade.resolveOnNextOpen) {
-                    const closingCandle = history.find(c => c.timestamp === trade.expiryTimestamp);
-                    if (closingCandle) closingPrice = closingCandle.open;
-                } else {
-                    const containingCandle = history.find(c => trade.expiryTimestamp > c.timestamp && trade.expiryTimestamp <= c.timestamp + TIMEFRAME);
-                    if (containingCandle) {
-                        const progress = (trade.expiryTimestamp - containingCandle.timestamp) / TIMEFRAME;
-                        closingPrice = calculatePriceAtProgress(containingCandle, Math.min(1.0, progress));
-                    }
-                }
-
-                if (typeof closingPrice === 'undefined') return; // Cannot resolve without a price
-
-                let result, payout = 0, profitChange = 0;
-                const amount = parseFloat(trade.amount);
-
-                const priceDifference = closingPrice - parseFloat(trade.openPrice);
-                if (Math.abs(priceDifference) < 1e-6) {
-                    result = 'push';
-                    payout = amount;
-                    profitChange = 0;
-                } else if ((priceDifference > 0 && trade.direction === 'UP') || (priceDifference < 0 && trade.direction === 'DOWN')) {
-                    result = 'win';
-                    payout = amount * trade.payoutRate;
-                    profitChange = payout - amount;
-                } else {
-                    result = 'loss';
-                    profitChange = -amount;
-                }
-
-                // Prepare updates for this single trade
-                updates[`users/${adminTrade.uid}/tradeHistory/${tradeId}`] = { ...trade, closePrice: closingPrice, result: result, payout: payout };
-                updates[`users/${adminTrade.uid}/activeTrades/${tradeId}`] = null;
-                updates[`admin/markets/${marketId}/activeTrades/${tradeId}`] = null;
-                
-                // Atomically update user stats and balances using transactions for safety
-                const userRef = db.ref(`users/${adminTrade.uid}`);
-                await userRef.transaction(userData => {
-                    if (userData) {
-                        if (result === 'push') {
-                            userData.realBalance = (userData.realBalance || 0) + (trade.realAmount || 0);
-                            userData.bonusBalance = (userData.bonusBalance || 0) + (trade.bonusAmount || 0);
-                        } else if (result === 'win') {
-                            userData.realBalance = (userData.realBalance || 0) + payout;
+                    if (trade.resolveOnNextOpen) {
+                        const closingCandle = history.find(c => c.timestamp === trade.expiryTimestamp);
+                        if (closingCandle) closingPrice = closingCandle.open;
+                    } else {
+                        const containingCandle = history.find(c => trade.expiryTimestamp > c.timestamp && trade.expiryTimestamp <= c.timestamp + TIMEFRAME);
+                        if (containingCandle) {
+                            const progress = (trade.expiryTimestamp - containingCandle.timestamp) / TIMEFRAME;
+                            closingPrice = calculatePriceAtProgress(containingCandle, Math.min(1.0, progress));
                         }
-                        
-                        const todayUTC = new Date().toISOString().slice(0, 10);
-                        if (userData.dailyProfitDate !== todayUTC) {
-                            userData.dailyProfit = 0;
-                            userData.dailyProfitDate = todayUTC;
-                        }
-                        userData.dailyProfit = (userData.dailyProfit || 0) + profitChange;
-                        userData.totalTradeVolume = (userData.totalTradeVolume || 0) + amount;
-                        userData.totalProfitLoss = (userData.totalProfitLoss || 0) + profitChange;
-                        userData.lastTradeTimestamp = now;
                     }
-                    return userData;
-                });
-            });
-            tradeResolutionPromises.push(resolutionPromise);
-        }
-    }
 
-    await Promise.all(tradeResolutionPromises);
+                    if (typeof closingPrice === 'undefined') {
+                        // Failsafe: if price is still not found after a delay, force a push/draw
+                        if (now > trade.expiryTimestamp + 5000) {
+                            closingPrice = parseFloat(trade.openPrice);
+                        } else {
+                            return; // Wait for the next interval to try again
+                        }
+                    }
 
-    if (Object.keys(updates).length > 0) {
-        try {
+                    let result, payout = 0, profitChange = 0;
+                    const amount = parseFloat(trade.amount);
+                    const priceDifference = closingPrice - parseFloat(trade.openPrice);
+
+                    if (Math.abs(priceDifference) < 1e-6) {
+                        result = 'push';
+                        payout = amount;
+                    } else if ((priceDifference > 0 && trade.direction === 'UP') || (priceDifference < 0 && trade.direction === 'DOWN')) {
+                        result = 'win';
+                        payout = amount * trade.payoutRate;
+                        profitChange = payout - amount;
+                    } else {
+                        result = 'loss';
+                        profitChange = -amount;
+                    }
+
+                    // Prepare DB updates for this single trade
+                    updates[`users/${uid}/tradeHistory/${tradeId}`] = { ...trade, closePrice: closingPrice, result: result, payout: payout };
+                    updates[`users/${uid}/activeTrades/${tradeId}`] = null;
+                    if (marketId) updates[`admin/markets/${marketId}/activeTrades/${tradeId}`] = null;
+                    
+                    // Atomically update user stats and balances
+                    const userRef = db.ref(`users/${uid}`);
+                    await userRef.transaction(currentData => {
+                        if (currentData) {
+                            if (result === 'push') {
+                                currentData.realBalance = (currentData.realBalance || 0) + (trade.realAmount || 0);
+                                currentData.bonusBalance = (currentData.bonusBalance || 0) + (trade.bonusAmount || 0);
+                            } else if (result === 'win') {
+                                currentData.realBalance = (currentData.realBalance || 0) + payout;
+                            }
+                            
+                            const todayUTC = new Date().toISOString().slice(0, 10);
+                            if (currentData.dailyProfitDate !== todayUTC) {
+                                currentData.dailyProfit = 0;
+                                currentData.dailyProfitDate = todayUTC;
+                            }
+                            currentData.dailyProfit = (currentData.dailyProfit || 0) + profitChange;
+                            currentData.totalTradeVolume = (currentData.totalTradeVolume || 0) + amount;
+                            currentData.totalProfitLoss = (currentData.totalProfitLoss || 0) + profitChange;
+                            currentData.lastTradeTimestamp = now;
+                        }
+                        return currentData;
+                    });
+                })();
+                tradeResolutionPromises.push(resolutionPromise);
+            }
+        });
+
+        await Promise.all(tradeResolutionPromises);
+
+        if (Object.keys(updates).length > 0) {
             await db.ref().update(updates);
-        } catch (error) {
-            console.error("Error batch-updating resolved trades:", error);
         }
+    } catch (error) {
+        console.error("Error in resolveExpiredTrades:", error);
     }
 }
 
