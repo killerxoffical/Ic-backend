@@ -136,6 +136,31 @@ function generateDynamicCandle(timestamp, open, command) {
     };
 }
 
+function calculatePriceAtProgress(candle, progress) {
+    let idealPrice;
+    const pattern = candle.pattern || 'NORMAL';
+
+    // This logic mirrors the client-side animation to find the exact price at a given progress point
+    if (pattern.includes('HAMMER') || pattern === 'DRAGONFLY_DOJI') {
+        if (progress < 0.6) idealPrice = candle.open - (candle.open - candle.targetLow) * (progress / 0.6);
+        else idealPrice = candle.targetLow + (candle.targetClose - candle.targetLow) * ((progress - 0.6) / 0.4);
+    } 
+    else if (pattern.includes('SHOOTING_STAR') || pattern === 'GRAVESTONE_DOJI') {
+        if (progress < 0.6) idealPrice = candle.open + (candle.targetHigh - candle.open) * (progress / 0.6);
+        else idealPrice = candle.targetHigh - (candle.targetHigh - candle.targetClose) * ((progress - 0.6) / 0.4);
+    }
+    else if (pattern.includes('DOJI') || pattern.includes('SPINNING_TOP')) {
+        if (progress < 0.3) idealPrice = candle.open + (candle.targetHigh - candle.open) * (progress / 0.3);
+        else if (progress < 0.7) idealPrice = candle.targetHigh - (candle.targetHigh - candle.targetLow) * ((progress - 0.3) / 0.4);
+        else idealPrice = candle.targetLow + (candle.targetClose - candle.targetLow) * ((progress - 0.7) / 0.3);
+    }
+    else {
+        const easeProgress = 1 - Math.pow(1 - progress, 3);
+        idealPrice = candle.open + (candle.targetClose - candle.open) * easeProgress;
+    }
+    return roundPrice(idealPrice);
+}
+
 async function initializeNewMarket(marketId) {
     const path = marketPathFromId(marketId);
     let startPrice = 1.15;
@@ -371,6 +396,110 @@ setInterval(() => {
         if (Object.keys(batchUpdates).length > 0) db.ref().update(batchUpdates).catch(()=>{});
     }
 }, TICK_MS);
+
+// --- Core Trade Resolution Engine ---
+async function resolveExpiredTrades() {
+    const now = Date.now();
+    const updates = {};
+    const tradeResolutionPromises = [];
+
+    for (const marketId in activeTradesDb) {
+        for (const tradeId in activeTradesDb[marketId]) {
+            const adminTrade = activeTradesDb[marketId][tradeId];
+            
+            // Create a promise for each trade resolution
+            const resolutionPromise = db.ref(`users/${adminTrade.uid}/activeTrades/${tradeId}`).once('value').then(async (tradeSnap) => {
+                const trade = tradeSnap.val();
+
+                // If trade is already resolved or not yet expired, skip it
+                if (!trade || trade.expiryTimestamp > now) {
+                    if (trade && now > trade.expiryTimestamp + 60000) { // Failsafe for stuck trades
+                         updates[`users/${adminTrade.uid}/activeTrades/${tradeId}`] = null;
+                         updates[`admin/markets/${marketId}/activeTrades/${tradeId}`] = null;
+                    }
+                    return;
+                }
+
+                let closingPrice;
+                const history = markets[marketId]?.history;
+                if (!history || history.length === 0) return; // No market data to resolve
+
+                if (trade.resolveOnNextOpen) {
+                    const closingCandle = history.find(c => c.timestamp === trade.expiryTimestamp);
+                    if (closingCandle) closingPrice = closingCandle.open;
+                } else {
+                    const containingCandle = history.find(c => trade.expiryTimestamp > c.timestamp && trade.expiryTimestamp <= c.timestamp + TIMEFRAME);
+                    if (containingCandle) {
+                        const progress = (trade.expiryTimestamp - containingCandle.timestamp) / TIMEFRAME;
+                        closingPrice = calculatePriceAtProgress(containingCandle, Math.min(1.0, progress));
+                    }
+                }
+
+                if (typeof closingPrice === 'undefined') return; // Cannot resolve without a price
+
+                let result, payout = 0, profitChange = 0;
+                const amount = parseFloat(trade.amount);
+
+                const priceDifference = closingPrice - parseFloat(trade.openPrice);
+                if (Math.abs(priceDifference) < 1e-6) {
+                    result = 'push';
+                    payout = amount;
+                    profitChange = 0;
+                } else if ((priceDifference > 0 && trade.direction === 'UP') || (priceDifference < 0 && trade.direction === 'DOWN')) {
+                    result = 'win';
+                    payout = amount * trade.payoutRate;
+                    profitChange = payout - amount;
+                } else {
+                    result = 'loss';
+                    profitChange = -amount;
+                }
+
+                // Prepare updates for this single trade
+                updates[`users/${adminTrade.uid}/tradeHistory/${tradeId}`] = { ...trade, closePrice: closingPrice, result: result, payout: payout };
+                updates[`users/${adminTrade.uid}/activeTrades/${tradeId}`] = null;
+                updates[`admin/markets/${marketId}/activeTrades/${tradeId}`] = null;
+                
+                // Atomically update user stats and balances using transactions for safety
+                const userRef = db.ref(`users/${adminTrade.uid}`);
+                await userRef.transaction(userData => {
+                    if (userData) {
+                        if (result === 'push') {
+                            userData.realBalance = (userData.realBalance || 0) + (trade.realAmount || 0);
+                            userData.bonusBalance = (userData.bonusBalance || 0) + (trade.bonusAmount || 0);
+                        } else if (result === 'win') {
+                            userData.realBalance = (userData.realBalance || 0) + payout;
+                        }
+                        
+                        const todayUTC = new Date().toISOString().slice(0, 10);
+                        if (userData.dailyProfitDate !== todayUTC) {
+                            userData.dailyProfit = 0;
+                            userData.dailyProfitDate = todayUTC;
+                        }
+                        userData.dailyProfit = (userData.dailyProfit || 0) + profitChange;
+                        userData.totalTradeVolume = (userData.totalTradeVolume || 0) + amount;
+                        userData.totalProfitLoss = (userData.totalProfitLoss || 0) + profitChange;
+                        userData.lastTradeTimestamp = now;
+                    }
+                    return userData;
+                });
+            });
+            tradeResolutionPromises.push(resolutionPromise);
+        }
+    }
+
+    await Promise.all(tradeResolutionPromises);
+
+    if (Object.keys(updates).length > 0) {
+        try {
+            await db.ref().update(updates);
+        } catch (error) {
+            console.error("Error batch-updating resolved trades:", error);
+        }
+    }
+}
+
+// Add the new interval to the main loop section
+setInterval(resolveExpiredTrades, 2000); // Check for expired trades every 2 seconds
 
 app.get('/ping', (_req, res) => res.send('Server V30 - Perfect Animations Active'));
 const PORT = process.env.PORT || 3000;
