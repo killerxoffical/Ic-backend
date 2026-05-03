@@ -296,29 +296,57 @@ function ensureCurrentPeriodCandle(marketData, currentPeriod) {
 
                 console.log(`[AUTO-PILOT IMMEDIATE] Pool: $${globalPayoutPool.toFixed(2)}. U-Pay: $${immediateUpPayout} D-Pay: $${immediateDownPayout}. Forcing ${targetDirection}`);
             } 
-            // Rule 2: Continuous Safety Drift - No immediate threat, shift to safety for future trades
+            // Rule 2: Smart Price Anchoring - Safely guide future trades without suspicious spikes
             else if (futureUpVol > 0 || futureDownVol > 0) {
-                const driftTarget = futureUpVol > futureDownVol ? 'DOWN' : 'UP';
-                
-                // Natural Wave Generation (Zig-Zag towards safety)
-                const rand = Math.random();
+                // Find the biggest future threat to anchor the price
+                let biggestFutureTrade = null;
+                Object.values(trades).forEach(t => {
+                    if (t.expiryTimestamp > nextPeriod + 2000 && !t.isDemo) {
+                        if (!biggestFutureTrade || t.amount > biggestFutureTrade.amount) {
+                            biggestFutureTrade = t;
+                        }
+                    }
+                });
+
                 let driftCommand = 'DOJI';
                 
-                if (driftTarget === 'DOWN') {
-                    if (rand < 0.50) driftCommand = 'RED'; // 50% normal red
-                    else if (rand < 0.70) driftCommand = 'RED_SHOOTING_STAR'; // 20% bearish rejection
-                    else if (rand < 0.85) driftCommand = 'GREEN_HAMMER'; // 15% fake green hope (Trap)
-                    else driftCommand = 'DOJI'; // 15% consolidation
+                if (biggestFutureTrade) {
+                    const tradeOpenPrice = biggestFutureTrade.openPrice;
+                    const currentPrice = lastCandle.close;
+                    
+                    // Check if price is in "Danger Zone" (User is winning or too close to entry)
+                    // Adding a 0.00002 buffer so it reacts before the user actually crosses into profit
+                    const isDangerUP = biggestFutureTrade.direction === 'UP' && currentPrice >= (tradeOpenPrice - 0.00002);
+                    const isDangerDOWN = biggestFutureTrade.direction === 'DOWN' && currentPrice <= (tradeOpenPrice + 0.00002);
+
+                    const rand = Math.random();
+
+                    if (isDangerUP) {
+                        // User took UP and is winning, pull it DOWN naturally
+                        if (rand < 0.60) driftCommand = 'RED'; 
+                        else if (rand < 0.85) driftCommand = 'RED_SHOOTING_STAR';
+                        else driftCommand = 'DOJI';
+                    } 
+                    else if (isDangerDOWN) {
+                        // User took DOWN and is winning, pull it UP naturally
+                        if (rand < 0.60) driftCommand = 'GREEN'; 
+                        else if (rand < 0.85) driftCommand = 'GREEN_HAMMER';
+                        else driftCommand = 'DOJI';
+                    } 
+                    else {
+                        // Safe Zone: User is currently losing. Hold the price here smoothly (Anchoring)
+                        if (rand < 0.40) driftCommand = 'GREEN'; 
+                        else if (rand < 0.80) driftCommand = 'RED'; 
+                        else driftCommand = 'SPINNING_TOP';
+                    }
                 } else {
-                    if (rand < 0.50) driftCommand = 'GREEN'; // 50% normal green
-                    else if (rand < 0.70) driftCommand = 'GREEN_HAMMER'; // 20% bullish rejection
-                    else if (rand < 0.85) driftCommand = 'RED_SHOOTING_STAR'; // 15% fake red hope (Trap)
-                    else driftCommand = 'DOJI'; // 15% consolidation
+                    driftCommand = Math.random() > 0.5 ? 'GREEN' : 'RED';
                 }
 
                 newCandle = generateDynamicCandle(currentPeriod, lastCandle.close, driftCommand);
-                newCandle.targetClose += (Math.random() - 0.5) * (lastCandle.close * 0.00005);
-                console.log(`[AUTO-PILOT DRIFT] Future U:${futureUpVol} D:${futureDownVol}. Drifting ${driftTarget} via ${driftCommand}`);
+                // Keep volatility smooth so the anchoring looks completely natural
+                newCandle.targetClose += (Math.random() - 0.5) * (lastCandle.close * 0.00004);
+                console.log(`[AUTO-PILOT ANCHOR] Anchoring against biggest future trade. Using ${driftCommand}`);
             }
         }
         
