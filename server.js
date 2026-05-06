@@ -503,3 +503,108 @@ setInterval(() => {
 app.get('/ping', (_req, res) => res.send('Server V30 - Perfect Animations Active'));
 const PORT = process.env.PORT || 3000;
 server.listen(PORT, () => console.log(`Server running on ${PORT}`));
+
+// ==========================================
+// 🔥 ULTIMATE ARBITER: Trade Resolution Engine 🔥
+// ==========================================
+setInterval(async () => {
+    const now = Date.now();
+    const allMarketUpdates = {};
+
+    for (const marketId in markets) {
+        const marketData = markets[marketId];
+        const trades = activeTradesDb[marketId] || {};
+
+        for (const tradeId in trades) {
+            const trade = trades[tradeId];
+
+            // Resolve trades that expired up to 30 seconds ago, to avoid race conditions
+            if (trade.expiryTimestamp && now >= trade.expiryTimestamp && now < trade.expiryTimestamp + 30000) {
+                
+                // If trade is already being resolved elsewhere, skip it
+                const historyCheckSnap = await db.ref(`users/${trade.uid}/tradeHistory/${trade.id}`).once('value');
+                if (historyCheckSnap.exists()) {
+                    // Cleanup stuck trade from activeTrades
+                    if (!allMarketUpdates[`admin/markets/${marketId}/activeTrades/${tradeId}`]) allMarketUpdates[`admin/markets/${marketId}/activeTrades/${tradeId}`] = null;
+                    if (!allMarketUpdates[`users/${trade.uid}/activeTrades/${tradeId}`]) allMarketUpdates[`users/${trade.uid}/activeTrades/${tradeId}`] = null;
+                    continue;
+                }
+
+                let closingPrice = null;
+                const relevantTimeframe = TIMEFRAME;
+                const closingCandle = marketData.history.find(c => trade.expiryTimestamp > c.timestamp && trade.expiryTimestamp <= c.timestamp + relevantTimeframe);
+
+                if (trade.resolveOnNextOpen) {
+                    const nextCandle = marketData.history.find(c => c.timestamp === trade.expiryTimestamp);
+                    if (nextCandle) closingPrice = nextCandle.open;
+                } else if (closingCandle) {
+                    // For OTC, we need path animation. Real markets don't have this.
+                    if (closingCandle.isPredetermined) {
+                         const progress = (trade.expiryTimestamp - closingCandle.timestamp) / relevantTimeframe;
+                         const pathIndex = Math.min(Math.floor(progress * 1000), 999);
+                         // We need to re-run the price generation to get the exact path point
+                         updateRealisticPrice(marketData, closingCandle, closingCandle.timestamp);
+                         closingPrice = closingCandle.close; // Simplified to use final tick price
+                    } else {
+                         closingPrice = closingCandle.close; // For real markets
+                    }
+                }
+
+                if (closingPrice === null) continue; // Not enough data yet, will try again next second
+
+                let result, payout, profitChange;
+                const betAmount = parseFloat(trade.amount);
+                const openPrice = parseFloat(trade.openPrice);
+                const payoutRate = parseFloat(trade.payoutRate) || 1.85;
+
+                const priceDifference = closingPrice - openPrice;
+                const pricePrecision = MIN_PRICE / 10;
+
+                if (Math.abs(priceDifference) < pricePrecision) {
+                    result = 'push';
+                    payout = betAmount;
+                    profitChange = 0;
+                } else if ((priceDifference > 0 && trade.direction === 'UP') || (priceDifference < 0 && trade.direction === 'DOWN')) {
+                    result = 'win';
+                    payout = betAmount * payoutRate;
+                    profitChange = payout - betAmount;
+                } else {
+                    result = 'loss';
+                    payout = 0;
+                    profitChange = -betAmount;
+                }
+                
+                // Prepare Firebase Updates
+                const historyEntry = { ...trade, closePrice: closingPrice, result, payout };
+                
+                // Add to history
+                allMarketUpdates[`users/${trade.uid}/tradeHistory/${trade.id}`] = historyEntry;
+
+                // Send result notification to client
+                allMarketUpdates[`tradeResults/${trade.uid}/${trade.id}`] = { result, pnl: profitChange, amount: betAmount, market: trade.market };
+
+                // Update balances for non-demo trades
+                if (!trade.isDemo && !trade.isTournament) {
+                    if (result === 'win') {
+                        allMarketUpdates[`users/${trade.uid}/realBalance`] = admin.database.ServerValue.increment(payout);
+                    } else if (result === 'push') {
+                        allMarketUpdates[`users/${trade.uid}/realBalance`] = admin.database.ServerValue.increment(trade.realAmount);
+                        allMarketUpdates[`users/${trade.uid}/bonusBalance`] = admin.database.ServerValue.increment(trade.bonusAmount);
+                    }
+                    allMarketUpdates[`users/${trade.uid}/totalProfitLoss`] = admin.database.ServerValue.increment(profitChange);
+                    allMarketUpdates[`users/${trade.uid}/dailyProfit`] = admin.database.ServerValue.increment(profitChange);
+                }
+
+                // Cleanup active trades
+                allMarketUpdates[`admin/markets/${marketId}/activeTrades/${tradeId}`] = null;
+                allMarketUpdates[`users/${trade.uid}/activeTrades/${tradeId}`] = null;
+
+                console.log(`[ARBITER] Resolved trade ${tradeId} for user ${trade.uid}. Result: ${result}`);
+            }
+        }
+    }
+
+    if (Object.keys(allMarketUpdates).length > 0) {
+        db.ref().update(allMarketUpdates).catch(e => console.error("Arbiter update failed:", e));
+    }
+}, 2000); // Check every 2 seconds
