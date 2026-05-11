@@ -505,6 +505,90 @@ const PORT = process.env.PORT || 3000;
 server.listen(PORT, () => console.log(`Server running on ${PORT}`));
 
 // ==========================================
+// 🔥 TELEGRAM 2FA BOT SYSTEM 🔥
+// ==========================================
+const https = require('https');
+const TELEGRAM_BOT_TOKEN = "8740566281:AAF7MUaumUIrO7IJ7Hr93kG0EzOOHvr444U";
+let lastUpdateId = 0;
+
+function sendTelegramMessage(chatId, text) {
+    const url = `https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage`;
+    const payload = JSON.stringify({ chat_id: chatId, text: text, parse_mode: 'Markdown' });
+    const req = https.request(url, {
+        method: 'POST', headers: { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(payload) }
+    }, (res) => {
+        res.on('data', () => {}); 
+    });
+    req.on('error', (e) => console.error("Telegram Send Error:", e));
+    req.write(payload);
+    req.end();
+}
+
+// 1. Listen for new OTP Requests from Frontend
+db.ref('otp_requests').on('child_added', (snapshot) => {
+    const data = snapshot.val();
+    if (data && data.chatId && data.code) {
+        const msg = `🔐 *ICTEX Trade Login*\n\nHello ${data.name},\nYour 2FA Login Code is: *${data.code}*\n\n_This code will expire in 15 seconds._`;
+        sendTelegramMessage(data.chatId, msg);
+    }
+    // Delete the request immediately after sending
+    snapshot.ref.remove().catch(()=>{});
+});
+
+// 2. Poll Telegram for Account Linking (No npm install required)
+function pollTelegramUpdates() {
+    const url = `https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/getUpdates?offset=${lastUpdateId + 1}&timeout=5`;
+    https.get(url, (res) => {
+        let body = '';
+        res.on('data', chunk => body += chunk);
+        res.on('end', async () => {
+            try {
+                const response = JSON.parse(body);
+                if (response.ok && response.result.length > 0) {
+                    for (const update of response.result) {
+                        lastUpdateId = update.update_id;
+                        if (update.message && update.message.text) {
+                            const text = update.message.text.trim();
+                            const chatId = update.message.chat.id;
+                            
+                            // Check if text contains the LINK- code
+                            if (text.includes('LINK-')) {
+                                const codeMatch = text.match(/LINK-[A-Z0-9]{6}/);
+                                if (codeMatch) {
+                                    const linkCode = codeMatch[0];
+                                    const linkSnap = await db.ref(`telegram_links/${linkCode}`).once('value');
+                                    if (linkSnap.exists()) {
+                                        const uid = linkSnap.val().uid;
+                                        // Link the account
+                                        await db.ref(`users/${uid}`).update({
+                                            telegramChatId: chatId,
+                                            twoFactorEnabled: true
+                                        });
+                                        // Delete the code so it can't be used again
+                                        await linkSnap.ref.remove();
+                                        
+                                        sendTelegramMessage(chatId, `✅ *Account Linked Successfully!*\n\nYour Telegram is now connected to your ICTEX Trade account for 2FA security.`);
+                                    } else {
+                                        sendTelegramMessage(chatId, `❌ Invalid or Expired linking code.`);
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            } catch(e) { console.error("Polling parse error:", e); }
+            setTimeout(pollTelegramUpdates, 1000); // Poll again
+        });
+    }).on('error', (e) => {
+        console.error("Polling connection error:", e);
+        setTimeout(pollTelegramUpdates, 3000);
+    });
+}
+// Start Polling
+pollTelegramUpdates();
+
+
+// ==========================================
 // 🔥 ULTIMATE ARBITER: Trade Resolution Engine 🔥
 // ==========================================
 setInterval(async () => {
