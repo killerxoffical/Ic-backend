@@ -528,8 +528,8 @@ function sendTelegramMessage(chatId, text) {
 db.ref('otp_requests').on('child_added', (snapshot) => {
     const data = snapshot.val();
     if (data && data.chatId && data.code) {
-        const actionType = data.action || 'Login';
-        const msg = `🔐 *ICTEX Security Alert*\n\nHello ${data.name},\nYour OTP for *${actionType}* is: \`${data.code}\`\n\n_This code will expire in 60 seconds. Do not share it with anyone._`;
+        const actionType = data.action || 'Security Verification';
+        const msg = `🔐 *ICTEX Security Alert*\n\nHello ${data.name},\n\nYour OTP for *${actionType}* is: \`${data.code}\`\n\n_This code will expire in 60 seconds. Do not share it with anyone._`;
         sendTelegramMessage(data.chatId, msg);
     }
     // Delete the request immediately after sending
