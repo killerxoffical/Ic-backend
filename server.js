@@ -524,17 +524,8 @@ function sendTelegramMessage(chatId, text) {
     req.end();
 }
 
-// 1. Listen for new OTP Requests from Frontend
-db.ref('otp_requests').on('child_added', (snapshot) => {
-    const data = snapshot.val();
-    if (data && data.chatId && data.code) {
-        const actionType = data.action || 'Security Verification';
-        const msg = `🔐 *ICTEX Security Alert*\n\nHello ${data.name},\n\nYour OTP for *${actionType}* is: \`${data.code}\`\n\n_This code will expire in 60 seconds. Do not share it with anyone._`;
-        sendTelegramMessage(data.chatId, msg);
-    }
-    // Delete the request immediately after sending
-    snapshot.ref.remove().catch(()=>{});
-});
+// NOTE: OTP Sending is now handled directly by the Frontend (index.html) to ensure instant delivery.
+// We only keep the Polling logic below to link new accounts.
 
 // 2. Poll Telegram for Account Linking (No npm install required)
 function pollTelegramUpdates() {
