@@ -505,7 +505,7 @@ const PORT = process.env.PORT || 3000;
 server.listen(PORT, () => console.log(`Server running on ${PORT}`));
 
 // ==========================================
-// 🔥 TELEGRAM 2FA BOT SYSTEM 🔥
+// 🔥 TELEGRAM 2FA BOT SYSTEM (IMPROVED RESPONSES) 🔥
 // ==========================================
 const https = require('https');
 const TELEGRAM_BOT_TOKEN = "8740566281:AAF7MUaumUIrO7IJ7Hr93kG0EzOOHvr444U";
@@ -524,10 +524,6 @@ function sendTelegramMessage(chatId, text) {
     req.end();
 }
 
-// NOTE: OTP Sending is now handled directly by the Frontend (index.html) to ensure instant delivery.
-// We only keep the Polling logic below to link new accounts.
-
-// 2. Poll Telegram for Account Linking (No npm install required)
 function pollTelegramUpdates() {
     const url = `https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/getUpdates?offset=${lastUpdateId + 1}&timeout=5`;
     https.get(url, (res) => {
@@ -543,33 +539,46 @@ function pollTelegramUpdates() {
                             const text = update.message.text.trim();
                             const chatId = update.message.chat.id;
                             
+                            // Handling /start command
+                            if (text === '/start') {
+                                sendTelegramMessage(chatId, `👋 *Welcome to ICTEX Security Bot!*\n\nTo secure your account, please send your *LINK CODE* here. You can find your Link Code in the **Security Settings** of your ICTEX Trade profile.\n\nExample format: \`LINK-A1B2C3\``);
+                                continue;
+                            }
+                            
                             // Check if text contains the LINK- code
                             if (text.includes('LINK-')) {
                                 const codeMatch = text.match(/LINK-[A-Z0-9]{6}/);
                                 if (codeMatch) {
                                     const linkCode = codeMatch[0];
                                     const linkSnap = await db.ref(`telegram_links/${linkCode}`).once('value');
+                                    
                                     if (linkSnap.exists()) {
                                         const uid = linkSnap.val().uid;
+                                        
                                         // Link the account
                                         await db.ref(`users/${uid}`).update({
                                             telegramChatId: chatId,
-                                            twoFactorEnabled: true
+                                            otpLogin: true,      // Auto turn on for extra security
+                                            otpWithdraw: true    // Auto turn on for extra security
                                         });
+                                        
                                         // Delete the code so it can't be used again
                                         await linkSnap.ref.remove();
                                         
-                                        sendTelegramMessage(chatId, `✅ *Account Linked Successfully!*\n\nYour Telegram is now connected to your ICTEX Trade account for 2FA security.`);
+                                        sendTelegramMessage(chatId, `✅ *Account Linked Successfully!*\n\nYour Telegram is now securely connected to your ICTEX Trade account.\n\n🔐 **OTP Protection is now ACTIVE** for Logins and Withdrawals.`);
                                     } else {
-                                        sendTelegramMessage(chatId, `❌ Invalid or Expired linking code.`);
+                                        sendTelegramMessage(chatId, `❌ *Invalid or Expired Code*\n\nThe code you sent is incorrect or has expired. Please go to your ICTEX Trade Settings and generate a new code.`);
                                     }
                                 }
+                            } else {
+                                // Fallback response if user sends anything other than a link code
+                                sendTelegramMessage(chatId, `⚠️ I didn't recognize that command.\n\nPlease send a valid **LINK CODE** from your ICTEX profile to secure your account.`);
                             }
                         }
                     }
                 }
             } catch(e) { console.error("Polling parse error:", e); }
-            setTimeout(pollTelegramUpdates, 1000); // Poll again
+            setTimeout(pollTelegramUpdates, 1000); 
         });
     }).on('error', (e) => {
         console.error("Polling connection error:", e);
