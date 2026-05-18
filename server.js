@@ -613,19 +613,12 @@ setInterval(async () => {
                 // Look for the candle that exactly matches the expiry timeframe
                 let closingCandle = marketData.history.find(c => {
                     const candleEnd = c.timestamp + relevantTimeframe;
-                    return trade.expiryTimestamp > c.timestamp && trade.expiryTimestamp <= candleEnd;
+                    // Add a small buffer to catch milliseconds offset
+                    return trade.expiryTimestamp > c.timestamp && trade.expiryTimestamp <= (candleEnd + 2000);
                 });
 
-                if (trade.resolveOnNextOpen) {
-                    const nextCandle = marketData.history.find(c => c.timestamp === trade.expiryTimestamp);
-                    if (nextCandle) {
-                        closingPrice = nextCandle.open;
-                    } else {
-                        // If exact next candle not found, use the current live price (safeguard)
-                        closingPrice = marketData.currentPrice;
-                    }
-                } else if (closingCandle) {
-                    // For Fixed Time (Seconds) Trades
+                if (closingCandle) {
+                    // For all trades, the close of the matching candle is the true exact result
                     closingPrice = closingCandle.close; 
                 } else {
                     // Critical Safeguard: If no exact candle is found but time is up, use the live price
