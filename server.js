@@ -595,19 +595,9 @@ setInterval(async () => {
                     continue;
                 }
 
-                let closingPrice = null;
-                const relevantTimeframe = TIMEFRAME;
-                
-                let closingCandle = marketData.history.find(c => {
-                    const candleEnd = c.timestamp + relevantTimeframe;
-                    return trade.expiryTimestamp > c.timestamp && trade.expiryTimestamp <= (candleEnd + 2000);
-                });
-
-                if (closingCandle) {
-                    closingPrice = closingCandle.close; 
-                } else {
-                    closingPrice = marketData.currentPrice;
-                }
+                // Fix: Capture the exact live price at the moment the trade timer ends, 
+                // rather than waiting for the entire candle to close, ensuring chart matches history perfectly.
+                let closingPrice = marketData.currentPrice;
 
                 if (closingPrice === null || typeof closingPrice !== 'number') continue;
 
