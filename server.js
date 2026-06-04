@@ -635,40 +635,20 @@ setInterval(async () => {
                 
                 const historyEntry = { ...trade, closePrice: closingPrice, result, payout };
                 
-                if (trade.isCopied) {
-                    allMarketUpdates[`users/${trade.uid}/copyHistory/${trade.id}`] = historyEntry;
-                } else {
-                    allMarketUpdates[`users/${trade.uid}/tradeHistory/${trade.id}`] = historyEntry;
-                }
+                allMarketUpdates[`users/${trade.uid}/tradeHistory/${trade.id}`] = historyEntry;
                 allMarketUpdates[`tradeResults/${trade.uid}/${trade.id}`] = { result, pnl: profitChange, amount: betAmount, market: trade.market };
 
                 // Update balances for non-demo trades
                 if (!trade.isDemo && !trade.isTournament) {
-                    if (trade.isCopied) {
-                        // ✅ Copy Trading uses Copy Wallet
-                        if (result === 'win') {
-                            allMarketUpdates[`users/${trade.uid}/copyBalance`] = admin.database.ServerValue.increment(payout);
-                            if (trade.masterId) {
-                                allMarketUpdates[`users/${trade.uid}/activeCopies/${trade.masterId}/currentProfit`] = admin.database.ServerValue.increment(profitChange);
-                            }
-                        } else if (result === 'push') {
-                            allMarketUpdates[`users/${trade.uid}/copyBalance`] = admin.database.ServerValue.increment(trade.amount);
-                        } else if (result === 'loss') {
-                            if (trade.masterId) {
-                                allMarketUpdates[`users/${trade.uid}/activeCopies/${trade.masterId}/currentLoss`] = admin.database.ServerValue.increment(betAmount);
-                            }
-                        }
-                    } else {
-                        // ✅ Normal Trading uses Real/Bonus Wallet
-                        if (result === 'win') {
-                            allMarketUpdates[`users/${trade.uid}/realBalance`] = admin.database.ServerValue.increment(payout);
-                        } else if (result === 'push') {
-                            allMarketUpdates[`users/${trade.uid}/realBalance`] = admin.database.ServerValue.increment(trade.realAmount);
-                            allMarketUpdates[`users/${trade.uid}/bonusBalance`] = admin.database.ServerValue.increment(trade.bonusAmount);
-                        }
-                        allMarketUpdates[`users/${trade.uid}/totalProfitLoss`] = admin.database.ServerValue.increment(profitChange);
-                        allMarketUpdates[`users/${trade.uid}/dailyProfit`] = admin.database.ServerValue.increment(profitChange);
+                    // ✅ Normal Trading uses Real/Bonus Wallet
+                    if (result === 'win') {
+                        allMarketUpdates[`users/${trade.uid}/realBalance`] = admin.database.ServerValue.increment(payout);
+                    } else if (result === 'push') {
+                        allMarketUpdates[`users/${trade.uid}/realBalance`] = admin.database.ServerValue.increment(trade.realAmount);
+                        allMarketUpdates[`users/${trade.uid}/bonusBalance`] = admin.database.ServerValue.increment(trade.bonusAmount);
                     }
+                    allMarketUpdates[`users/${trade.uid}/totalProfitLoss`] = admin.database.ServerValue.increment(profitChange);
+                    allMarketUpdates[`users/${trade.uid}/dailyProfit`] = admin.database.ServerValue.increment(profitChange);
                 }
 
                 // Cleanup active trades
@@ -684,50 +664,3 @@ setInterval(async () => {
         db.ref().update(allMarketUpdates).catch(e => console.error("Arbiter update failed:", e));
     }
 }, 2000);
-
-// ==========================================
-// 🔥 COPY TRADING SL/TP AUTO DISCONNECT ENGINE 🔥
-// ==========================================
-setInterval(async () => {
-    try {
-        const usersSnap = await db.ref('users').once('value');
-        if (!usersSnap.exists()) return;
-
-        const updates = {};
-        
-        usersSnap.forEach(child => {
-            const uid = child.key;
-            const userData = child.val();
-
-            if (userData.activeCopies) {
-                Object.entries(userData.activeCopies).forEach(([mId, sub]) => {
-                    if (sub.status === 'active') {
-                        const currentL = parseFloat(sub.currentLoss) || 0;
-                        const currentP = parseFloat(sub.currentProfit) || 0;
-                        const sl = parseFloat(sub.stopLoss) || 0;
-                        const tp = parseFloat(sub.takeProfit) || 0;
-                        
-                        let shouldDisconnect = false;
-                        
-                        if (sl > 0 && currentL >= sl) {
-                            shouldDisconnect = true;
-                        } else if (tp > 0 && currentP >= tp) {
-                            shouldDisconnect = true;
-                        }
-                        
-                        if (shouldDisconnect) {
-                            updates[`users/${uid}/activeCopies/${mId}`] = null;
-                            console.log(`[COPY ENGINE] Auto-disconnected User ${uid} from Master ${mId} (SL/TP Reached).`);
-                        }
-                    }
-                });
-            }
-        });
-
-        if (Object.keys(updates).length > 0) {
-            await db.ref().update(updates);
-        }
-    } catch (error) {
-        console.error("[COPY ENGINE SL/TP] Error:", error);
-    }
-}, 10000);
