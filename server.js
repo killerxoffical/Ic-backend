@@ -639,11 +639,6 @@ setInterval(async () => {
                     }
                     allMarketUpdates[`users/${trade.uid}/totalProfitLoss`] = admin.database.ServerValue.increment(profitChange);
                     allMarketUpdates[`users/${trade.uid}/dailyProfit`] = admin.database.ServerValue.increment(profitChange);
-                    
-                    // Essential UI Stats
-                    allMarketUpdates[`users/${trade.uid}/tradeCycle/count`] = admin.database.ServerValue.increment(1);
-                    allMarketUpdates[`users/${trade.uid}/totalTradeVolume`] = admin.database.ServerValue.increment(betAmount);
-                    allMarketUpdates[`users/${trade.uid}/lastTradeTimestamp`] = admin.database.ServerValue.TIMESTAMP;
                 }
 
                 // Cleanup active trades
