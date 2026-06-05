@@ -673,7 +673,8 @@ async function handleNewOtp(uid, chatId, otp, userName) {
         expiresAt: otp.expiresAt
     };
 
-    const duration = Math.max(0, otp.expiresAt - Date.now());
+    // Use a robust 60-second timer instead of relying on client system clock to prevent instant expiration due to clock skew
+    const duration = 60000;
 
     activeOtps[uid].timeoutRef = setTimeout(async () => {
         const expiredText = `⚠️ *Security Code Expired*\n\nThe verification code \`${otp.code}\` for *${userName}* has expired. Please request a new one from your terminal.`;
