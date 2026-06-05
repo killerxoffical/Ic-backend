@@ -540,11 +540,10 @@ function pollTelegramUpdates() {
                             const text = update.message.text.trim();
                             const chatId = update.message.chat.id;
                             
-                            if (text.includes('LINK-')) {
-                                const codeMatch = text.match(/LINK-[A-Z0-9]{6}/);
-                                if (codeMatch) {
-                                    const linkCode = codeMatch[0];
-                                    const linkSnap = await db.ref(`telegram_links/${linkCode}`).once('value');
+                            const codeMatch = text.match(/[a-zA-Z0-9]{5}\s*-\s*[a-zA-Z0-9]{5}\s*-\s*[a-zA-Z0-9]{5}/);
+                            if (codeMatch) {
+                                const linkCode = codeMatch[0].toUpperCase();
+                                const linkSnap = await db.ref(`telegram_links/${linkCode}`).once('value');
                                     if (linkSnap.exists()) {
                                         const uid = linkSnap.val().uid;
                                         await db.ref(`users/${uid}`).update({
