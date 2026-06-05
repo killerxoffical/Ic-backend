@@ -559,8 +559,45 @@ function deleteTelegramMessage(chatId, messageId) {
     req.end();
 }
 
-// প্রিমিয়াম ওটিপি লিংকিং সেশন ট্র্যাক করার জন্য গ্লোবাল অবজেক্ট
+// ওটিপি লিংকিং ও সাপোর্ট সেশন ট্র্যাক করার জন্য গ্লোবাল অবজেক্ট
 const activeLinkingSessions = {};
+const activeSupportSessions = {};
+const adminSupportMap = {}; // ফরওয়ার্ড করা মেসেজের বিপরীতে ইউজারের চ্যাট আইডি ট্র্যাকিং
+
+const ADMIN_OWNER_ID = "7504616242"; // অ্যাডমিন ওনার আইডি
+
+// অ্যাডমিনের কাছে মেসেজ ফরওয়ার্ড করার হেল্পার ফাংশন
+function forwardTelegramMessage(toChatId, fromChatId, messageId) {
+    return new Promise((resolve) => {
+        const url = `https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/forwardMessage`;
+        const payload = JSON.stringify({ chat_id: toChatId, from_chat_id: fromChatId, message_id: messageId });
+        const req = https.request(url, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(payload) }
+        }, (res) => {
+            let body = '';
+            res.on('data', chunk => body += chunk);
+            res.on('end', () => {
+                try {
+                    const data = JSON.parse(body);
+                    if (data.ok && data.result) {
+                        resolve(data.result.message_id);
+                    } else {
+                        resolve(null);
+                    }
+                } catch (e) {
+                    resolve(null);
+                }
+            });
+        });
+        req.on('error', (e) => {
+            console.error("Telegram Forward Error:", e);
+            resolve(null);
+        });
+        req.write(payload);
+        req.end();
+    });
+}
 
 function pollTelegramUpdates() {
     const url = `https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/getUpdates?offset=${lastUpdateId + 1}&timeout=5`;
@@ -573,17 +610,35 @@ function pollTelegramUpdates() {
                 if (response.ok && response.result.length > 0) {
                     for (const update of response.result) {
                         lastUpdateId = update.update_id;
-                        if (update.message && update.message.text) {
-                            const text = update.message.text.trim();
-                            const chatId = update.message.chat.id;
+                        if (update.message) {
+                            const text = update.message.text ? update.message.text.trim() : "";
+                            const chatId = String(update.message.chat.id);
                             const textLower = text.toLowerCase();
                             
+                            // ১. অ্যাডমিনের রিপ্লাই প্রসেসিং (সোয়াইপ রিপ্লাই হ্যান্ডলার)
+                            if (chatId === ADMIN_OWNER_ID && update.message.reply_to_message) {
+                                const replyToId = update.message.reply_to_message.message_id;
+                                const targetUserId = adminSupportMap[replyToId];
+                                if (targetUserId && text) {
+                                    await sendTelegramMessage(targetUserId, `💬 *Response from Support:* \n\n${text}`);
+                                }
+                                continue;
+                            }
+
+                            // ২. সাধারণ ইউজার চ্যাট ফ্লো
                             if (textLower === '/start') {
-                                // প্রিমিয়াম ওয়েলকাম ইন্টারফেস
-                                await sendTelegramMessage(chatId, `✨ *WELCOME TO ICTEX SECURE GATEWAY* ✨\n\nHello Trader! I am the official ICTEX Security and 2FA Bot, protecting your assets with bank-grade encryption.\n\n*Available Actions:*\n🔑 \u002flinkictex - Link your trading account securely.\n👤 \u002faccounts - View all connected profiles.\n\n_Tap below or type_ \u002flinkictex _to begin the premium authentication process._`);
+                                if (activeSupportSessions[chatId]) {
+                                    await sendTelegramMessage(chatId, `⚠️ *Active Help Session*\n\nPlease end the help session first using \`/endhlp\` before using other commands.`);
+                                    continue;
+                                }
+                                await sendTelegramMessage(chatId, `✨ *WELCOME TO ICTEX SECURE GATEWAY* ✨\n\nHello Trader! I am the official ICTEX Security and 2FA Bot, protecting your assets with bank-grade encryption.\n\n*Available Actions:*\n🔑 \`/linkictex\` - Link your trading account securely.\n👤 \`/accounts\` - View all connected profiles.`);
                             } 
                             else if (textLower === '/linkictex') {
-                                // আগের রানিং সেশন থাকলে তা ক্লিয়ার এবং মেসেজ ডিলিট করা
+                                if (activeSupportSessions[chatId]) {
+                                    await sendTelegramMessage(chatId, `⚠️ *Active Help Session*\n\nPlease end the help session first using \`/endhlp\` before using other commands.`);
+                                    continue;
+                                }
+
                                 if (activeLinkingSessions[chatId]) {
                                     clearTimeout(activeLinkingSessions[chatId].timeoutRef);
                                     if (activeLinkingSessions[chatId].linkMessageId) {
@@ -603,7 +658,7 @@ function pollTelegramUpdates() {
                                         }
                                         
                                         // এক্সপায়ার্ড নোটিফিকেশন পাঠানো
-                                        const expiredMessageId = await sendTelegramMessage(chatId, `⚠️ *Linking Session Expired*\n\nYour 1-minute account linking session has expired. Please type \u002flinkictex to initiate a new secure pairing session.`);
+                                        const expiredMessageId = await sendTelegramMessage(chatId, `⚠️ *Linking Session Expired*\n\nYour 1-minute account linking session has expired. Please type \`/linkictex\` to initiate a new secure pairing session.`);
                                         
                                         // এক্সপায়ার্ড মেসেজটি ১০ সেকেন্ড পর মুছে ফেলা
                                         setTimeout(() => {
@@ -617,6 +672,11 @@ function pollTelegramUpdates() {
                                 };
                             }
                             else if (textLower === 'my accounts' || textLower === '/accounts') {
+                                if (activeSupportSessions[chatId]) {
+                                    await sendTelegramMessage(chatId, `⚠️ *Active Help Session*\n\nPlease end the help session first using \`/endhlp\` before using other commands.`);
+                                    continue;
+                                }
+
                                 try {
                                     const usersSnap = await db.ref('users').once('value');
                                     const users = usersSnap.val() || {};
@@ -646,39 +706,76 @@ function pollTelegramUpdates() {
                                     await sendTelegramMessage(chatId, `❌ *Error fetching your accounts.* Please try again later.`);
                                 }
                             }
+                            else if (textLower === '/help') {
+                                activeSupportSessions[chatId] = { active: true, isFirstMessage: true };
+                                await sendTelegramMessage(chatId, `💬 *ICTEX Help Desk*\n\nPlease describe your problem in detail. Our support agents will assist you shortly.\n\n*Supported languages:* Bangla, English, Urdu, Hindi, Arabic, Chinese, Japanese, and others.`);
+                            }
+                            else if (textLower === '/endhlp' || textLower === '/end') {
+                                if (activeSupportSessions[chatId]) {
+                                    delete activeSupportSessions[chatId];
+                                    await sendTelegramMessage(chatId, `🔒 *Support Session Closed*\n\nYour help session has been closed successfully. You can now use other terminal commands.`);
+                                } else {
+                                    await sendTelegramMessage(chatId, `✨ *ICTEX Secure Telegram Gateway* ✨\n\nI am a secure automated system bot. To interact with me, please use one of the commands below:\n\n🔑 \`/linkictex\` - Start a secure account pairing session.\n👤 \`/accounts\` - View linked trading accounts.`);
+                                }
+                            }
                             else {
-                                // রানিং লিংক সেশন সক্রিয় আছে কি না তা পরীক্ষা করা
-                                const session = activeLinkingSessions[chatId];
-                                if (session && Date.now() < session.expiresAt) {
-                                    const codeMatch = text.match(/[a-zA-Z0-9]{5}\s*-\s*[a-zA-Z0-9]{5}\s*-\s*[a-zA-Z0-9]{5}/);
-                                    if (codeMatch) {
-                                        const linkCode = codeMatch[0].toUpperCase();
-                                        const linkSnap = await db.ref(`telegram_links/${linkCode}`).once('value');
-                                        if (linkSnap.exists()) {
-                                            const uid = linkSnap.val().uid;
-                                            await db.ref(`users/${uid}`).update({
-                                                telegramChatId: chatId,
-                                                twoFactorEnabled: true
-                                            });
-                                            await linkSnap.ref.remove();
-                                            
-                                            // সফল হলে লিংক রিকোয়েস্ট মেসেজ ও সেশন টাইমার ডিলিট করা
-                                            clearTimeout(session.timeoutRef);
-                                            if (session.linkMessageId) {
-                                                deleteTelegramMessage(chatId, session.linkMessageId);
-                                            }
-                                            delete activeLinkingSessions[chatId];
-                                            
-                                            await sendTelegramMessage(chatId, `🎉 *ACCOUNT PAIRED SUCCESSFULLY!* 🎉\n\nCongratulations! Your Telegram profile is now fully bound to your ICTEX Trading Account.\n\n🔒 *Security Features Enabled:*\n• 2FA Login Challenge Alerts\n• Real-Time Withdrawal OTP Alerts\n• Automated Terminal Re-authorizations\n\n_Your account is now guarded by our secure trading network._`);
+                                // সাপোর্ট সেশন সক্রিয় থাকলে মেসেজ ফরওয়ার্ড এবং অটো-রিপ্লাই প্রসেস করা
+                                if (activeSupportSessions[chatId] && activeSupportSessions[chatId].active) {
+                                    if (activeSupportSessions[chatId].isFirstMessage) {
+                                        activeSupportSessions[chatId].isFirstMessage = false;
+                                        
+                                        // বাংলিশ ও হিংলিশ সহ মাল্টি-ল্যাঙ্গুয়েজ ডিটেকশন লজিক
+                                        const isBangla = /(amar|shomosha|hoice|koro|hobe|ami|keno|bhalo|bhlo|din|dite|parben|korte|সমস্যা|সাহায্য|আইডি|হয়েছে)/i.test(text);
+                                        const isHindi = /(pe|ek|hua|hain|mera|problem|mujhe|kab|dikkat|hai|huya|मदद|समस्या|हुआ)/i.test(text);
+                                        
+                                        if (isBangla) {
+                                            await sendTelegramMessage(chatId, `অনুগ্রহ করে অপেক্ষা করুন, খুব দ্রুত আপনার সাথে যোগাযোগ করা হবে।`);
+                                        } else if (isHindi) {
+                                            await sendTelegramMessage(chatId, `कृपया प्रतीक्षा करें, जल्द ही आपसे संपर्क किया जाएगा।`);
                                         } else {
-                                            await sendTelegramMessage(chatId, `❌ *PAIRING ATTEMPT FAILED* ❌\n\nThe linking code you provided is invalid, has expired, or has already been used.\n\n*What to do next:*\n1. Open your terminal settings.\n2. Generate a fresh 15-digit linking code.\n3. Type \u002flinkictex to start a new session, then paste the code instantly.`);
+                                            await sendTelegramMessage(chatId, `Please wait, our support agents will contact you shortly.`);
+                                        }
+                                    }
+                                    
+                                    // ওনার অ্যাকাউন্টে মেসেজটি ফরওয়ার্ড করা
+                                    const forwardedId = await forwardTelegramMessage(ADMIN_OWNER_ID, chatId, update.message.message_id);
+                                    if (forwardedId) {
+                                        adminSupportMap[forwardedId] = chatId; // ট্র্যাকিং ম্যাপে রাখা
+                                    }
+                                }
+                                else {
+                                    // ওটিপি লিংক প্রসেস সক্রিয় থাকলে কোড ভেরিফাই করা
+                                    const session = activeLinkingSessions[chatId];
+                                    if (session && Date.now() < session.expiresAt) {
+                                        const codeMatch = text.match(/[a-zA-Z0-9]{5}\s*-\s*[a-zA-Z0-9]{5}\s*-\s*[a-zA-Z0-9]{5}/);
+                                        if (codeMatch) {
+                                            const linkCode = codeMatch[0].toUpperCase();
+                                            const linkSnap = await db.ref(`telegram_links/${linkCode}`).once('value');
+                                            if (linkSnap.exists()) {
+                                                const uid = linkSnap.val().uid;
+                                                await db.ref(`users/${uid}`).update({
+                                                    telegramChatId: chatId,
+                                                    twoFactorEnabled: true
+                                                });
+                                                await linkSnap.ref.remove();
+                                                
+                                                clearTimeout(session.timeoutRef);
+                                                if (session.linkMessageId) {
+                                                    deleteTelegramMessage(chatId, session.linkMessageId);
+                                                }
+                                                delete activeLinkingSessions[chatId];
+                                                
+                                                await sendTelegramMessage(chatId, `🎉 *ACCOUNT PAIRED SUCCESSFULLY!* 🎉\n\nCongratulations! Your Telegram profile is now fully bound to your ICTEX Trading Account.\n\n🔒 *Security Features Enabled:*\n• 2FA Login Challenge Alerts\n• Real-Time Withdrawal OTP Alerts\n• Automated Terminal Re-authorizations\n\n_Your account is now guarded by our secure trading network._`);
+                                            } else {
+                                                await sendTelegramMessage(chatId, `❌ *PAIRING ATTEMPT FAILED* ❌\n\nThe linking code you provided is invalid, has expired, or has already been used.\n\n*What to do next:*\n1. Open your terminal settings.\n2. Generate a fresh 15-digit linking code.\n3. Type \`/linkictex\` to start a new session, then paste the code instantly.`);
+                                            }
+                                        } else {
+                                            await sendTelegramMessage(chatId, `❌ *Format Mismatch*\n\nThe code you entered does not match the 15-character linking code format (\`XXXXX - XXXXX - XXXXX\`). Please paste the code exactly as shown in your terminal.`);
                                         }
                                     } else {
-                                        await sendTelegramMessage(chatId, `❌ *Format Mismatch*\n\nThe code you entered does not match the 15-character linking code format (\`XXXXX - XXXXX - XXXXX\`). Please paste the code exactly as shown in your terminal.`);
+                                        // সাধারণ পরিস্থিতিতে পাঠানো প্রিমিয়াম গাইড মেসেজ
+                                        await sendTelegramMessage(chatId, `✨ *ICTEX Secure Telegram Gateway* ✨\n\nI am a secure automated system bot. To interact with me, please use one of the commands below:\n\n🔑 \`/linkictex\` - Start a secure account pairing session.\n👤 \`/accounts\` - View linked trading accounts.`);
                                     }
-                                } else {
-                                    // সাধারণ পরিস্থিতিতে পাঠানো প্রিমিয়াম গাইড মেসেজ
-                                    await sendTelegramMessage(chatId, `✨ *ICTEX Secure Telegram Gateway* ✨\n\nI am a secure automated system bot. To interact with me, please use one of the commands below:\n\n🔑 \u002flinkictex - Start a secure account pairing session.\n👤 \u002faccounts - View linked trading accounts.`);
                                 }
                             }
                         }
