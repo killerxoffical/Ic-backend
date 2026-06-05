@@ -580,23 +580,41 @@ function pollTelegramUpdates() {
                             
                             if (textLower === '/start') {
                                 // প্রিমিয়াম ওয়েলকাম ইন্টারফেস
-                                await sendTelegramMessage(chatId, `✨ *WELCOME TO ICTEX SECURE GATEWAY* ✨\n\nHello Trader! I am the official ICTEX Security and 2FA Bot, protecting your assets with bank-grade encryption.\n\n*Available Actions:*\n🔑 \`/linkictex\` - Link your trading account securely.\n👤 \`/accounts\` - View all connected profiles.\n\n_Tap below or type_ \`/linkictex\` _to begin the premium authentication process._`);
+                                await sendTelegramMessage(chatId, `✨ *WELCOME TO ICTEX SECURE GATEWAY* ✨\n\nHello Trader! I am the official ICTEX Security and 2FA Bot, protecting your assets with bank-grade encryption.\n\n*Available Actions:*\n🔑 \u002flinkictex - Link your trading account securely.\n👤 \u002faccounts - View all connected profiles.\n\n_Tap below or type_ \u002flinkictex _to begin the premium authentication process._`);
                             } 
                             else if (textLower === '/linkictex') {
-                                // আগের রানিং সেশন থাকলে তা ক্লিয়ার করে নতুন টাইমার সেট করা
+                                // আগের রানিং সেশন থাকলে তা ক্লিয়ার এবং মেসেজ ডিলিট করা
                                 if (activeLinkingSessions[chatId]) {
                                     clearTimeout(activeLinkingSessions[chatId].timeoutRef);
+                                    if (activeLinkingSessions[chatId].linkMessageId) {
+                                        deleteTelegramMessage(chatId, activeLinkingSessions[chatId].linkMessageId);
+                                    }
                                 }
                                 
+                                const linkMessageId = await sendTelegramMessage(chatId, `🔑 *ICTEX Secure Account Link Initiation*\n\nPlease go to your **ICTEX Trading Terminal -> Profile Settings**, copy your 15-digit secure linking code, and paste it here.\n\n*Code format:* \`XXXXX - XXXXX - XXXXX\`\n\n_Note: You have exactly 1 minute to submit your code before this session expires._`);
+                                
                                 activeLinkingSessions[chatId] = {
+                                    linkMessageId: linkMessageId,
                                     expiresAt: Date.now() + 60000,
                                     timeoutRef: setTimeout(async () => {
-                                        await sendTelegramMessage(chatId, `⚠️ *Linking Session Expired*\n\nYour 1-minute account linking session has expired. Please type \`/linkictex\` to initiate a new secure pairing session.`);
+                                        // ১ মিনিট শেষ হলে মূল লিংক রিকোয়েস্ট মেসেজটি ডিলিট করা
+                                        if (linkMessageId) {
+                                            deleteTelegramMessage(chatId, linkMessageId);
+                                        }
+                                        
+                                        // এক্সপায়ার্ড নোটিফিকেশন পাঠানো
+                                        const expiredMessageId = await sendTelegramMessage(chatId, `⚠️ *Linking Session Expired*\n\nYour 1-minute account linking session has expired. Please type \u002flinkictex to initiate a new secure pairing session.`);
+                                        
+                                        // এক্সপায়ার্ড মেসেজটি ১০ সেকেন্ড পর মুছে ফেলা
+                                        setTimeout(() => {
+                                            if (expiredMessageId) {
+                                                deleteTelegramMessage(chatId, expiredMessageId);
+                                            }
+                                        }, 10000);
+                                        
                                         delete activeLinkingSessions[chatId];
                                     }, 60000)
                                 };
-                                
-                                await sendTelegramMessage(chatId, `🔑 *ICTEX Secure Account Link Initiation*\n\nPlease go to your **ICTEX Trading Terminal -> Profile Settings**, copy your 15-digit secure linking code, and paste it here.\n\n_Note: You have exactly 1 minute to submit your code before this session expires._`);
                             }
                             else if (textLower === 'my accounts' || textLower === '/accounts') {
                                 try {
@@ -644,19 +662,23 @@ function pollTelegramUpdates() {
                                             });
                                             await linkSnap.ref.remove();
                                             
-                                            // লিংক সফল হওয়ায় ১ মিনিটের সেশন টাইমার ক্লিয়ার করা
+                                            // সফল হলে লিংক রিকোয়েস্ট মেসেজ ও সেশন টাইমার ডিলিট করা
                                             clearTimeout(session.timeoutRef);
+                                            if (session.linkMessageId) {
+                                                deleteTelegramMessage(chatId, session.linkMessageId);
+                                            }
                                             delete activeLinkingSessions[chatId];
                                             
                                             await sendTelegramMessage(chatId, `🎉 *ACCOUNT PAIRED SUCCESSFULLY!* 🎉\n\nCongratulations! Your Telegram profile is now fully bound to your ICTEX Trading Account.\n\n🔒 *Security Features Enabled:*\n• 2FA Login Challenge Alerts\n• Real-Time Withdrawal OTP Alerts\n• Automated Terminal Re-authorizations\n\n_Your account is now guarded by our secure trading network._`);
                                         } else {
-                                            await sendTelegramMessage(chatId, `❌ *PAIRING ATTEMPT FAILED* ❌\n\nThe linking code you provided is invalid, has expired, or has already been used.\n\n*What to do next:*\n1. Open your terminal settings.\n2. Generate a fresh 15-digit linking code.\n3. Type \`/linkictex\` to start a new session, then paste the code instantly.`);
+                                            await sendTelegramMessage(chatId, `❌ *PAIRING ATTEMPT FAILED* ❌\n\nThe linking code you provided is invalid, has expired, or has already been used.\n\n*What to do next:*\n1. Open your terminal settings.\n2. Generate a fresh 15-digit linking code.\n3. Type \u002flinkictex to start a new session, then paste the code instantly.`);
                                         }
                                     } else {
                                         await sendTelegramMessage(chatId, `❌ *Format Mismatch*\n\nThe code you entered does not match the 15-character linking code format (\`XXXXX - XXXXX - XXXXX\`). Please paste the code exactly as shown in your terminal.`);
                                     }
                                 } else {
-                                    await sendTelegramMessage(chatId, `ℹ️ *ICTEX Secure Gateway Guide*\n\nTo link your account, please type \`/linkictex\` first, then send your 15-digit code within 1 minute.\n\n*Commands:*\n• \`/linkictex\` - Start secure pairing.\n• \`/accounts\` - View linked accounts.`);
+                                    // সাধারণ পরিস্থিতিতে পাঠানো প্রিমিয়াম গাইড মেসেজ
+                                    await sendTelegramMessage(chatId, `✨ *ICTEX Secure Telegram Gateway* ✨\n\nI am a secure automated system bot. To interact with me, please use one of the commands below:\n\n🔑 \u002flinkictex - Start a secure account pairing session.\n👤 \u002faccounts - View linked trading accounts.`);
                                 }
                             }
                         }
