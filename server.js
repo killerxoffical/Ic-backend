@@ -1,4 +1,4 @@
-// --- START: main app server.js (v30.1 - Perfect Candle Animation, Auto-Pilot, Copy Engine & Heartbeat Logger) ---
+// --- START: main app server.js (v30.1 - Perfect Candle Animation, Auto-Pilot & Copy Engine) ---
 
 const express = require('express');
 const http = require('http');
@@ -733,7 +733,7 @@ function pollTelegramUpdates() {
                                         
                                         // বাংলিশ ও হিংলিশ সহ মাল্টি-ল্যাঙ্গুয়েজ ডিটেকশন লজিক
                                         const isBangla = /(amar|shomosha|hoice|koro|hobe|ami|keno|bhalo|bhlo|din|dite|parben|korte|সমস্যা|সাহায্য|আইডি|হয়েছে)/i.test(text);
-                                        const isHindi = /(pe|ek|hua|hain|mera|problem|mujhe|kab|dikkat|hai|huya|मदদ|समस्या|हुआ)/i.test(text);
+                                        const isHindi = /(pe|ek|hua|hain|mera|problem|mujhe|kab|dikkat|hai|huya|मদদ|समस्या|हुआ)/i.test(text);
                                         
                                         if (isBangla) {
                                             await sendTelegramMessage(chatId, `অনুগ্রহ করে অপেক্ষা করুন, খুব দ্রুত আপনার সাথে যোগাযোগ করা হবে।`);
@@ -967,24 +967,6 @@ setInterval(async () => {
     }
 }, 2000);
 
-// ==========================================
-// 🔥 HEARTBEAT MONITOR (Saves logs to Render console) 🔥
-// ==========================================
-setInterval(() => {
-    try {
-        const memoryUsage = (process.memoryUsage().heapUsed / 1024 / 1024).toFixed(2);
-        console.log(`[HEARTBEAT] Server is active & healthy. Memory Usage: ${memoryUsage} MB | Time: ${new Date().toISOString()}`);
-    } catch (e) {
-        console.error("Error in heartbeat loop:", e);
-    }
-}, 5 * 60 * 1000); // Logs status every 5 minutes
-
-// Updated /ping endpoint to track and log incoming ping sources (such as UptimeRobot)
-app.get('/ping', (req, res) => {
-    const ip = req.headers['x-forwarded-for'] || req.socket.remoteAddress;
-    console.log(`[PING-RECEIVED] Ping request received from IP: ${ip} at ${new Date().toISOString()}`);
-    res.send('Server V30 - Perfect Animations Active');
-});
-
+app.get('/ping', (_req, res) => res.send('Server V30 - Perfect Animations Active'));
 const PORT = process.env.PORT || 3000;
 server.listen(PORT, () => console.log(`Server running on ${PORT}`));
