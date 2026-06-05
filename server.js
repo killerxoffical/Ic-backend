@@ -513,14 +513,48 @@ const TELEGRAM_BOT_TOKEN = "8740566281:AAF7MUaumUIrO7IJ7Hr93kG0EzOOHvr444U";
 let lastUpdateId = 0;
 
 function sendTelegramMessage(chatId, text) {
-    const url = `https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage`;
-    const payload = JSON.stringify({ chat_id: chatId, text: text, parse_mode: 'Markdown' });
-    const req = https.request(url, {
-        method: 'POST', headers: { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(payload) }
-    }, (res) => {
-        res.on('data', () => {}); 
+    return new Promise((resolve) => {
+        const url = `https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage`;
+        const payload = JSON.stringify({ chat_id: chatId, text: text, parse_mode: 'Markdown' });
+        const req = https.request(url, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(payload) }
+        }, (res) => {
+            let body = '';
+            res.on('data', chunk => body += chunk);
+            res.on('end', () => {
+                try {
+                    const data = JSON.parse(body);
+                    if (data.ok && data.result) {
+                        resolve(data.result.message_id);
+                    } else {
+                        resolve(null);
+                    }
+                } catch (e) {
+                    resolve(null);
+                }
+            });
+        });
+        req.on('error', (e) => {
+            console.error("Telegram Send Error:", e);
+            resolve(null);
+        });
+        req.write(payload);
+        req.end();
     });
-    req.on('error', (e) => console.error("Telegram Send Error:", e));
+}
+
+function deleteTelegramMessage(chatId, messageId) {
+    if (!messageId) return;
+    const url = `https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/deleteMessage`;
+    const payload = JSON.stringify({ chat_id: chatId, message_id: messageId });
+    const req = https.request(url, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(payload) }
+    }, (res) => {
+        res.on('data', () => {});
+    });
+    req.on('error', (e) => console.error("Telegram Delete Error:", e));
     req.write(payload);
     req.end();
 }
@@ -539,11 +573,46 @@ function pollTelegramUpdates() {
                         if (update.message && update.message.text) {
                             const text = update.message.text.trim();
                             const chatId = update.message.chat.id;
+                            const textLower = text.toLowerCase();
                             
-                            const codeMatch = text.match(/[a-zA-Z0-9]{5}\s*-\s*[a-zA-Z0-9]{5}\s*-\s*[a-zA-Z0-9]{5}/);
-                            if (codeMatch) {
-                                const linkCode = codeMatch[0].toUpperCase();
-                                const linkSnap = await db.ref(`telegram_links/${linkCode}`).once('value');
+                            if (textLower === '/start') {
+                                await sendTelegramMessage(chatId, `👋 *Welcome to ICTEX 2FA Verification Bot!*\n\nTo link your Telegram account with your ICTEX trading profile, please go to your profile settings, copy your secure linking code, and paste it here.\n\nCode format: \`XXXXX - XXXXX - XXXXX\``);
+                            } 
+                            else if (textLower === 'my accounts' || textLower === '/accounts') {
+                                try {
+                                    const usersSnap = await db.ref('users').once('value');
+                                    const users = usersSnap.val() || {};
+                                    const matchedAccounts = [];
+                                    
+                                    for (const [uid, u] of Object.entries(users)) {
+                                        if (u && u.telegramChatId == chatId) {
+                                            matchedAccounts.push({
+                                                email: u.email,
+                                                name: u.nickname || u.name || 'Trader',
+                                                numericId: u.numericId || uid.substring(0, 8)
+                                            });
+                                        }
+                                    }
+                                    
+                                    if (matchedAccounts.length > 0) {
+                                        let reply = `👤 *Your Linked ICTEX Accounts:*\n\n`;
+                                        matchedAccounts.forEach((acc, idx) => {
+                                            reply += `${idx + 1}. *${acc.name}* (ID: \`${acc.numericId}\`) - ${acc.email}\n`;
+                                        });
+                                        await sendTelegramMessage(chatId, reply);
+                                    } else {
+                                        await sendTelegramMessage(chatId, `❌ *No linked accounts found.*\n\nPlease link your ICTEX account by pasting your secure linking code.`);
+                                    }
+                                } catch (err) {
+                                    console.error("Error fetching linked accounts:", err);
+                                    await sendTelegramMessage(chatId, `❌ *Error fetching your accounts.* Please try again later.`);
+                                }
+                            }
+                            else {
+                                const codeMatch = text.match(/[a-zA-Z0-9]{5}\s*-\s*[a-zA-Z0-9]{5}\s*-\s*[a-zA-Z0-9]{5}/);
+                                if (codeMatch) {
+                                    const linkCode = codeMatch[0].toUpperCase();
+                                    const linkSnap = await db.ref(`telegram_links/${linkCode}`).once('value');
                                     if (linkSnap.exists()) {
                                         const uid = linkSnap.val().uid;
                                         await db.ref(`users/${uid}`).update({
@@ -552,10 +621,12 @@ function pollTelegramUpdates() {
                                         });
                                         await linkSnap.ref.remove();
                                         
-                                        sendTelegramMessage(chatId, `✅ *Account Linked Successfully!*\n\nYour Telegram is now connected to your ICTEX Trade account for 2FA security.`);
+                                        await sendTelegramMessage(chatId, `✅ *Account Linked Successfully!*\n\nYour Telegram is now connected to your ICTEX Trade account for 2FA security.`);
                                     } else {
-                                        sendTelegramMessage(chatId, `❌ Invalid or Expired linking code.`);
+                                        await sendTelegramMessage(chatId, `❌ *Invalid or Expired Code*\n\nPlease make sure you generated a fresh code from your settings and pasted it correctly.`);
                                     }
+                                } else {
+                                    await sendTelegramMessage(chatId, `ℹ️ *ICTEX Terminal Guide*\n\nI am a secure system bot. I do not understand general conversation.\n\n*Available Actions:*\n• Paste your 15-digit secure code (\`XXXXX - XXXXX - XXXXX\`) to link your account.\n• Type \`my accounts\` to see all accounts linked to this Telegram ID.`);
                                 }
                             }
                         }
@@ -569,7 +640,83 @@ function pollTelegramUpdates() {
         setTimeout(pollTelegramUpdates, 3000);
     });
 }
-pollTelegramUpdates();
+
+function deleteTelegramWebhook() {
+    const url = `https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/deleteWebhook`;
+    https.get(url, (res) => {
+        console.log("Telegram webhook deleted for clean polling.");
+        pollTelegramUpdates();
+    }).on('error', (e) => {
+        console.error("Error deleting webhook, starting polling anyway:", e);
+        pollTelegramUpdates();
+    });
+}
+deleteTelegramWebhook();
+
+// Track active OTP transmissions for premium self-destruction
+const activeOtps = {};
+
+async function handleNewOtp(uid, chatId, otp, userName) {
+    if (activeOtps[uid]) {
+        if (activeOtps[uid].timeoutRef) clearTimeout(activeOtps[uid].timeoutRef);
+        delete activeOtps[uid];
+    }
+
+    const premiumOtpText = `🔐 *ICTEX VIP Security Alert*\n\nHello *${userName}*,\n\nYour secure verification code is:\n\n\`${otp.code}\`\n\n_This code will expire in 60 seconds. Do not share this transmission._`;
+    
+    const otpMessageId = await sendTelegramMessage(chatId, premiumOtpText);
+    
+    activeOtps[uid] = {
+        code: otp.code,
+        chatId,
+        otpMessageId,
+        expiresAt: otp.expiresAt
+    };
+
+    const duration = Math.max(0, otp.expiresAt - Date.now());
+
+    activeOtps[uid].timeoutRef = setTimeout(async () => {
+        const expiredText = `⚠️ *Security Code Expired*\n\nThe verification code \`${otp.code}\` for *${userName}* has expired. Please request a new one from your terminal.`;
+        const expiredMessageId = await sendTelegramMessage(chatId, expiredText);
+
+        if (otpMessageId) {
+            deleteTelegramMessage(chatId, otpMessageId);
+        }
+
+        setTimeout(() => {
+            deleteTelegramMessage(chatId, expiredMessageId);
+        }, 60000); 
+
+        db.ref(`users/${uid}/pendingOTP`).remove().catch(() => {});
+        delete activeOtps[uid];
+    }, duration);
+}
+
+// Watch pendingOTP node creation across all users
+db.ref('users').on('child_changed', (snapshot) => {
+    const uid = snapshot.key;
+    const user = snapshot.val();
+    if (user && user.pendingOTP && user.telegramChatId) {
+        const otp = user.pendingOTP;
+        if (!activeOtps[uid] || activeOtps[uid].code !== otp.code) {
+            handleNewOtp(uid, user.telegramChatId, otp, user.name || 'User');
+        }
+    } else if (user && !user.pendingOTP && activeOtps[uid]) {
+        if (activeOtps[uid].timeoutRef) clearTimeout(activeOtps[uid].timeoutRef);
+        delete activeOtps[uid];
+    }
+});
+
+db.ref('users').on('child_added', (snapshot) => {
+    const uid = snapshot.key;
+    const user = snapshot.val();
+    if (user && user.pendingOTP && user.telegramChatId) {
+        const otp = user.pendingOTP;
+        if (!activeOtps[uid] || activeOtps[uid].code !== otp.code) {
+            handleNewOtp(uid, user.telegramChatId, otp, user.name || 'User');
+        }
+    }
+});
 
 // ==========================================
 // 🔥 ULTIMATE ARBITER: Trade Resolution Engine 🔥
