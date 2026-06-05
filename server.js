@@ -1,4 +1,4 @@
-// --- START: main app server.js (v30 - Perfect Candle Animation, Auto-Pilot & Copy Engine) ---
+// --- START: main app server.js (v30.1 - Perfect Candle Animation, Auto-Pilot, Copy Engine & Heartbeat Logger) ---
 
 const express = require('express');
 const http = require('http');
@@ -967,6 +967,24 @@ setInterval(async () => {
     }
 }, 2000);
 
-app.get('/ping', (_req, res) => res.send('Server V30 - Perfect Animations Active'));
+// ==========================================
+// 🔥 HEARTBEAT MONITOR (Saves logs to Render console) 🔥
+// ==========================================
+setInterval(() => {
+    try {
+        const memoryUsage = (process.memoryUsage().heapUsed / 1024 / 1024).toFixed(2);
+        console.log(`[HEARTBEAT] Server is active & healthy. Memory Usage: ${memoryUsage} MB | Time: ${new Date().toISOString()}`);
+    } catch (e) {
+        console.error("Error in heartbeat loop:", e);
+    }
+}, 5 * 60 * 1000); // Logs status every 5 minutes
+
+// Updated /ping endpoint to track and log incoming ping sources (such as UptimeRobot)
+app.get('/ping', (req, res) => {
+    const ip = req.headers['x-forwarded-for'] || req.socket.remoteAddress;
+    console.log(`[PING-RECEIVED] Ping request received from IP: ${ip} at ${new Date().toISOString()}`);
+    res.send('Server V30 - Perfect Animations Active');
+});
+
 const PORT = process.env.PORT || 3000;
 server.listen(PORT, () => console.log(`Server running on ${PORT}`));
