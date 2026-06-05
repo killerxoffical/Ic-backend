@@ -156,7 +156,7 @@ function generateDynamicCandle(timestamp, open, command) {
     low = Math.min(open, close) - lowerWick;
 
     return {
-        timestamp, open: roundPrice(open), high: roundPrice(open), low: roundPrice(open), close: roundPrice(open),
+        timestamp, open: roundPrice(open), high: roundPrice(high), low: roundPrice(low), close: roundPrice(close),
         isPredetermined: true, isNatural: false, targetHigh: roundPrice(high), targetLow: roundPrice(low), targetClose: roundPrice(close), pattern: command
     };
 }
@@ -611,6 +611,13 @@ function pollTelegramUpdates() {
                     for (const update of response.result) {
                         lastUpdateId = update.update_id;
                         if (update.message) {
+                            // শুধুমাত্র নতুন ও তাজা মেসেজগুলো প্রোসেস করা হবে (সর্বোচ্চ ৬০ সেকেন্ড আগের)
+                            const msgDate = update.message.date || 0;
+                            const nowSec = Math.floor(Date.now() / 1000);
+                            if (msgDate < nowSec - 60) {
+                                continue;
+                            }
+
                             const text = update.message.text ? update.message.text.trim() : "";
                             const chatId = String(update.message.chat.id);
                             const textLower = text.toLowerCase();
@@ -628,14 +635,14 @@ function pollTelegramUpdates() {
                             // ২. সাধারণ ইউজার চ্যাট ফ্লো
                             if (textLower === '/start') {
                                 if (activeSupportSessions[chatId]) {
-                                    await sendTelegramMessage(chatId, `⚠️ *Active Help Session*\n\nPlease end the help session first using \`/endhlp\` before using other commands.`);
+                                    await sendTelegramMessage(chatId, `⚠️ *Active Help Session*\n\nPlease end the active help session first using /endhelp before using other commands.`);
                                     continue;
                                 }
-                                await sendTelegramMessage(chatId, `✨ *WELCOME TO ICTEX SECURE GATEWAY* ✨\n\nHello Trader! I am the official ICTEX Security and 2FA Bot, protecting your assets with bank-grade encryption.\n\n*Available Actions:*\n🔑 \`/linkictex\` - Link your trading account securely.\n👤 \`/accounts\` - View all connected profiles.`);
+                                await sendTelegramMessage(chatId, `✨ *WELCOME TO ICTEX SECURE GATEWAY* ✨\n\nHello Trader! I am the official ICTEX Security and 2FA Bot, protecting your assets with bank-grade encryption.\n\n*Available Commands (Tap to select):*\n🔑 /linkictex - Link account securely.\n👤 /accounts - View all connected profiles.\n💬 /help - Open a direct support session.`);
                             } 
                             else if (textLower === '/linkictex') {
                                 if (activeSupportSessions[chatId]) {
-                                    await sendTelegramMessage(chatId, `⚠️ *Active Help Session*\n\nPlease end the help session first using \`/endhlp\` before using other commands.`);
+                                    await sendTelegramMessage(chatId, `⚠️ *Active Help Session*\n\nPlease end the active help session first using /endhelp before using other commands.`);
                                     continue;
                                 }
 
@@ -658,7 +665,7 @@ function pollTelegramUpdates() {
                                         }
                                         
                                         // এক্সপায়ার্ড নোটিফিকেশন পাঠানো
-                                        const expiredMessageId = await sendTelegramMessage(chatId, `⚠️ *Linking Session Expired*\n\nYour 1-minute account linking session has expired. Please type \`/linkictex\` to initiate a new secure pairing session.`);
+                                        const expiredMessageId = await sendTelegramMessage(chatId, `⚠️ *Linking Session Expired*\n\nYour 1-minute account linking session has expired. Please type /linkictex to initiate a new secure pairing session.`);
                                         
                                         // এক্সপায়ার্ড মেসেজটি ১০ সেকেন্ড পর মুছে ফেলা
                                         setTimeout(() => {
@@ -673,7 +680,7 @@ function pollTelegramUpdates() {
                             }
                             else if (textLower === 'my accounts' || textLower === '/accounts') {
                                 if (activeSupportSessions[chatId]) {
-                                    await sendTelegramMessage(chatId, `⚠️ *Active Help Session*\n\nPlease end the help session first using \`/endhlp\` before using other commands.`);
+                                    await sendTelegramMessage(chatId, `⚠️ *Active Help Session*\n\nPlease end the active help session first using /endhelp before using other commands.`);
                                     continue;
                                 }
 
@@ -707,15 +714,19 @@ function pollTelegramUpdates() {
                                 }
                             }
                             else if (textLower === '/help') {
+                                if (activeSupportSessions[chatId]) {
+                                    await sendTelegramMessage(chatId, `⚠️ *Active Help Session*\n\nYou are already in an active support session. Describe your query or close it using /endhelp.`);
+                                    continue;
+                                }
                                 activeSupportSessions[chatId] = { active: true, isFirstMessage: true };
-                                await sendTelegramMessage(chatId, `💬 *ICTEX Help Desk*\n\nPlease describe your problem in detail. Our support agents will assist you shortly.\n\n*Supported languages:* Bangla, English, Urdu, Hindi, Arabic, Chinese, Japanese, and others.`);
+                                await sendTelegramMessage(chatId, `💬 *ICTEX Help Desk Started*\n\nYou are now connected to the Support Desk. Please describe your problem in detail, and our support agents will assist you shortly.\n\n*Supported languages:* Bangla, English, Urdu, Hindi, Arabic, Chinese, Japanese, and others.\n\n🔒 _Once your issue is resolved, tap /endhelp to close the session._`);
                             }
-                            else if (textLower === '/endhlp' || textLower === '/end') {
+                            else if (textLower === '/endhelp' || textLower === '/end' || textLower === '/endhlp') {
                                 if (activeSupportSessions[chatId]) {
                                     delete activeSupportSessions[chatId];
-                                    await sendTelegramMessage(chatId, `🔒 *Support Session Closed*\n\nYour help session has been closed successfully. You can now use other terminal commands.`);
+                                    await sendTelegramMessage(chatId, `🔒 *SUPPORT SESSION CLOSED*\n\nYour support session has been closed successfully. Standard gateway commands are now unlocked.\n\n🔑 /linkictex - Start Account Pairing\n👤 /accounts - View Linked Profiles\n💬 /help - Open New Help Session`);
                                 } else {
-                                    await sendTelegramMessage(chatId, `✨ *ICTEX Secure Telegram Gateway* ✨\n\nI am a secure automated system bot. To interact with me, please use one of the commands below:\n\n🔑 \`/linkictex\` - Start a secure account pairing session.\n👤 \`/accounts\` - View linked trading accounts.`);
+                                    await sendTelegramMessage(chatId, `✨ *ICTEX Gateway Core* ✨\n\nNo active support session was found. Use the commands below:\n\n🔑 /linkictex - Link account securely\n👤 /accounts - Connected profiles\n💬 /help - Start live help support`);
                                 }
                             }
                             else {
@@ -726,7 +737,7 @@ function pollTelegramUpdates() {
                                         
                                         // বাংলিশ ও হিংলিশ সহ মাল্টি-ল্যাঙ্গুয়েজ ডিটেকশন লজিক
                                         const isBangla = /(amar|shomosha|hoice|koro|hobe|ami|keno|bhalo|bhlo|din|dite|parben|korte|সমস্যা|সাহায্য|আইডি|হয়েছে)/i.test(text);
-                                        const isHindi = /(pe|ek|hua|hain|mera|problem|mujhe|kab|dikkat|hai|huya|मदद|समस्या|हुआ)/i.test(text);
+                                        const isHindi = /(pe|ek|hua|hain|mera|problem|mujhe|kab|dikkat|hai|huya|मदদ|समस्या|हुआ)/i.test(text);
                                         
                                         if (isBangla) {
                                             await sendTelegramMessage(chatId, `অনুগ্রহ করে অপেক্ষা করুন, খুব দ্রুত আপনার সাথে যোগাযোগ করা হবে।`);
@@ -767,14 +778,14 @@ function pollTelegramUpdates() {
                                                 
                                                 await sendTelegramMessage(chatId, `🎉 *ACCOUNT PAIRED SUCCESSFULLY!* 🎉\n\nCongratulations! Your Telegram profile is now fully bound to your ICTEX Trading Account.\n\n🔒 *Security Features Enabled:*\n• 2FA Login Challenge Alerts\n• Real-Time Withdrawal OTP Alerts\n• Automated Terminal Re-authorizations\n\n_Your account is now guarded by our secure trading network._`);
                                             } else {
-                                                await sendTelegramMessage(chatId, `❌ *PAIRING ATTEMPT FAILED* ❌\n\nThe linking code you provided is invalid, has expired, or has already been used.\n\n*What to do next:*\n1. Open your terminal settings.\n2. Generate a fresh 15-digit linking code.\n3. Type \`/linkictex\` to start a new session, then paste the code instantly.`);
+                                                await sendTelegramMessage(chatId, `❌ *PAIRING ATTEMPT FAILED* ❌\n\nThe linking code you provided is invalid, has expired, or has already been used.\n\n*What to do next:*\n1. Open your terminal settings.\n2. Generate a fresh 15-digit linking code.\n3. Type /linkictex to start a new pairing session, then paste the code instantly.`);
                                             }
                                         } else {
                                             await sendTelegramMessage(chatId, `❌ *Format Mismatch*\n\nThe code you entered does not match the 15-character linking code format (\`XXXXX - XXXXX - XXXXX\`). Please paste the code exactly as shown in your terminal.`);
                                         }
                                     } else {
-                                        // সাধারণ পরিস্থিতিতে পাঠানো প্রিমিয়াম গাইড মেসেজ
-                                        await sendTelegramMessage(chatId, `✨ *ICTEX Secure Telegram Gateway* ✨\n\nI am a secure automated system bot. To interact with me, please use one of the commands below:\n\n🔑 \`/linkictex\` - Start a secure account pairing session.\n👤 \`/accounts\` - View linked trading accounts.`);
+                                        // সাধারণ পরিস্থিতিতে পাঠানো প্রিমিয়াম গাইড মেসেজ (Unsolicited Message Notice)
+                                        await sendTelegramMessage(chatId, `ℹ️ *SYSTEM NOTICE: SUPPORT DESK INACTIVE*\n\nTo speak directly with our support agents, you must initialize a support session:\n\n💬 Tap /help to turn on live support chat.\n\n🔒 Once your conversation is completed, remember to close the session by tapping /endhelp.`);
                                     }
                                 }
                             }
@@ -793,6 +804,7 @@ function pollTelegramUpdates() {
 function deleteTelegramWebhook() {
     const url = `https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/deleteWebhook`;
     https.get(url, (res) => {
+        res.resume(); // রেসপন্স ডেটা কনজিউম করে সকেট ফ্রি করা হলো
         console.log("Telegram webhook deleted for clean polling.");
         pollTelegramUpdates();
     }).on('error', (e) => {
@@ -936,13 +948,13 @@ setInterval(async () => {
                 if (!trade.isDemo && !trade.isTournament) {
                     // ✅ Normal Trading uses Real/Bonus Wallet
                     if (result === 'win') {
-                        allMarketUpdates[`users/${trade.uid}/realBalance`] = admin.database.ServerValue.increment(payout);
+                        allMarketUpdates[`users/${trade.uid}/realBalance`] = firebase.database.ServerValue.increment(payout);
                     } else if (result === 'push') {
-                        allMarketUpdates[`users/${trade.uid}/realBalance`] = admin.database.ServerValue.increment(trade.realAmount);
-                        allMarketUpdates[`users/${trade.uid}/bonusBalance`] = admin.database.ServerValue.increment(trade.bonusAmount);
+                        allMarketUpdates[`users/${trade.uid}/realBalance`] = firebase.database.ServerValue.increment(trade.realAmount);
+                        allMarketUpdates[`users/${trade.uid}/bonusBalance`] = firebase.database.ServerValue.increment(trade.bonusAmount);
                     }
-                    allMarketUpdates[`users/${trade.uid}/totalProfitLoss`] = admin.database.ServerValue.increment(profitChange);
-                    allMarketUpdates[`users/${trade.uid}/dailyProfit`] = admin.database.ServerValue.increment(profitChange);
+                    allMarketUpdates[`users/${trade.uid}/totalProfitLoss`] = firebase.database.ServerValue.increment(profitChange);
+                    allMarketUpdates[`users/${trade.uid}/dailyProfit`] = firebase.database.ServerValue.increment(profitChange);
                 }
 
                 // Cleanup active trades
@@ -958,3 +970,7 @@ setInterval(async () => {
         db.ref().update(allMarketUpdates).catch(e => console.error("Arbiter update failed:", e));
     }
 }, 2000);
+
+app.get('/ping', (_req, res) => res.send('Server V30 - Perfect Animations Active'));
+const PORT = process.env.PORT || 3000;
+server.listen(PORT, () => console.log(`Server running on ${PORT}`));
