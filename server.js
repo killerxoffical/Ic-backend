@@ -657,8 +657,12 @@ deleteTelegramWebhook();
 const activeOtps = {};
 
 async function handleNewOtp(uid, chatId, otp, userName) {
+    // নতুন ওটিপি পাঠানোর সময় আগের ওটিপি মেসেজটি থাকলে তা চ্যাট থেকে ডিলিট করে দেওয়া হবে
     if (activeOtps[uid]) {
         if (activeOtps[uid].timeoutRef) clearTimeout(activeOtps[uid].timeoutRef);
+        if (activeOtps[uid].otpMessageId) {
+            deleteTelegramMessage(activeOtps[uid].chatId, activeOtps[uid].otpMessageId);
+        }
         delete activeOtps[uid];
     }
 
@@ -673,20 +677,21 @@ async function handleNewOtp(uid, chatId, otp, userName) {
         expiresAt: otp.expiresAt
     };
 
-    // Use a robust 60-second timer instead of relying on client system clock to prevent instant expiration due to clock skew
     const duration = 60000;
 
     activeOtps[uid].timeoutRef = setTimeout(async () => {
         const expiredText = `⚠️ *Security Code Expired*\n\nThe verification code \`${otp.code}\` for *${userName}* has expired. Please request a new one from your terminal.`;
         const expiredMessageId = await sendTelegramMessage(chatId, expiredText);
 
-        if (otpMessageId) {
-            deleteTelegramMessage(chatId, otpMessageId);
-        }
-
+        // ১০ সেকেন্ড পর ওটিপি মেসেজ এবং এক্সপায়ার নোটিফিকেশন দুটিই চ্যাট থেকে মুছে ফেলার টাইমার
         setTimeout(() => {
-            deleteTelegramMessage(chatId, expiredMessageId);
-        }, 60000); 
+            if (otpMessageId) {
+                deleteTelegramMessage(chatId, otpMessageId);
+            }
+            if (expiredMessageId) {
+                deleteTelegramMessage(chatId, expiredMessageId);
+            }
+        }, 10000); 
 
         db.ref(`users/${uid}/pendingOTP`).remove().catch(() => {});
         delete activeOtps[uid];
@@ -704,6 +709,9 @@ db.ref('users').on('child_changed', (snapshot) => {
         }
     } else if (user && !user.pendingOTP && activeOtps[uid]) {
         if (activeOtps[uid].timeoutRef) clearTimeout(activeOtps[uid].timeoutRef);
+        if (activeOtps[uid].otpMessageId) {
+            deleteTelegramMessage(activeOtps[uid].chatId, activeOtps[uid].otpMessageId);
+        }
         delete activeOtps[uid];
     }
 });
