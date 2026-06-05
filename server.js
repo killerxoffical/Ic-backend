@@ -501,10 +501,6 @@ setInterval(() => {
     }
 }, TICK_MS);
 
-app.get('/ping', (_req, res) => res.send('Server V30 - Perfect Animations Active'));
-const PORT = process.env.PORT || 3000;
-server.listen(PORT, () => console.log(`Server running on ${PORT}`));
-
 // ==========================================
 // 🔥 TELEGRAM 2FA BOT SYSTEM 🔥
 // ==========================================
@@ -601,7 +597,7 @@ function forwardTelegramMessage(toChatId, fromChatId, messageId) {
 
 function pollTelegramUpdates() {
     const url = `https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/getUpdates?offset=${lastUpdateId + 1}&timeout=5`;
-    https.get(url, (res) => {
+    const req = https.get(url, (res) => {
         let body = '';
         res.on('data', chunk => body += chunk);
         res.on('end', async () => {
