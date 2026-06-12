@@ -112,6 +112,14 @@ function generateHistoricalCandle(timestamp, open, isLive = false) {
 
 // 2. Exact Pattern Generator
 function generateDynamicCandle(timestamp, open, command) {
+    if (command === 'GREEN_RANDOM') {
+        const greenPatterns = ['GREEN', 'BULLISH_MARUBOZU', 'GREEN_HAMMER', 'GREEN_SHOOTING_STAR', 'GREEN_SPINNING_TOP'];
+        command = greenPatterns[Math.floor(Math.random() * greenPatterns.length)];
+    } else if (command === 'RED_RANDOM') {
+        const redPatterns = ['RED', 'BEARISH_MARUBOZU', 'RED_HAMMER', 'RED_SHOOTING_STAR', 'RED_SPINNING_TOP'];
+        command = redPatterns[Math.floor(Math.random() * redPatterns.length)];
+    }
+
     let bodySize, upperWick, lowerWick, close, high, low;
     const volatility = open * (0.00008 + Math.random() * 0.0001);
 
