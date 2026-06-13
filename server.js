@@ -89,9 +89,23 @@ db.ref('admin/markets').on('value', (snapshot) => {
 });
 
 // 1. Natural Market Generation
-function generateHistoricalCandle(timestamp, open, isLive = false) {
+function generateHistoricalCandle(timestamp, open, isLive = false, marketData = null) {
     const safeOpen = Math.max(MIN_PRICE, open);
-    const isGreen = Math.random() > 0.5;
+    
+    // Natural Market Trending Logic
+    let isGreen = Math.random() > 0.5;
+    if (isLive && marketData) {
+        if (!marketData.trend || marketData.trend.duration <= 0) {
+            marketData.trend = {
+                direction: Math.random() > 0.5 ? 1 : -1,
+                strength: 0.5 + Math.random() * 0.35, // 50% to 85% chance to follow trend
+                duration: 3 + Math.floor(Math.random() * 8) // Trend lasts 3 to 10 candles
+            };
+        }
+        isGreen = Math.random() < marketData.trend.strength ? (marketData.trend.direction === 1) : (marketData.trend.direction === -1);
+        marketData.trend.duration--;
+    }
+
     const body = (0.00006 + Math.random() * 0.00025) * safeOpen;
     const close = isGreen ? safeOpen + body : safeOpen - body;
     const upperWick = (0.00003 + Math.random() * 0.00015) * safeOpen;
@@ -218,13 +232,16 @@ async function initializeNewMarket(marketId) {
 }
 
 // 🔥 CORE LOGIC: Controls Candle Output
-function ensureCurrentPeriodCandle(marketData, currentPeriod) {
+async function ensureCurrentPeriodCandle(marketData, currentPeriod) {
     let lastCandle = marketData.history[marketData.history.length - 1];
     if (!lastCandle) return null;
 
     if (currentPeriod > lastCandle.timestamp) {
         let newCandle;
         
+        // Wait 1 second before natural generation to check for admin commands
+        await new Promise(resolve => setTimeout(resolve, 1000));
+
         if (marketData.nextCandleCommand) {
             newCandle = generateDynamicCandle(currentPeriod, lastCandle.close, marketData.nextCandleCommand, lastCandle, marketData.nextCandleCloneData);
             newCandle.isAdminCommand = true; // Mark as admin command
@@ -425,48 +442,79 @@ function updateRealisticPrice(marketData, candle, currentPeriod) {
     if (!candle.waypoints) {
         candle.waypoints = [];
         const numWaypoints = 10;
-        for (let i = 0; i < numWaypoints; i++) {
-            if (i === 0) candle.waypoints.push(candle.open);
-            else if (i === numWaypoints - 1 || i === numWaypoints - 2) {
-                candle.waypoints.push(candle.targetClose);
-            } else {
-                let wp;
-                const isHugeCandle = candle.pattern === 'CUSTOM_CLONE' || (candle.pattern && (candle.pattern.includes('MARUBOZU') || candle.pattern.includes('PUMP') || candle.pattern.includes('DUMP')));
-                
-                if (isHugeCandle) {
-                    // Smooth interpolation from open to targetClose for massive candles
-                    const progressRatio = i / (numWaypoints - 1);
-                    const baseline = candle.open + (candle.targetClose - candle.open) * progressRatio;
-                    wp = baseline + (Math.random() - 0.5) * (candle.targetHigh - candle.targetLow) * 0.4;
-                } else {
-                    // Natural wander for normal candles
-                    wp = candle.targetLow + Math.random() * (candle.targetHigh - candle.targetLow);
-                    wp = (wp + candle.open) / 2; // Bias to center to avoid extreme jumps
-                }
-                
-                wp = Math.max(candle.targetLow, Math.min(candle.targetHigh, wp));
-                candle.waypoints.push(wp);
-            }
-        }
-        
         const pattern = candle.pattern || 'NORMAL';
+        
         if (pattern.includes('HAMMER') || pattern === 'DRAGONFLY_DOJI') {
-            candle.waypoints[5] = candle.targetLow;
-            candle.waypoints[7] = candle.targetClose;
+            const drop = candle.open - candle.targetLow;
+            const rally = candle.targetClose - candle.targetLow;
+            candle.waypoints = [
+                candle.open,
+                candle.open - 0.2 * drop,
+                candle.open - 0.6 * drop,
+                candle.targetLow + drop * 0.1,
+                candle.targetLow,
+                candle.targetLow + 0.3 * rally,
+                candle.targetLow + 0.6 * rally,
+                candle.targetLow + 0.85 * rally,
+                candle.targetClose,
+                candle.targetClose
+            ];
         } else if (pattern.includes('SHOOTING_STAR') || pattern === 'GRAVESTONE_DOJI') {
-            candle.waypoints[5] = candle.targetHigh;
-            candle.waypoints[7] = candle.targetClose;
+            const climb = candle.targetHigh - candle.open;
+            const drop = candle.targetHigh - candle.targetClose;
+            candle.waypoints = [
+                candle.open,
+                candle.open + 0.2 * climb,
+                candle.open + 0.6 * climb,
+                candle.targetHigh - climb * 0.1,
+                candle.targetHigh,
+                candle.targetHigh - 0.3 * drop,
+                candle.targetHigh - 0.6 * drop,
+                candle.targetHigh - 0.85 * drop,
+                candle.targetClose,
+                candle.targetClose
+            ];
+        } else if (pattern === 'DOJI') {
+            const up = candle.targetHigh - candle.open;
+            const down = candle.open - candle.targetLow;
+            candle.waypoints = [
+                candle.open,
+                candle.open + 0.5 * up,
+                candle.targetHigh,
+                candle.open + 0.3 * up,
+                candle.open,
+                candle.open - 0.5 * down,
+                candle.targetLow,
+                candle.open - 0.5 * down,
+                candle.targetClose,
+                candle.targetClose
+            ];
         } else {
-            candle.waypoints[2] = candle.targetHigh;
-            candle.waypoints[5] = candle.targetLow;
-            // Shuffle middle waypoints slightly
-            for(let k = 6; k > 2; k--) {
-                if(k === 5 || k === 2) continue; // Keep extreme highs and lows in place roughly
-                const j = Math.floor(Math.random() * (k - 2)) + 2;
-                if(j !== 5 && j !== 2) {
-                    [candle.waypoints[k], candle.waypoints[j]] = [candle.waypoints[j], candle.waypoints[k]];
+            for (let i = 0; i < numWaypoints; i++) {
+                if (i === 0) candle.waypoints.push(candle.open);
+                else if (i === numWaypoints - 1 || i === numWaypoints - 2) {
+                    candle.waypoints.push(candle.targetClose);
+                } else {
+                    let wp;
+                    const isHugeCandle = pattern === 'CUSTOM_CLONE' || pattern.includes('MARUBOZU') || pattern.includes('PUMP') || pattern.includes('DUMP');
+                    
+                    if (isHugeCandle) {
+                        const progressRatio = i / (numWaypoints - 1);
+                        const baseline = candle.open + (candle.targetClose - candle.open) * progressRatio;
+                        wp = baseline + (Math.random() - 0.5) * (candle.targetHigh - candle.targetLow) * 0.4;
+                    } else {
+                        wp = candle.targetLow + Math.random() * (candle.targetHigh - candle.targetLow);
+                        wp = (wp + candle.open) / 2;
+                    }
+                    
+                    wp = Math.max(candle.targetLow, Math.min(candle.targetHigh, wp));
+                    candle.waypoints.push(wp);
                 }
             }
+            
+            // For NORMAL candles, ensure extremes are reached somewhere in the middle
+            candle.waypoints[3] = candle.targetHigh;
+            candle.waypoints[6] = candle.targetLow;
         }
     }
 
