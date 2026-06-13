@@ -451,10 +451,10 @@ function updateRealisticPrice(marketData, candle, currentPeriod) {
         
         const pattern = candle.pattern || 'NORMAL';
         if (pattern.includes('HAMMER') || pattern === 'DRAGONFLY_DOJI') {
-            candle.waypoints[3] = candle.targetLow;
+            candle.waypoints[5] = candle.targetLow;
             candle.waypoints[7] = candle.targetClose;
         } else if (pattern.includes('SHOOTING_STAR') || pattern === 'GRAVESTONE_DOJI') {
-            candle.waypoints[3] = candle.targetHigh;
+            candle.waypoints[5] = candle.targetHigh;
             candle.waypoints[7] = candle.targetClose;
         } else {
             candle.waypoints[2] = candle.targetHigh;
