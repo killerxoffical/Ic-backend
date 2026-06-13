@@ -430,12 +430,20 @@ function updateRealisticPrice(marketData, candle, currentPeriod) {
             else if (i === numWaypoints - 1 || i === numWaypoints - 2) {
                 candle.waypoints.push(candle.targetClose);
             } else {
-                // Smooth interpolation from open to targetClose
-                const progressRatio = i / (numWaypoints - 1);
-                const baseline = candle.open + (candle.targetClose - candle.open) * progressRatio;
+                let wp;
+                const isHugeCandle = candle.pattern === 'CUSTOM_CLONE' || (candle.pattern && (candle.pattern.includes('MARUBOZU') || candle.pattern.includes('PUMP') || candle.pattern.includes('DUMP')));
                 
-                // Add controlled noise within bounds
-                let wp = baseline + (Math.random() - 0.5) * (candle.targetHigh - candle.targetLow) * 0.6;
+                if (isHugeCandle) {
+                    // Smooth interpolation from open to targetClose for massive candles
+                    const progressRatio = i / (numWaypoints - 1);
+                    const baseline = candle.open + (candle.targetClose - candle.open) * progressRatio;
+                    wp = baseline + (Math.random() - 0.5) * (candle.targetHigh - candle.targetLow) * 0.4;
+                } else {
+                    // Natural wander for normal candles
+                    wp = candle.targetLow + Math.random() * (candle.targetHigh - candle.targetLow);
+                    wp = (wp + candle.open) / 2; // Bias to center to avoid extreme jumps
+                }
+                
                 wp = Math.max(candle.targetLow, Math.min(candle.targetHigh, wp));
                 candle.waypoints.push(wp);
             }
