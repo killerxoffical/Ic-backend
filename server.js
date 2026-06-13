@@ -232,15 +232,18 @@ async function initializeNewMarket(marketId) {
 }
 
 // 🔥 CORE LOGIC: Controls Candle Output
-async function ensureCurrentPeriodCandle(marketData, currentPeriod) {
+function ensureCurrentPeriodCandle(marketData, currentPeriod) {
     let lastCandle = marketData.history[marketData.history.length - 1];
     if (!lastCandle) return null;
 
-    if (currentPeriod > lastCandle.timestamp) {
+    if (!marketData.currentCandle || marketData.currentCandle.timestamp !== currentPeriod) {
         let newCandle;
         
         // Wait 1 second before natural generation to check for admin commands
-        await new Promise(resolve => setTimeout(resolve, 1000));
+        const timeElapsed = Date.now() - currentPeriod;
+        if (timeElapsed < 1000 && !marketData.nextCandleCommand) {
+            return null; // Skip generating the natural candle for 1 second to wait for commands
+        }
 
         if (marketData.nextCandleCommand) {
             newCandle = generateDynamicCandle(currentPeriod, lastCandle.close, marketData.nextCandleCommand, lastCandle, marketData.nextCandleCloneData);
