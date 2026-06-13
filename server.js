@@ -430,8 +430,13 @@ function updateRealisticPrice(marketData, candle, currentPeriod) {
             else if (i === numWaypoints - 1 || i === numWaypoints - 2) {
                 candle.waypoints.push(candle.targetClose);
             } else {
-                let wp = candle.targetLow + Math.random() * (candle.targetHigh - candle.targetLow);
-                wp = (wp + candle.open) / 2; // Bias to center to avoid extreme jumps
+                // Smooth interpolation from open to targetClose
+                const progressRatio = i / (numWaypoints - 1);
+                const baseline = candle.open + (candle.targetClose - candle.open) * progressRatio;
+                
+                // Add controlled noise within bounds
+                let wp = baseline + (Math.random() - 0.5) * (candle.targetHigh - candle.targetLow) * 0.6;
+                wp = Math.max(candle.targetLow, Math.min(candle.targetHigh, wp));
                 candle.waypoints.push(wp);
             }
         }
