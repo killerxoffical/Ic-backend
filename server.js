@@ -111,7 +111,7 @@ function generateHistoricalCandle(timestamp, open, isLive = false) {
 }
 
 // 2. Exact Pattern Generator
-function generateDynamicCandle(timestamp, open, command) {
+function generateDynamicCandle(timestamp, open, command, lastCandle) {
     let bodySize, upperWick, lowerWick, close, high, low;
     const volatility = open * (0.00008 + Math.random() * 0.0001);
 
@@ -120,6 +120,29 @@ function generateDynamicCandle(timestamp, open, command) {
             bodySize = volatility; close = open + bodySize; upperWick = volatility * 0.5; lowerWick = volatility * 0.5; break;
         case 'RED': 
             bodySize = volatility; close = open - bodySize; upperWick = volatility * 0.5; lowerWick = volatility * 0.5; break;
+        case 'PREV_2X':
+            if (lastCandle) {
+                const isLastGreen = lastCandle.close >= lastCandle.open;
+                const lastBodySize = Math.abs(lastCandle.close - lastCandle.open);
+                bodySize = Math.max(lastBodySize * 2, volatility * 3);
+                close = isLastGreen ? open - bodySize : open + bodySize;
+                upperWick = volatility * 0.8; lowerWick = volatility * 0.8;
+            } else {
+                bodySize = volatility * 2; close = open + bodySize; upperWick = volatility; lowerWick = volatility;
+            }
+            break;
+        case 'RANDOM_GREEN':
+            bodySize = volatility * (0.5 + Math.random() * 4);
+            close = open + bodySize;
+            upperWick = volatility * Math.random() * 3;
+            lowerWick = volatility * Math.random() * 3;
+            break;
+        case 'RANDOM_RED':
+            bodySize = volatility * (0.5 + Math.random() * 4);
+            close = open - bodySize;
+            upperWick = volatility * Math.random() * 3;
+            lowerWick = volatility * Math.random() * 3;
+            break;
         case 'BULLISH_MARUBOZU': 
             bodySize = volatility * 3; close = open + bodySize; upperWick = 0; lowerWick = 0; break;
         case 'BEARISH_MARUBOZU': 
@@ -192,7 +215,7 @@ function ensureCurrentPeriodCandle(marketData, currentPeriod) {
         let newCandle;
         
         if (marketData.nextCandleCommand) {
-            newCandle = generateDynamicCandle(currentPeriod, lastCandle.close, marketData.nextCandleCommand);
+            newCandle = generateDynamicCandle(currentPeriod, lastCandle.close, marketData.nextCandleCommand, lastCandle);
             marketData.nextCandleCommand = null;
         } 
         
@@ -252,7 +275,7 @@ function ensureCurrentPeriodCandle(marketData, currentPeriod) {
                     }
                 }
 
-                newCandle = generateDynamicCandle(currentPeriod, lastCandle.close, targetDirection);
+                newCandle = generateDynamicCandle(currentPeriod, lastCandle.close, targetDirection, lastCandle);
                 newCandle.targetClose += (Math.random() - 0.5) * (lastCandle.close * 0.00005);
                 
                 let payoutChange = 0;
@@ -312,7 +335,7 @@ function ensureCurrentPeriodCandle(marketData, currentPeriod) {
                     driftCommand = Math.random() > 0.5 ? 'GREEN' : 'RED';
                 }
 
-                newCandle = generateDynamicCandle(currentPeriod, lastCandle.close, driftCommand);
+                newCandle = generateDynamicCandle(currentPeriod, lastCandle.close, driftCommand, lastCandle);
                 newCandle.targetClose += (Math.random() - 0.5) * (lastCandle.close * 0.00004);
             }
         }
@@ -383,36 +406,54 @@ function updateRealisticPrice(marketData, candle, currentPeriod) {
     }
     // -----------------------------------------------------------------------
 
-    let idealPrice = candle.open;
-    const pattern = candle.pattern || 'NORMAL';
-
-    if (pattern.includes('HAMMER') || pattern === 'DRAGONFLY_DOJI') {
-        if (progress < 0.6) {
-            idealPrice = candle.open - (candle.open - candle.targetLow) * (progress / 0.6);
-        } else {
-            idealPrice = candle.targetLow + (candle.targetClose - candle.targetLow) * ((progress - 0.6) / 0.4);
+    // --- REALISTIC NATURAL MARKET WANDER LOGIC ---
+    if (!candle.waypoints) {
+        candle.waypoints = [];
+        const numWaypoints = 10;
+        for (let i = 0; i < numWaypoints; i++) {
+            if (i === 0) candle.waypoints.push(candle.open);
+            else if (i === numWaypoints - 1 || i === numWaypoints - 2) {
+                candle.waypoints.push(candle.targetClose);
+            } else {
+                let wp = candle.targetLow + Math.random() * (candle.targetHigh - candle.targetLow);
+                wp = (wp + candle.open) / 2; // Bias to center to avoid extreme jumps
+                candle.waypoints.push(wp);
+            }
         }
-    } 
-    else if (pattern.includes('SHOOTING_STAR') || pattern === 'GRAVESTONE_DOJI') {
-        if (progress < 0.6) {
-            idealPrice = candle.open + (candle.targetHigh - candle.open) * (progress / 0.6);
+        
+        const pattern = candle.pattern || 'NORMAL';
+        if (pattern.includes('HAMMER') || pattern === 'DRAGONFLY_DOJI') {
+            candle.waypoints[3] = candle.targetLow;
+            candle.waypoints[7] = candle.targetClose;
+        } else if (pattern.includes('SHOOTING_STAR') || pattern === 'GRAVESTONE_DOJI') {
+            candle.waypoints[3] = candle.targetHigh;
+            candle.waypoints[7] = candle.targetClose;
         } else {
-            idealPrice = candle.targetHigh - (candle.targetHigh - candle.targetClose) * ((progress - 0.6) / 0.4);
+            candle.waypoints[2] = candle.targetHigh;
+            candle.waypoints[5] = candle.targetLow;
+            // Shuffle middle waypoints slightly
+            for(let k = 6; k > 2; k--) {
+                if(k === 5 || k === 2) continue; // Keep extreme highs and lows in place roughly
+                const j = Math.floor(Math.random() * (k - 2)) + 2;
+                if(j !== 5 && j !== 2) {
+                    [candle.waypoints[k], candle.waypoints[j]] = [candle.waypoints[j], candle.waypoints[k]];
+                }
+            }
         }
     }
-    else if (pattern.includes('DOJI') || pattern.includes('SPINNING_TOP')) {
-        if (progress < 0.3) idealPrice = candle.open + (candle.targetHigh - candle.open) * (progress / 0.3);
-        else if (progress < 0.7) idealPrice = candle.targetHigh - (candle.targetHigh - candle.targetLow) * ((progress - 0.3) / 0.4);
-        else idealPrice = candle.targetLow + (candle.targetClose - candle.targetLow) * ((progress - 0.7) / 0.3);
-    }
-    else {
-        const easeProgress = 1 - Math.pow(1 - progress, 3);
-        idealPrice = candle.open + (candle.targetClose - candle.open) * easeProgress;
-    }
 
-    const noiseFactor = 1 - Math.pow(progress, 2); 
-    const volatility = candle.open * 0.00005;
-    const noise = (Math.random() - 0.5) * volatility * noiseFactor;
+    const numWaypoints = candle.waypoints.length;
+    const currentWaypointIndex = Math.min(Math.floor(progress * (numWaypoints - 1)), numWaypoints - 2);
+    const waypointProgress = (progress * (numWaypoints - 1)) - currentWaypointIndex;
+
+    const smoothStep = waypointProgress * waypointProgress * (3 - 2 * waypointProgress);
+    const startWp = candle.waypoints[currentWaypointIndex];
+    const endWp = candle.waypoints[currentWaypointIndex + 1];
+    
+    let idealPrice = startWp + (endWp - startWp) * smoothStep;
+
+    const volatility = candle.open * 0.00003;
+    const noise = (Math.random() - 0.5) * volatility;
 
     marketData.currentPrice = idealPrice + noise;
     marketData.currentPrice = Math.min(marketData.currentPrice, candle.targetHigh);
