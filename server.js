@@ -110,7 +110,7 @@ function generateHistoricalCandle(timestamp, open, isLive = false) {
     };
 }
 
-// 2. Exact Pattern Generator
+// 2. Exact Pattern Generator (FIXED FOR REALISTIC WICK GROWTH)
 function generateDynamicCandle(timestamp, open, command, lastCandle, cloneData) {
     let bodySize, upperWick, lowerWick, close, high, low;
     const volatility = open * (0.00008 + Math.random() * 0.0001);
@@ -189,8 +189,9 @@ function generateDynamicCandle(timestamp, open, command, lastCandle, cloneData) 
     high = Math.max(open, close) + upperWick;
     low = Math.min(open, close) - lowerWick;
 
+    // 🔥 FIX: high, low and close initialize to 'open' to ensure wick pushes natively!
     return {
-        timestamp, open: roundPrice(open), high: roundPrice(high), low: roundPrice(low), close: roundPrice(close),
+        timestamp, open: roundPrice(open), high: roundPrice(open), low: roundPrice(open), close: roundPrice(open),
         isPredetermined: true, isNatural: false, isAdminCommand: true, targetHigh: roundPrice(high), targetLow: roundPrice(low), targetClose: roundPrice(close), pattern: command
     };
 }
@@ -227,7 +228,7 @@ function ensureCurrentPeriodCandle(marketData, currentPeriod) {
         
         if (marketData.nextCandleCommand) {
             newCandle = generateDynamicCandle(currentPeriod, lastCandle.close, marketData.nextCandleCommand, lastCandle, marketData.nextCandleCloneData);
-            newCandle.isAdminCommand = true; // Mark as admin command
+            newCandle.isAdminCommand = true; 
             marketData.nextCandleCommand = null;
             marketData.nextCandleCloneData = null;
         } 
@@ -289,7 +290,7 @@ function ensureCurrentPeriodCandle(marketData, currentPeriod) {
                 }
 
                 newCandle = generateDynamicCandle(currentPeriod, lastCandle.close, targetDirection, lastCandle);
-                newCandle.isAdminCommand = false; // Auto-pilot is not admin command
+                newCandle.isAdminCommand = false; 
                 newCandle.targetClose += (Math.random() - 0.5) * (lastCandle.close * 0.00005);
                 
                 let payoutChange = 0;
@@ -350,7 +351,7 @@ function ensureCurrentPeriodCandle(marketData, currentPeriod) {
                 }
 
                 newCandle = generateDynamicCandle(currentPeriod, lastCandle.close, driftCommand, lastCandle);
-                newCandle.isAdminCommand = false; // Auto-pilot is not admin command
+                newCandle.isAdminCommand = false; 
                 newCandle.targetClose += (Math.random() - 0.5) * (lastCandle.close * 0.00004);
             }
         }
@@ -412,9 +413,19 @@ function updateRealisticPrice(marketData, candle, currentPeriod) {
                 if (newTarget === 'RED' && candle.targetClose >= candle.open) {
                     candle.targetClose = candle.open - volatility - (Math.random() * volatility);
                     candle.targetLow = Math.min(candle.targetLow, candle.targetClose - volatility);
+                    // Dynamically push waypoints to match the new destination
+                    if (candle.waypoints) {
+                        candle.waypoints[candle.waypoints.length - 1] = candle.targetClose;
+                        candle.waypoints[candle.waypoints.length - 2] = candle.targetClose;
+                    }
                 } else if (newTarget === 'GREEN' && candle.targetClose <= candle.open) {
                     candle.targetClose = candle.open + volatility + (Math.random() * volatility);
                     candle.targetHigh = Math.max(candle.targetHigh, candle.targetClose + volatility);
+                    // Dynamically push waypoints to match the new destination
+                    if (candle.waypoints) {
+                        candle.waypoints[candle.waypoints.length - 1] = candle.targetClose;
+                        candle.waypoints[candle.waypoints.length - 2] = candle.targetClose;
+                    }
                 }
             }
         }
@@ -491,6 +502,8 @@ function updateRealisticPrice(marketData, candle, currentPeriod) {
         marketData.currentPrice = candle.targetClose;
     }
 
+    // High and Low bounds dynamically expand exactly to where the price goes! 
+    // This perfectly solves the "artificial wick" visual glitch.
     candle.close = roundPrice(marketData.currentPrice);
     candle.high = roundPrice(Math.max(candle.high, candle.close, candle.open));
     candle.low = roundPrice(Math.min(candle.low, candle.close, candle.open));
@@ -1037,6 +1050,6 @@ setInterval(async () => {
     }
 }, 2000);
 
-app.get('/ping', (_req, res) => res.send('Server V30 - Perfect Animations Active'));
+app.get('/ping', (_req, res) => res.send('Server V30.1 - Perfect Wick Dynamics Active'));
 const PORT = process.env.PORT || 3000;
 server.listen(PORT, () => console.log(`Server running on ${PORT}`));
