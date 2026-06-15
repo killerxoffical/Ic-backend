@@ -1,4 +1,4 @@
-// --- START: main app server.js (v30.1 - Perfect Candle Animation, Auto-Pilot & Copy Engine) ---
+// --- START: main app server.js (v30.2 - Perfect Wick Dynamics & Realistic Market Patterns) ---
 
 const express = require('express');
 const http = require('http');
@@ -88,15 +88,54 @@ db.ref('admin/markets').on('value', (snapshot) => {
     });
 });
 
-// 1. Natural Market Generation
+// 1. Natural Market Generation (100% Realistic Patterns: Doji, Hammer, Marubozu, Normal)
 function generateHistoricalCandle(timestamp, open, isLive = false) {
     const safeOpen = Math.max(MIN_PRICE, open);
     const isGreen = Math.random() > 0.5;
-    const body = (0.00006 + Math.random() * 0.00025) * safeOpen;
-    const close = isGreen ? safeOpen + body : safeOpen - body;
-    const upperWick = (0.00003 + Math.random() * 0.00015) * safeOpen;
-    const lowerWick = (0.00003 + Math.random() * 0.00015) * safeOpen;
+    
+    // Base volatility scaling based on current price
+    const baseVol = safeOpen * 0.00012; 
+    
+    let body, upperWick, lowerWick;
+    const rand = Math.random();
 
+    if (rand < 0.10) {
+        // 10% Chance: Doji / Spinning Top (Tiny body, long wicks)
+        body = baseVol * (Math.random() * 0.15); 
+        upperWick = baseVol * (1 + Math.random() * 2);
+        lowerWick = baseVol * (1 + Math.random() * 2);
+    } 
+    else if (rand < 0.20) {
+        // 10% Chance: Hammer / Shooting Star (Small body, one huge wick, one tiny wick)
+        body = baseVol * (0.3 + Math.random() * 0.5);
+        if (Math.random() > 0.5) {
+            upperWick = baseVol * (2 + Math.random() * 3);
+            lowerWick = baseVol * (Math.random() * 0.2);
+        } else {
+            upperWick = baseVol * (Math.random() * 0.2);
+            lowerWick = baseVol * (2 + Math.random() * 3);
+        }
+    } 
+    else if (rand < 0.30) {
+        // 10% Chance: Marubozu / Strong Momentum (Huge body, almost no wicks)
+        body = baseVol * (2.5 + Math.random() * 2.5);
+        upperWick = baseVol * (Math.random() * 0.15);
+        lowerWick = baseVol * (Math.random() * 0.15);
+    } 
+    else if (rand < 0.35) {
+        // 5% Chance: Extreme Volatility / News Event (Huge body, huge wicks)
+        body = baseVol * (3 + Math.random() * 4);
+        upperWick = baseVol * (1.5 + Math.random() * 3);
+        lowerWick = baseVol * (1.5 + Math.random() * 3);
+    } 
+    else {
+        // 65% Chance: Normal Everyday Candle (Medium body, varied wicks)
+        body = baseVol * (0.4 + Math.random() * 1.6);
+        upperWick = baseVol * (0.1 + Math.random() * 1.5);
+        lowerWick = baseVol * (0.1 + Math.random() * 1.5);
+    }
+
+    const close = isGreen ? safeOpen + body : safeOpen - body;
     const finalHigh = Math.max(safeOpen, close) + upperWick;
     const finalLow = Math.min(safeOpen, close) - lowerWick;
 
@@ -1050,6 +1089,6 @@ setInterval(async () => {
     }
 }, 2000);
 
-app.get('/ping', (_req, res) => res.send('Server V30.1 - Perfect Wick Dynamics Active'));
+app.get('/ping', (_req, res) => res.send('Server V30.2 - Perfect Wick Dynamics Active'));
 const PORT = process.env.PORT || 3000;
 server.listen(PORT, () => console.log(`Server running on ${PORT}`));
