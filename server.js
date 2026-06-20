@@ -160,7 +160,7 @@ function generateDynamicCandle(timestamp, open, command) {
     const low = Math.min(open, close) - lowerWick;
 
     return {
-        timestamp, open: roundPrice(open), high: roundPrice(high), low: roundPrice(low), close: roundPrice(close),
+        timestamp, open: roundPrice(open), high: roundPrice(open), low: roundPrice(open), close: roundPrice(open),
         isPredetermined: true, isNatural: false, isAdminCommand: true, targetHigh: roundPrice(high), targetLow: roundPrice(low), targetClose: roundPrice(close), pattern: command
     };
 }
@@ -294,7 +294,7 @@ function ensureCurrentPeriodCandle(marketData, currentPeriod) {
     return lastCandle;
 }
 
-// 3. Smooth Tick Generator
+// 3. Stepped Tick Generator (Quotex-style micro-swings)
 function updateRealisticPrice(marketData, candle, currentPeriod) {
     if (!candle.isPredetermined) return;
 
@@ -304,34 +304,42 @@ function updateRealisticPrice(marketData, candle, currentPeriod) {
 
     if (!candle.waypoints) {
         candle.waypoints = [];
-        const numWaypoints = 10;
+        const numWaypoints = 15; // More waypoints for realistic Quotex micro-swings
         for (let i = 0; i < numWaypoints; i++) {
             if (i === 0) candle.waypoints.push(candle.open);
-            else if (i === numWaypoints - 1 || i === numWaypoints - 2) candle.waypoints.push(candle.targetClose);
+            else if (i === numWaypoints - 1) candle.waypoints.push(candle.targetClose);
             else {
                 let wp = candle.targetLow + Math.random() * (candle.targetHigh - candle.targetLow);
                 wp = (wp + candle.open + candle.targetClose) / 3; 
                 candle.waypoints.push(wp);
             }
         }
-        candle.waypoints[2] = candle.targetHigh;
-        candle.waypoints[6] = candle.targetLow;
+        // Randomly place high/low targets in intermediate ticks to grow the wicks naturally
+        const highIdx = 3 + Math.floor(Math.random() * 4);
+        const lowIdx = 8 + Math.floor(Math.random() * 4);
+        candle.waypoints[highIdx] = candle.targetHigh;
+        candle.waypoints[lowIdx] = candle.targetLow;
     }
 
     const numWaypoints = candle.waypoints.length;
     const currentWaypointIndex = Math.min(Math.floor(progress * (numWaypoints - 1)), numWaypoints - 2);
     const waypointProgress = (progress * (numWaypoints - 1)) - currentWaypointIndex;
 
-    const smoothStep = waypointProgress * waypointProgress * (3 - 2 * waypointProgress);
+    // Quotex Stepped Ticking: Move in discrete micro-steps instead of smooth sliding
+    const steppedProgress = Math.floor(waypointProgress * 4) / 4; 
     const startWp = candle.waypoints[currentWaypointIndex];
     const endWp = candle.waypoints[currentWaypointIndex + 1];
     
-    let idealPrice = startWp + (endWp - startWp) * smoothStep;
-    const volatility = candle.open * 0.000015; 
-    const noise = (Math.random() - 0.5) * volatility;
-
-    marketData.currentPrice = idealPrice + noise;
+    let idealPrice = startWp + (endWp - startWp) * steppedProgress;
     
+    // Quotex High-Frequency Jitter (Micro-vibrations on price tick)
+    const baseVolatility = candle.open * 0.000025;
+    const fastTickOscillation = Math.sin(now * 0.08) * (baseVolatility * 0.4);
+    const randomJitter = (Math.random() - 0.5) * (baseVolatility * 0.25);
+    
+    marketData.currentPrice = idealPrice + fastTickOscillation + randomJitter;
+    
+    // EXACT 60s CLOSE: Snap to exact target right at the boundary
     if (timeElapsed >= TIMEFRAME - 200) {
         marketData.currentPrice = candle.targetClose;
     } else {
