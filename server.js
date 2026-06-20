@@ -1,4 +1,4 @@
-// --- START: main app server.js (v31.0 - Rollercoaster Engine & Multi-Timeframe) ---
+// --- START: main app server.js (v31.1 - Rollercoaster Engine & Fixed Syntax) ---
 
 const express = require('express');
 const http = require('http');
@@ -457,12 +457,12 @@ setInterval(async () => {
                         result = 'loss'; payout = 0; profitChange = -betAmount;
                     }
 
-                    // Batch DB Updates
+                    // Batch DB Updates (Fixed ServerValue syntax)
                     const updates = {};
                     if (!trade.isDemo && !trade.isTournament) {
-                        updates[`users/${uid}/realBalance`] = db.ServerValue.increment(result === 'win' ? profitChange + trade.realAmount : (result === 'push' ? trade.realAmount : 0));
-                        updates[`users/${uid}/totalProfitLoss`] = db.ServerValue.increment(profitChange);
-                        updates[`users/${uid}/dailyProfit`] = db.ServerValue.increment(profitChange);
+                        updates[`users/${uid}/realBalance`] = firebase.database.ServerValue.increment(result === 'win' ? profitChange + trade.realAmount : (result === 'push' ? trade.realAmount : 0));
+                        updates[`users/${uid}/totalProfitLoss`] = firebase.database.ServerValue.increment(profitChange);
+                        updates[`users/${uid}/dailyProfit`] = firebase.database.ServerValue.increment(profitChange);
                     }
 
                     updates[`users/${uid}/activeTrades/${tradeId}`] = null;
@@ -484,6 +484,6 @@ setInterval(async () => {
     } catch (e) { console.log("Server Resolution Loop Error:", e); }
 }, 1000);
 
-app.get('/ping', (_req, res) => res.send('Server V31.0 - Multi-Timeframe Rollercoaster Active'));
+app.get('/ping', (_req, res) => res.send('Server V31.1 - Multi-Timeframe Rollercoaster Active'));
 const PORT = process.env.PORT || 3000;
 server.listen(PORT, () => console.log(`Server running on ${PORT}`));
