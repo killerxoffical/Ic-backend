@@ -65,35 +65,48 @@ db.ref('admin/markets').on('value', (snapshot) => {
     });
 });
 
-// 1. Natural Market Generation
+// 1. Natural Market Generation (100% REAL BROKER PATTERNS)
 function generateHistoricalCandle(timestamp, open, isLive = false) {
     const safeOpen = Math.max(MIN_PRICE, open);
     const isGreen = Math.random() > 0.5;
+    
+    // Normal base volatility
     const baseVol = safeOpen * 0.00008; 
+    
+    // Dynamic Volatility Multiplier to make it look completely natural
+    const dynamicVol = baseVol * (0.3 + Math.random() * 2.2); 
+    
     let bodySize, upperWick, lowerWick;
     const rand = Math.random();
 
-    if (rand < 0.10) {
-        bodySize = baseVol * (Math.random() * 0.2); 
-        upperWick = baseVol * (0.5 + Math.random() * 1.5);
-        lowerWick = baseVol * (0.5 + Math.random() * 1.5);
-    } else if (rand < 0.25) {
-        bodySize = baseVol * (0.3 + Math.random() * 0.6);
+    if (rand < 0.15) {
+        // 15% Chance: Doji (Tiny body, medium/large wicks)
+        bodySize = dynamicVol * (Math.random() * 0.15); 
+        upperWick = dynamicVol * (0.5 + Math.random() * 1.5);
+        lowerWick = dynamicVol * (0.5 + Math.random() * 1.5);
+    } 
+    else if (rand < 0.35) {
+        // 20% Chance: Hammer / Shooting Star (Small body, one massive wick)
+        bodySize = dynamicVol * (0.2 + Math.random() * 0.4);
         if (Math.random() > 0.5) {
-            upperWick = baseVol * (1.5 + Math.random() * 2.5);
-            lowerWick = baseVol * (Math.random() * 0.3);
+            upperWick = dynamicVol * (1.5 + Math.random() * 3.0);
+            lowerWick = dynamicVol * (Math.random() * 0.2);
         } else {
-            upperWick = baseVol * (Math.random() * 0.3);
-            lowerWick = baseVol * (1.5 + Math.random() * 2.5);
+            upperWick = dynamicVol * (Math.random() * 0.2);
+            lowerWick = dynamicVol * (1.5 + Math.random() * 3.0);
         }
-    } else if (rand < 0.40) {
-        bodySize = baseVol * (1.5 + Math.random() * 1.5);
-        upperWick = baseVol * (Math.random() * 0.2);
-        lowerWick = baseVol * (Math.random() * 0.2);
-    } else {
-        bodySize = baseVol * (0.6 + Math.random() * 1.0);
-        upperWick = baseVol * (0.2 + Math.random() * 0.8);
-        lowerWick = baseVol * (0.2 + Math.random() * 0.8);
+    } 
+    else if (rand < 0.50) {
+        // 15% Chance: Big Marubozu Trend (Massive body, almost no wick)
+        bodySize = dynamicVol * (2.0 + Math.random() * 1.5);
+        upperWick = dynamicVol * (Math.random() * 0.1);
+        lowerWick = dynamicVol * (Math.random() * 0.1);
+    } 
+    else {
+        // 50% Chance: Standard Natural Candle
+        bodySize = dynamicVol * (0.6 + Math.random() * 1.2);
+        upperWick = dynamicVol * (0.2 + Math.random() * 0.9);
+        lowerWick = dynamicVol * (0.2 + Math.random() * 0.9);
     }
 
     const close = isGreen ? safeOpen + bodySize : safeOpen - bodySize;
@@ -108,27 +121,46 @@ function generateHistoricalCandle(timestamp, open, isLive = false) {
     };
 }
 
-// 2. Exact Pattern Generator
+// 2. Exact Pattern Generator (AI Controlled but Natural Looking)
 function generateDynamicCandle(timestamp, open, command) {
-    let bodySize, upperWick, lowerWick, close, high, low;
-    const volatility = open * 0.00008;
-
-    switch (command) {
-        case 'GREEN': 
-            bodySize = volatility * 1.5; close = open + bodySize; upperWick = volatility * 0.5; lowerWick = volatility * 0.5; break;
-        case 'RED': 
-            bodySize = volatility * 1.5; close = open - bodySize; upperWick = volatility * 0.5; lowerWick = volatility * 0.5; break;
-        case 'DOJI': 
-            bodySize = open * 0.000001; close = Math.random() > 0.5 ? open + bodySize : open - bodySize; upperWick = volatility * 1.5; lowerWick = volatility * 1.5; break;
-        default: 
-            bodySize = volatility; close = command === 'RED' ? open - bodySize : open + bodySize; upperWick = volatility * 0.5; lowerWick = volatility * 0.5;
-    }
+    const isGreen = command === 'GREEN';
+    const isDoji = command === 'DOJI';
     
-    high = Math.max(open, close) + upperWick;
-    low = Math.min(open, close) - lowerWick;
+    const baseVol = open * 0.00008;
+    const dynamicVol = baseVol * (0.8 + Math.random() * 1.5); // Randomize size even on controlled candles
+
+    let bodySize, upperWick, lowerWick;
+
+    if (isDoji) {
+        bodySize = dynamicVol * (Math.random() * 0.1);
+        upperWick = dynamicVol * (0.8 + Math.random() * 1.5);
+        lowerWick = dynamicVol * (0.8 + Math.random() * 1.5);
+    } else {
+        const rand = Math.random();
+        if (rand < 0.2) {
+            // Big controlled trend
+            bodySize = dynamicVol * (1.8 + Math.random() * 1.2);
+            upperWick = dynamicVol * (Math.random() * 0.2);
+            lowerWick = dynamicVol * (Math.random() * 0.2);
+        } else if (rand < 0.4) {
+            // Controlled Hammer style
+            bodySize = dynamicVol * (0.4 + Math.random() * 0.5);
+            upperWick = isGreen ? dynamicVol * (Math.random() * 0.3) : dynamicVol * (1.5 + Math.random() * 2.0);
+            lowerWick = isGreen ? dynamicVol * (1.5 + Math.random() * 2.0) : dynamicVol * (Math.random() * 0.3);
+        } else {
+            // Standard controlled candle
+            bodySize = dynamicVol * (0.8 + Math.random() * 1.0);
+            upperWick = dynamicVol * (0.3 + Math.random() * 0.8);
+            lowerWick = dynamicVol * (0.3 + Math.random() * 0.8);
+        }
+    }
+
+    const close = isDoji ? (Math.random() > 0.5 ? open + bodySize : open - bodySize) : (isGreen ? open + bodySize : open - bodySize);
+    const high = Math.max(open, close) + upperWick;
+    const low = Math.min(open, close) - lowerWick;
 
     return {
-        timestamp, open: roundPrice(open), high: roundPrice(open), low: roundPrice(open), close: roundPrice(open),
+        timestamp, open: roundPrice(open), high: roundPrice(high), low: roundPrice(low), close: roundPrice(close),
         isPredetermined: true, isNatural: false, isAdminCommand: true, targetHigh: roundPrice(high), targetLow: roundPrice(low), targetClose: roundPrice(close), pattern: command
     };
 }
