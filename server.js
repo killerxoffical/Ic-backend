@@ -413,11 +413,12 @@ setInterval(async () => {
             
             for (const tradeId in user.activeTrades) {
                 const trade = user.activeTrades[tradeId];
+                const payoutRate = trade.payoutRate || 1.85;
                 
                 // 1. Send opening message to Telegram
                 if (!trade.tgMessageId && !trade.isDemo && !trade.isTournament) {
-                    let expectedBal = (user.realBalance || 0) - trade.realAmount;
-                    let expWinBal = expectedBal + (trade.amount * (trade.payoutRate || 1.85));
+                    let currentBal = parseFloat(user.realBalance || 0); // Balance already has trade amount deducted
+                    let expWinBal = currentBal + (trade.amount * payoutRate);
                     
                     const msg = `🟢 <b>New Trade Opened</b>\n\n` +
                                 `👤 <b>Name:</b> ${user.name}\n` +
@@ -426,10 +427,9 @@ setInterval(async () => {
                                 `⏱ <b>Duration:</b> ${trade.expiryType === 'time' ? trade.expiryType : 'Seconds'}\n` +
                                 `📊 <b>Direction:</b> ${trade.direction}\n` +
                                 `💵 <b>Amount:</b> $${trade.amount}\n` +
-                                `💰 <b>Current Balance:</b> $${(user.realBalance || 0).toFixed(2)}\n\n` +
-                                `🎯 <b>Expected Result:</b> Pending Calculation\n` +
+                                `💰 <b>Current Balance:</b> $${currentBal.toFixed(2)}\n\n` +
                                 `💸 <b>Balance if Win:</b> $${expWinBal.toFixed(2)}\n` +
-                                `💸 <b>Balance if Loss:</b> $${expectedBal.toFixed(2)}`;
+                                `💸 <b>Balance if Loss:</b> $${currentBal.toFixed(2)}`;
                     
                     const msgId = await sendTgMessage(msg);
                     if (msgId) await db.ref(`users/${uid}/activeTrades/${tradeId}/tgMessageId`).set(msgId);
@@ -437,12 +437,20 @@ setInterval(async () => {
 
                 // 2. Resolve Trade upon expiry
                 if (now >= trade.expiryTimestamp) {
-                    const marketPath = trade.marketId ? trade.marketId.replace(/[\.\/ ]/g, '-').toLowerCase() : trade.market.replace(/[\.\/ ]/g, '-').toLowerCase();
-                    const candleSnap = await db.ref(`markets/${marketPath}/candles/60s`).orderByKey().endAt(String(trade.expiryTimestamp)).limitToLast(1).once('value');
                     
+                    // Offline PUSH Bug Fix: Read directly from server memory instead of waiting for Firebase
                     let closingPrice = trade.openPrice;
-                    if (candleSnap.exists()) {
-                        closingPrice = Object.values(candleSnap.val())[0].close;
+                    const mId = trade.marketId;
+                    
+                    if (markets[mId] && markets[mId].currentPrice) {
+                        closingPrice = markets[mId].currentPrice; // Exact live price from server memory
+                    } else {
+                        // Fallback to Firebase if market was somehow unloaded
+                        const marketPath = mId ? mId.replace(/[\.\/ ]/g, '-').toLowerCase() : trade.market.replace(/[\.\/ ]/g, '-').toLowerCase();
+                        const candleSnap = await db.ref(`markets/${marketPath}/candles/60s`).orderByKey().endAt(String(trade.expiryTimestamp)).limitToLast(1).once('value');
+                        if (candleSnap.exists()) {
+                            closingPrice = Object.values(candleSnap.val())[0].close;
+                        }
                     }
                     
                     const betAmount = parseFloat(trade.amount);
@@ -450,14 +458,22 @@ setInterval(async () => {
                     
                     let result = 'push', payout = betAmount, profitChange = 0;
                     if (Math.abs(diff) < 1e-6) {
-                        result = 'push';
+                        // Prevent PUSH if possible by giving a slight edge based on random
+                        const randomEdge = Math.random() > 0.5 ? 0.00001 : -0.00001;
+                        closingPrice += randomEdge;
+                        const newDiff = closingPrice - trade.openPrice;
+                        if ((newDiff > 0 && trade.direction === 'UP') || (newDiff < 0 && trade.direction === 'DOWN')) {
+                            result = 'win'; payout = betAmount * payoutRate; profitChange = payout - betAmount;
+                        } else {
+                            result = 'loss'; payout = 0; profitChange = -betAmount;
+                        }
                     } else if ((diff > 0 && trade.direction === 'UP') || (diff < 0 && trade.direction === 'DOWN')) {
-                        result = 'win'; payout = betAmount * (trade.payoutRate || 1.85); profitChange = payout - betAmount;
+                        result = 'win'; payout = betAmount * payoutRate; profitChange = payout - betAmount;
                     } else {
                         result = 'loss'; payout = 0; profitChange = -betAmount;
                     }
 
-                    // Batch DB Updates (Fixed ServerValue syntax)
+                    // Batch DB Updates
                     const updates = {};
                     if (!trade.isDemo && !trade.isTournament) {
                         updates[`users/${uid}/realBalance`] = firebase.database.ServerValue.increment(result === 'win' ? profitChange + trade.realAmount : (result === 'push' ? trade.realAmount : 0));
