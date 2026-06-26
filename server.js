@@ -1,4 +1,4 @@
-// --- START: main app server.js (v32.0 - Advanced AI Market Maker & Resolution Engine) ---
+// --- START: main app server.js (v35.0 - Live Ping Tracker & Manual Ping REST API) ---
 
 const express = require('express');
 const http = require('http');
@@ -49,6 +49,12 @@ const activeTradesDb = {};
 const usersCache = {};
 db.ref('users').on('child_added', snap => { usersCache[snap.key] = snap.val(); });
 db.ref('users').on('child_changed', snap => { usersCache[snap.key] = snap.val(); });
+
+// ক্যাশ করা সার্ভার ইউআরএল (Keep-Alive এর জন্য)
+let cachedServerUrl = "";
+db.ref('admin/settings/activeServerUrl').on('value', (snap) => {
+    cachedServerUrl = snap.val() || "";
+});
 
 function roundPrice(v) { return parseFloat(Math.max(MIN_PRICE, v).toFixed(5)); }
 function marketPathFromId(marketId) { return String(marketId || '').replace(/[\.\/ ]/g, '-').toLowerCase(); }
@@ -394,6 +400,42 @@ app.post('/api/admin/command', (req, res) => {
     }
 });
 
+// REST API for Manual Ping from Admin Panel
+app.post('/api/admin/manual-ping', async (req, res) => {
+    try {
+        // ফায়ারবেসে লগ ডাটা পুশ করা
+        const logRef = db.ref('admin/ping_logs').push();
+        await logRef.set({
+            timestamp: Date.now(),
+            type: 'manual_ping',
+            status: 'success'
+        });
+
+        // পুরনো লগ পরিষ্কার করা (সর্বোচ্চ ৩০টি রাখবে)
+        db.ref('admin/ping_logs').once('value', (snap) => {
+            if(snap.exists()) {
+                const count = snap.numChildren();
+                if(count > 30) {
+                    let toDelete = count - 30;
+                    snap.forEach(child => {
+                        if(toDelete > 0) {
+                            child.ref.remove();
+                            toDelete--;
+                        }
+                    });
+                }
+            }
+        });
+
+        // টেলিগ্রামে মেসেজ পাঠানো
+        await sendTgMessage(`⚡️ <b>Manual Ping Verified:</b> Admin triggered a manual pulse. Render server is fully awake and connection is stable!`);
+        
+        res.json({ success: true, message: 'Pulse accepted' });
+    } catch (e) {
+        res.status(500).json({ success: false, error: e.message });
+    }
+});
+
 // Main Ticker Loop
 let lastSyncTime = 0;
 setInterval(() => {
@@ -540,6 +582,257 @@ setInterval(async () => {
     } catch (e) { console.log("Server Resolution Loop Error:", e); }
 }, 1000);
 
-app.get('/ping', (_req, res) => res.send('Server V32.0 - Advanced AI Market Maker Active'));
+
+// =====================================================================
+// 🔥 BULLETPROOF TELEGRAM BOT ENGINE & KEEP-ALIVE 24/7 ENGINE 🔥
+// =====================================================================
+const https = require('https');
+let lastUpdateId = 0;
+
+const activeLinkingSessions = {};
+const activeSupportSessions = {};
+const adminSupportMap = {}; 
+const ADMIN_OWNER_ID = "7504616242"; 
+
+// 1. Render-Keep Alive Mechanism (Self-Ping every 4 minutes)
+setInterval(async () => {
+    if (cachedServerUrl && cachedServerUrl.startsWith('https://')) {
+        try {
+            // Pings /ping path of itself to prevent spin-down on Render free-tier
+            await axios.get(`${cachedServerUrl}/ping`);
+            
+            // ফায়ারবেস পিং লগে সাকসেস রিপোর্ট সেভ করা
+            const logRef = db.ref('admin/ping_logs').push();
+            await logRef.set({
+                timestamp: Date.now(),
+                type: 'auto_pulse',
+                status: 'success'
+            });
+
+            // পুরনো লগ ডিলিট করা (ডাটাবেজ হালকা রাখতে সর্বোচ্চ ৩০টি রাখবে)
+            db.ref('admin/ping_logs').once('value', (snap) => {
+                if(snap.exists()) {
+                    const count = snap.numChildren();
+                    if(count > 30) {
+                        let toDelete = count - 30;
+                        snap.forEach(child => {
+                            if(toDelete > 0) {
+                                child.ref.remove();
+                                toDelete--;
+                            }
+                        });
+                    }
+                }
+            });
+
+            console.log("⚙️ Render Keep-Alive: Self-Ping Successful & Logged.");
+        } catch (e) {
+            console.log("⚙️ Render Keep-Alive Error:", e.message);
+        }
+    }
+}, 4 * 60 * 1000);
+
+// 2. 1-Hour Status Pulse Message to Telegram & Firebase Dead Man's Switch Update
+setInterval(async () => {
+    try {
+        // ফায়ারবেসে সার্ভারের লাইভ হার্টবিট রাইট করা (এডমিন প্যানেলে অফলাইন অ্যালার্টের জন্য)
+        await db.ref('admin/server_status').set({
+            lastActive: Date.now(),
+            version: 'V35.0'
+        });
+        
+        await sendTgMessage(`⚙️ <b>ICTEX Hourly Status:</b> Server is fully ACTIVE and running smoothly. Keep-alive system is engaged.`);
+    } catch(e) {
+        console.log("Heartbeat failed:", e.message);
+    }
+}, 60 * 60 * 1000); // পরিবর্তিত: ১০ মিনিটের বদলে এখন ১ ঘণ্টা পর পর পিং করবে
+
+// Bulletproof message sending with retry
+function sendTelegramMessage(chatId, text) {
+    return new Promise((resolve) => {
+        const url = `https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage`;
+        const payload = JSON.stringify({ chat_id: chatId, text: text, parse_mode: 'Markdown' });
+        
+        const req = https.request(url, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(payload) }
+        }, (res) => {
+            let body = '';
+            res.on('data', chunk => body += chunk);
+            res.on('end', () => {
+                try {
+                    const data = JSON.parse(body);
+                    if (data.ok && data.result) resolve(data.result.message_id);
+                    else resolve(null);
+                } catch (e) { resolve(null); }
+            });
+        });
+        req.on('error', () => resolve(null));
+        req.write(payload);
+        req.end();
+    });
+}
+
+function deleteTelegramMessage(chatId, messageId) {
+    if (!messageId) return;
+    const url = `https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/deleteMessage`;
+    const payload = JSON.stringify({ chat_id: chatId, message_id: messageId });
+    const req = https.request(url, { method: 'POST', headers: { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(payload) }});
+    req.on('error', () => {}); req.write(payload); req.end();
+}
+
+function forwardTelegramMessage(toChatId, fromChatId, messageId) {
+    return new Promise((resolve) => {
+        const url = `https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/forwardMessage`;
+        const payload = JSON.stringify({ chat_id: toChatId, from_chat_id: fromChatId, message_id: messageId });
+        const req = https.request(url, { method: 'POST', headers: { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(payload) } }, (res) => {
+            let body = ''; res.on('data', chunk => body += chunk);
+            res.on('end', () => { try { const data = JSON.parse(body); resolve(data.ok && data.result ? data.result.message_id : null); } catch (e) { resolve(null); } });
+        });
+        req.on('error', () => resolve(null)); req.write(payload); req.end();
+    });
+}
+
+// Robust recursive polling loop
+function pollTelegramUpdates() {
+    const url = `https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/getUpdates?offset=${lastUpdateId + 1}&timeout=10`;
+    
+    https.get(url, (res) => {
+        let body = ''; 
+        res.on('data', chunk => body += chunk);
+        res.on('end', async () => {
+            try {
+                const response = JSON.parse(body);
+                if (response.ok && response.result.length > 0) {
+                    for (const update of response.result) {
+                        lastUpdateId = update.update_id;
+                        if (update.message) {
+                            const msgDate = update.message.date || 0;
+                            const nowSec = Math.floor(Date.now() / 1000);
+                            if (msgDate < nowSec - 60) continue; // Ignore expired messages
+
+                            const text = update.message.text ? update.message.text.trim() : "";
+                            const chatId = String(update.message.chat.id);
+                            const textLower = text.toLowerCase();
+                            
+                            if (chatId === ADMIN_OWNER_ID && update.message.reply_to_message) {
+                                const replyToId = update.message.reply_to_message.message_id;
+                                const targetUserId = adminSupportMap[replyToId];
+                                if (targetUserId && text) await sendTelegramMessage(targetUserId, `💬 *Response from Support:* \n\n${text}`);
+                                continue;
+                            }
+
+                            if (textLower === '/start') {
+                                if (activeSupportSessions[chatId]) { await sendTelegramMessage(chatId, `⚠️ *Active Help Session*\nPlease end the active session first using /endhelp.`); continue; }
+                                await sendTelegramMessage(chatId, `✨ *WELCOME TO ICTEX SECURE GATEWAY* ✨\n\nHello Trader! I am the official ICTEX Security and 2FA Bot.\n\n*Available Commands:*\n🔑 /linkictex - Link account securely.\n👤 /accounts - View linked profiles.\n💬 /help - Open a direct support session.`);
+                            } 
+                            else if (textLower === '/linkictex') {
+                                if (activeSupportSessions[chatId]) { await sendTelegramMessage(chatId, `⚠️ Please end the active help session first using /endhelp.`); continue; }
+                                if (activeLinkingSessions[chatId]) {
+                                    clearTimeout(activeLinkingSessions[chatId].timeoutRef);
+                                    if (activeLinkingSessions[chatId].linkMessageId) deleteTelegramMessage(chatId, activeLinkingSessions[chatId].linkMessageId);
+                                }
+                                const linkMessageId = await sendTelegramMessage(chatId, `🔑 *ICTEX Secure Account Link Initiation*\nPlease go to your **ICTEX Trading Terminal -> Profile Settings**, copy your 15-digit secure linking code, and paste it here.\n\n*Code format:* \`XXXXX - XXXXX - XXXXX\``);
+                                activeLinkingSessions[chatId] = {
+                                    linkMessageId: linkMessageId,
+                                    expiresAt: Date.now() + 60000,
+                                    timeoutRef: setTimeout(async () => {
+                                        if (linkMessageId) deleteTelegramMessage(chatId, linkMessageId);
+                                        const expiredMessageId = await sendTelegramMessage(chatId, `⚠️ *Linking Session Expired*\nYour 1-minute account linking session has expired. Type /linkictex to start again.`);
+                                        setTimeout(() => { if (expiredMessageId) deleteTelegramMessage(chatId, expiredMessageId); }, 10000);
+                                        delete activeLinkingSessions[chatId];
+                                    }, 60000)
+                                };
+                            }
+                            else if (textLower === '/help') {
+                                if (activeSupportSessions[chatId]) { await sendTelegramMessage(chatId, `⚠️ You are already in an active support session.`); continue; }
+                                activeSupportSessions[chatId] = { active: true, isFirstMessage: true };
+                                await sendTelegramMessage(chatId, `💬 *ICTEX Help Desk Started*\nYou are now connected to the Support Desk. Please describe your problem in detail.\n\n🔒 _Tap /endhelp to close the session._`);
+                            }
+                            else if (textLower === '/endhelp' || textLower === '/end') {
+                                if (activeSupportSessions[chatId]) {
+                                    delete activeSupportSessions[chatId];
+                                    await sendTelegramMessage(chatId, `🔒 *SUPPORT SESSION CLOSED*`);
+                                }
+                            }
+                            else {
+                                if (activeSupportSessions[chatId] && activeSupportSessions[chatId].active) {
+                                    if (activeSupportSessions[chatId].isFirstMessage) {
+                                        activeSupportSessions[chatId].isFirstMessage = false;
+                                        await sendTelegramMessage(chatId, `Please wait, our support agents will contact you shortly.`);
+                                    }
+                                    const forwardedId = await forwardTelegramMessage(ADMIN_OWNER_ID, chatId, update.message.message_id);
+                                    if (forwardedId) adminSupportMap[forwardedId] = chatId;
+                                }
+                                else {
+                                    const session = activeLinkingSessions[chatId];
+                                    if (session && Date.now() < session.expiresAt) {
+                                        const codeMatch = text.match(/[a-zA-Z0-9]{5}\s*-\s*[a-zA-Z0-9]{5}\s*-\s*[a-zA-Z0-9]{5}/);
+                                        if (codeMatch) {
+                                            const linkCode = codeMatch[0].toUpperCase();
+                                            const linkSnap = await db.ref(`telegram_links/${linkCode}`).once('value');
+                                            if (linkSnap.exists()) {
+                                                const uid = linkSnap.val().uid;
+                                                await db.ref(`users/${uid}`).update({ telegramChatId: chatId, twoFactorEnabled: true });
+                                                await linkSnap.ref.remove();
+                                                clearTimeout(session.timeoutRef);
+                                                if (session.linkMessageId) deleteTelegramMessage(chatId, session.linkMessageId);
+                                                delete activeLinkingSessions[chatId];
+                                                await sendTelegramMessage(chatId, `🎉 *ACCOUNT PAIRED SUCCESSFULLY!* 🎉\nYour Telegram profile is now fully bound to your ICTEX Trading Account.`);
+                                            } else {
+                                                await sendTelegramMessage(chatId, `❌ *PAIRING ATTEMPT FAILED*\nThe linking code is invalid or expired.`);
+                                            }
+                                        } 
+                                    } 
+                                }
+                            }
+                        }
+                    }
+                }
+            } catch(e) { console.log("Long Poll parsing error:", e.message); }
+            
+            // Recurse immediately for seamless polling
+            setTimeout(pollTelegramUpdates, 800); 
+        });
+    }).on('error', (err) => { 
+        console.log("TG Poll Network error:", err.message);
+        setTimeout(pollTelegramUpdates, 5000); // Wait 5s and retry on network drop
+    });
+}
+
+function deleteTelegramWebhook() {
+    https.get(`https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/deleteWebhook`, (res) => {
+        res.resume(); pollTelegramUpdates();
+    }).on('error', () => { pollTelegramUpdates(); });
+}
+deleteTelegramWebhook();
+
+const activeOtps = {};
+async function handleNewOtp(uid, chatId, otp, userName) {
+    if (activeOtps[uid]) {
+        if (activeOtps[uid].timeoutRef) clearTimeout(activeOtps[uid].timeoutRef);
+        if (activeOtps[uid].otpMessageId) deleteTelegramMessage(activeOtps[uid].chatId, activeOtps[uid].otpMessageId);
+        delete activeOtps[uid];
+    }
+    const otpMessageId = await sendTelegramMessage(chatId, `🔐 *ICTEX VIP Security Alert*\n\nHello *${userName}*,\nYour code is: \`${otp.code}\`\n\n_Expires in 60s._`);
+    activeOtps[uid] = { code: otp.code, chatId, otpMessageId, expiresAt: otp.expiresAt, timeoutRef: setTimeout(async () => {
+        const expiredMessageId = await sendTelegramMessage(chatId, `⚠️ Code expired.`);
+        setTimeout(() => { if (otpMessageId) deleteTelegramMessage(chatId, otpMessageId); if (expiredMessageId) deleteTelegramMessage(chatId, expiredMessageId); }, 10000); 
+        db.ref(`users/${uid}/pendingOTP`).remove().catch(() => {});
+        delete activeOtps[uid];
+    }, 60000) };
+}
+db.ref('users').on('child_changed', (snap) => {
+    const user = snap.val();
+    if (user && user.pendingOTP && user.telegramChatId) {
+        if (!activeOtps[snap.key] || activeOtps[snap.key].code !== user.pendingOTP.code) handleNewOtp(snap.key, user.telegramChatId, user.pendingOTP, user.name || 'User');
+    } else if (user && !user.pendingOTP && activeOtps[snap.key]) {
+        if (activeOtps[snap.key].timeoutRef) clearTimeout(activeOtps[snap.key].timeoutRef);
+        if (activeOtps[snap.key].otpMessageId) deleteTelegramMessage(activeOtps[snap.key].chatId, activeOtps[snap.key].otpMessageId);
+        delete activeOtps[snap.key];
+    }
+});
+
+app.get('/ping', (_req, res) => res.send('Server V35.0 - Live Ping & Dynamic Heartbeat Engine Active'));
 const PORT = process.env.PORT || 3000;
 server.listen(PORT, () => console.log(`Server running on ${PORT}`));
