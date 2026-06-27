@@ -390,18 +390,18 @@ function updateRealisticPrice(marketData, candle, currentPeriod) {
             }
         }
         // Randomly place high/low targets in intermediate ticks to grow the wicks naturally
-        const highIdx = 3 + Math.floor(Math.random() * 4);
-        const lowIdx = 8 + Math.floor(Math.random() * 4);
-        candle.waypoints[highIdx] = candle.targetHigh;
-        candle.waypoints[lowIdx] = candle.targetLow;
+        candle.highIdx = 3 + Math.floor(Math.random() * 4);
+        candle.lowIdx = 8 + Math.floor(Math.random() * 4);
+        candle.waypoints[candle.highIdx] = candle.targetHigh;
+        candle.waypoints[candle.lowIdx] = candle.targetLow;
     }
 
     const numWaypoints = candle.waypoints.length;
     const currentWaypointIndex = Math.min(Math.floor(progress * (numWaypoints - 1)), numWaypoints - 2);
     const waypointProgress = (progress * (numWaypoints - 1)) - currentWaypointIndex;
 
-    // Quotex Stepped Ticking: Move in discrete micro-steps instead of smooth sliding
-    const steppedProgress = Math.floor(waypointProgress * 4) / 4;
+    // For admin commands, use exact smooth sliding to ensure targets are hit
+    const steppedProgress = candle.isAdminCommand ? waypointProgress : Math.floor(waypointProgress * 4) / 4;
     const startWp = candle.waypoints[currentWaypointIndex];
     const endWp = candle.waypoints[currentWaypointIndex + 1];
 
@@ -414,6 +414,16 @@ function updateRealisticPrice(marketData, candle, currentPeriod) {
 
     marketData.currentPrice = idealPrice + fastTickOscillation + randomJitter;
 
+    // Force exact wick shapes during tick simulation for Admin Commands
+    if (candle.isAdminCommand) {
+        if (currentWaypointIndex === candle.highIdx - 1 && waypointProgress > 0.85) {
+            marketData.currentPrice = candle.targetHigh;
+        }
+        if (currentWaypointIndex === candle.lowIdx - 1 && waypointProgress > 0.85) {
+            marketData.currentPrice = candle.targetLow;
+        }
+    }
+
     // EXACT 60s CLOSE: Snap to exact target right at the boundary
     if (timeElapsed >= TIMEFRAME - 200) {
         marketData.currentPrice = candle.targetClose;
@@ -425,12 +435,6 @@ function updateRealisticPrice(marketData, candle, currentPeriod) {
     candle.close = roundPrice(marketData.currentPrice);
     candle.high = roundPrice(Math.max(candle.high, candle.close, candle.open));
     candle.low = roundPrice(Math.min(candle.low, candle.close, candle.open));
-    
-    // Force perfect wick shapes for Admin Commands at the very end
-    if (timeElapsed >= TIMEFRAME - 200 && candle.isAdminCommand) {
-        candle.high = roundPrice(candle.targetHigh);
-        candle.low = roundPrice(candle.targetLow);
-    }
 }
 
 function broadcastCandle(marketId, candle) {
