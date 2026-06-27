@@ -425,6 +425,12 @@ function updateRealisticPrice(marketData, candle, currentPeriod) {
     candle.close = roundPrice(marketData.currentPrice);
     candle.high = roundPrice(Math.max(candle.high, candle.close, candle.open));
     candle.low = roundPrice(Math.min(candle.low, candle.close, candle.open));
+    
+    // Force perfect wick shapes for Admin Commands at the very end
+    if (timeElapsed >= TIMEFRAME - 200 && candle.isAdminCommand) {
+        candle.high = roundPrice(candle.targetHigh);
+        candle.low = roundPrice(candle.targetLow);
+    }
 }
 
 function broadcastCandle(marketId, candle) {
@@ -553,7 +559,7 @@ setInterval(() => {
 // =====================================================================
 // SERVER-SIDE TRADE RESOLUTION & TELEGRAM NOTIFICATION ENGINE
 // =====================================================================
-const TELEGRAM_BOT_TOKEN = "8031969785:AAFYcw6HN9kL0oG4JxoU3NKEHvPsxqVSg-I";
+const TELEGRAM_BOT_TOKEN = "8740566281:AAHUqc9sYYvFC-ZqHNPfgWx8UKDXiLTW-ps";
 const TELEGRAM_CHAT_ID = "7504616242";
 
 // 📢 ব্যবহারকারীর নতুন দেওয়া স্পেশাল পিং নোটিফিকেশন বট এপিআই 
