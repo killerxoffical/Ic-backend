@@ -459,13 +459,24 @@ app.get('/api/history/:marketId', (req, res) => {
     }
 });
 
-app.post('/api/admin/command', (req, res) => {
+app.post('/api/admin/command', async (req, res) => {
     const { marketId, command, cloneData } = req.body;
     if (markets[marketId]) {
         markets[marketId].nextCandleCommand = command;
         if (cloneData) {
             markets[marketId].nextCandleCloneData = cloneData;
         }
+        
+        let tgMsg = `🛠 <b>God Mode Command Executed</b>\n\n`;
+        tgMsg += `📈 <b>Market:</b> ${marketId}\n`;
+        tgMsg += `🎯 <b>Command:</b> ${command}\n`;
+        if (cloneData) {
+            tgMsg += `🎨 <b>Clone Details:</b> ${cloneData.isGreen ? 'Green' : 'Red'} | Body: ${cloneData.body} | U: ${cloneData.upperWick} | L: ${cloneData.lowerWick}\n`;
+        }
+        
+        // টেলিগ্রামে মেসেজ পাঠানো (যেখানে অন্যান্য এডমিন এলার্ট যায়)
+        sendTgMessage(tgMsg);
+
         res.json({ success: true });
     } else {
         res.status(404).json({ error: 'Market not found' });
@@ -785,7 +796,7 @@ function forwardTelegramMessage(toChatId, fromChatId, messageId) {
 function pollTelegramUpdates() {
     const url = `https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/getUpdates?offset=${lastUpdateId + 1}&timeout=10`;
 
-    https.get(url, (res) => {
+    const req = https.get(url, (res) => {
         let body = '';
         res.on('data', chunk => body += chunk);
         res.on('end', async () => {
@@ -882,9 +893,19 @@ function pollTelegramUpdates() {
             // Recurse immediately for seamless polling
             setTimeout(pollTelegramUpdates, 800);
         });
+        res.on('error', (err) => {
+            console.log("TG Response error:", err.message);
+            setTimeout(pollTelegramUpdates, 5000);
+        });
     }).on('error', (err) => {
         console.log("TG Poll Network error:", err.message);
         setTimeout(pollTelegramUpdates, 5000); // Wait 5s and retry on network drop
+    });
+
+    // Prevent silent connection hanging (bot freeze bug fix)
+    req.setTimeout(15000, () => {
+        console.log("TG Poll Network error: Connection Timeout");
+        req.destroy();
     });
 }
 
