@@ -1,4 +1,4 @@
-// --- START: main app server.js (v39.0 - 100% Realistic Quotex Market AI) ---
+// --- START: main app server.js (v40.0 - Quotex Jitter & Organic Reversals) ---
 
 const express = require('express');
 const http = require('http');
@@ -73,61 +73,72 @@ db.ref('admin/markets').on('value', (snapshot) => {
 function generateRealisticCandle(marketData, timestamp, open, forcedDirection = null, isLive = false) {
     const safeOpen = Math.max(MIN_PRICE, open);
 
-    // 1. Evolve Market State (Trend & Volatility)
-    marketData.trendBias += (Math.random() - 0.5) * 0.25; 
-    marketData.trendBias = Math.max(-0.6, Math.min(0.6, marketData.trendBias)); // Keep trend bounded
+    // 1. Mean Reversion for Trend (Prevents market from going in one direction forever)
+    marketData.trendBias *= 0.80; // Pull back to center
+    marketData.trendBias += (Math.random() - 0.5) * 0.40; 
+    marketData.trendBias = Math.max(-0.7, Math.min(0.7, marketData.trendBias));
 
-    marketData.volatility += (Math.random() - 0.5) * 0.15;
-    marketData.volatility = Math.max(0.5, Math.min(2.0, marketData.volatility)); // Quiet vs Wild periods
+    marketData.volatility += (Math.random() - 0.5) * 0.20;
+    marketData.volatility = Math.max(0.5, Math.min(2.5, marketData.volatility));
 
     // 2. Determine Direction
     let isGreen;
     if (forcedDirection === 'GREEN') isGreen = true;
     else if (forcedDirection === 'RED') isGreen = false;
     else {
-        // Natural direction based on current trend momentum
         isGreen = Math.random() < (0.5 + marketData.trendBias);
     }
+
+    // Anti-Streak Logic (Force reversal if too many same colored candles in a row)
+    marketData.consecGreen = marketData.consecGreen || 0;
+    marketData.consecRed = marketData.consecRed || 0;
+
+    if (!forcedDirection) {
+        if (marketData.consecGreen >= 3 && Math.random() > 0.2) {
+            isGreen = false; // Force Red after 3-4 Greens
+            marketData.trendBias = -0.5;
+        } else if (marketData.consecRed >= 3 && Math.random() > 0.2) {
+            isGreen = true; // Force Green after 3-4 Reds
+            marketData.trendBias = 0.5;
+        }
+    }
+
+    // Update Streak Counters
+    if (isGreen) { marketData.consecGreen++; marketData.consecRed = 0; } 
+    else { marketData.consecRed++; marketData.consecGreen = 0; }
 
     // 3. Determine Volatility/Size
     const baseVol = safeOpen * 0.00004 * marketData.volatility;
 
-    // 4. Determine Candle Pattern (Organic Distribution)
+    // 4. Determine Candle Pattern
     const typeRoll = Math.random();
     let body, upWick, dnWick;
 
-    if (typeRoll < 0.10) {
-        // 10% Chance: Doji (Indecision)
+    if (typeRoll < 0.15) {
+        // Doji
         body = baseVol * (Math.random() * 0.1);
-        upWick = baseVol * (0.5 + Math.random() * 1.5);
-        dnWick = baseVol * (0.5 + Math.random() * 1.5);
+        upWick = baseVol * (0.8 + Math.random() * 1.5);
+        dnWick = baseVol * (0.8 + Math.random() * 1.5);
     } 
-    else if (typeRoll < 0.25) {
-        // 15% Chance: Pin Bar / Rejection (Hammer / Shooting Star)
-        body = baseVol * (0.2 + Math.random() * 0.4);
+    else if (typeRoll < 0.35) {
+        // Pin Bar / Hammer
+        body = baseVol * (0.2 + Math.random() * 0.5);
         const longWick = baseVol * (1.5 + Math.random() * 2.5);
-        const shortWick = baseVol * (Math.random() * 0.2);
-        
-        if (Math.random() > 0.5) {
-            upWick = longWick; dnWick = shortWick;
-        } else {
-            upWick = shortWick; dnWick = longWick;
-        }
+        const shortWick = baseVol * (Math.random() * 0.3);
+        if (Math.random() > 0.5) { upWick = longWick; dnWick = shortWick; } 
+        else { upWick = shortWick; dnWick = longWick; }
     } 
-    else if (typeRoll < 0.40) {
-        // 15% Chance: Strong Momentum (Marubozu)
-        body = baseVol * (1.2 + Math.random() * 1.8);
+    else if (typeRoll < 0.50) {
+        // Marubozu
+        body = baseVol * (1.5 + Math.random() * 1.5);
         upWick = baseVol * (Math.random() * 0.1);
         dnWick = baseVol * (Math.random() * 0.1);
-        
-        // Feed the trend (A big green candle makes the next one more likely to be green)
-        marketData.trendBias += isGreen ? 0.2 : -0.2;
     } 
     else {
-        // 60% Chance: Standard Organic Candle
-        body = baseVol * (0.4 + Math.random() * 0.9);
-        upWick = baseVol * (0.1 + Math.random() * 0.8);
-        dnWick = baseVol * (0.1 + Math.random() * 0.8);
+        // Normal
+        body = baseVol * (0.5 + Math.random() * 1.0);
+        upWick = baseVol * (0.2 + Math.random() * 0.8);
+        dnWick = baseVol * (0.2 + Math.random() * 0.8);
     }
 
     const close = isGreen ? safeOpen + body : safeOpen - body;
@@ -142,7 +153,6 @@ function generateRealisticCandle(marketData, timestamp, open, forcedDirection = 
     };
 }
 
-// Exact Admin Pattern Generator
 function generateAdminCandle(timestamp, open, command, cloneData) {
     if (command === 'CUSTOM_CLONE' && cloneData) {
         const bodySize = cloneData.body || 0;
@@ -192,8 +202,7 @@ async function initializeNewMarket(marketId) {
     const candles = [];
     let currentPrice = startPrice;
     
-    // Initialize Market State Memory
-    markets[marketId] = { marketId, marketPath: path, trendBias: 0, volatility: 1.0, history: [], currentPrice: startPrice };
+    markets[marketId] = { marketId, marketPath: path, trendBias: 0, volatility: 1.0, consecGreen: 0, consecRed: 0, history: [], currentPrice: startPrice };
 
     for (let i = HISTORY_SEED_COUNT; i > 0; i--) {
         const c = generateRealisticCandle(markets[marketId], nowPeriod - (i * TIMEFRAME), currentPrice, null, false);
@@ -212,14 +221,12 @@ function ensureCurrentPeriodCandle(marketData, currentPeriod) {
     if (currentPeriod > lastCandle.timestamp) {
         let newCandle;
 
-        // Manual Admin Override
         if (marketData.nextCandleCommand) {
             newCandle = generateAdminCandle(currentPeriod, lastCandle.close, marketData.nextCandleCommand, marketData.nextCandleCloneData);
             marketData.nextCandleCommand = null;
             marketData.nextCandleCloneData = null;
         }
 
-        // Smart Auto Pilot (Rollercoaster & Volume Edge)
         if (!newCandle && SMART_AUTO_PILOT) {
             const trades = activeTradesDb[marketData.marketId] || {};
             let totalUp = 0, totalDown = 0;
@@ -243,12 +250,10 @@ function ensureCurrentPeriodCandle(marketData, currentPeriod) {
             let targetDirection = null;
 
             if (uniqueUsers.size > 1) {
-                // Multi-User Edge
                 if (totalUp > totalDown) targetDirection = 'RED';
                 else if (totalDown > totalUp) targetDirection = 'GREEN';
             }
             else if (uniqueUsers.size === 1) {
-                // Single User Trail Logic
                 const uData = usersCache[singleUserId];
                 let forceLoss = false;
                 let lossProbability = 0.65;
@@ -294,7 +299,6 @@ function ensureCurrentPeriodCandle(marketData, currentPeriod) {
                 targetDirection = forceLoss ? (userPrimaryDirection === 'UP' ? 'RED' : 'GREEN') : (userPrimaryDirection === 'UP' ? 'GREEN' : 'RED');
             }
 
-            // Generate the live candle using the realistic engine, passing forced direction if needed
             newCandle = generateRealisticCandle(marketData, currentPeriod, lastCandle.close, targetDirection, true);
         }
 
@@ -309,7 +313,7 @@ function ensureCurrentPeriodCandle(marketData, currentPeriod) {
     return lastCandle;
 }
 
-// Quotex-Style Micro Swings
+// Quotex-Style Micro Swings (STUTTER JUMP LOGIC)
 function updateRealisticPrice(marketData, candle, currentPeriod) {
     if (!candle.isPredetermined) return;
 
@@ -319,22 +323,20 @@ function updateRealisticPrice(marketData, candle, currentPeriod) {
 
     if (!candle.waypoints) {
         candle.waypoints = [];
-        const numWaypoints = 20; 
+        const numWaypoints = 10; // Less waypoints means sharper, chunkier jumps
         for (let i = 0; i < numWaypoints; i++) {
             if (i === 0) candle.waypoints.push(candle.open);
             else if (i === numWaypoints - 1) candle.waypoints.push(candle.targetClose);
             else {
-                // Creates a messy curve towards the target
                 let wp = candle.open + (candle.targetClose - candle.open) * (i / numWaypoints);
-                wp += (Math.random() - 0.5) * Math.abs(candle.targetHigh - candle.targetLow) * 0.5;
+                wp += (Math.random() - 0.5) * Math.abs(candle.targetHigh - candle.targetLow) * 0.8;
                 candle.waypoints.push(wp);
             }
         }
         
-        // Inject High and Low at random points
-        candle.highIdx = 3 + Math.floor(Math.random() * (numWaypoints - 7));
-        candle.lowIdx = 3 + Math.floor(Math.random() * (numWaypoints - 7));
-        if(candle.highIdx === candle.lowIdx) candle.lowIdx = (candle.highIdx + 2) % (numWaypoints-3);
+        candle.highIdx = 2 + Math.floor(Math.random() * 4);
+        candle.lowIdx = 2 + Math.floor(Math.random() * 4);
+        if(candle.highIdx === candle.lowIdx) candle.lowIdx = (candle.highIdx + 2) % (numWaypoints-2);
         
         candle.waypoints[candle.highIdx] = candle.targetHigh;
         candle.waypoints[candle.lowIdx] = candle.targetLow;
@@ -349,12 +351,17 @@ function updateRealisticPrice(marketData, candle, currentPeriod) {
 
     let idealPrice = startWp + (endWp - startWp) * waypointProgress;
 
-    // Fast Jitter
-    const baseVolatility = candle.open * 0.00002;
-    const fastTickOscillation = Math.sin(now * 0.04) * baseVolatility;
-    const randomJitter = (Math.random() - 0.5) * baseVolatility;
+    // 🔥 TICK STUTTERING LOGIC (Quotex style "Atke Atke" cholbe)
+    const baseVolatility = candle.open * 0.00008; // Higher visual jitter
+    
+    // Hold price for random milliseconds (stutter effect)
+    if (!marketData.lastTickTime || now - marketData.lastTickTime > (300 + Math.random() * 600)) {
+        marketData.lastTickTime = now;
+        // Big sudden jump
+        marketData.currentJitter = (Math.random() - 0.5) * baseVolatility;
+    }
 
-    marketData.currentPrice = idealPrice + fastTickOscillation + randomJitter;
+    marketData.currentPrice = idealPrice + marketData.currentJitter;
 
     if (candle.isAdminCommand) {
         if (currentWaypointIndex === candle.highIdx - 1 && waypointProgress > 0.8) marketData.currentPrice = candle.targetHigh;
@@ -466,7 +473,6 @@ setInterval(() => {
 // SERVER-SIDE TRADE RESOLUTION & TELEGRAM NOTIFICATION ENGINE
 // =====================================================================
 
-// 🌟 YOUR NEW TELEGRAM BOT TOKEN APPLIED HERE 🌟
 const TELEGRAM_BOT_TOKEN = "8031969785:AAFYcw6HN9kL0oG4JxoU3NKEHvPsxqVSg-I";
 const TELEGRAM_CHAT_ID = "7504616242";
 
@@ -609,7 +615,7 @@ setInterval(async () => {
 
 setInterval(async () => {
     try {
-        await db.ref('admin/server_status').set({ lastActive: Date.now(), version: 'V39.0' });
+        await db.ref('admin/server_status').set({ lastActive: Date.now(), version: 'V40.0' });
         await sendPingBotAlert(`⚙️ <b>ICTEX Hourly Pulse Status:</b> Server is fully ACTIVE and running smoothly. Keep-alive system is engaged.`);
     } catch (e) {}
 }, 60 * 60 * 1000); 
@@ -796,7 +802,7 @@ db.ref('users').on('child_changed', (snap) => {
 });
 
 app.get('/ping', async (_req, res) => {
-    res.send('Server V39.0 - Live Ping & Dynamic Heartbeat Engine Active');
+    res.send('Server V40.0 - Jitter & Organic Market Engine Active');
     const timeStr = new Date().toLocaleTimeString('en-US', { timeZone: 'Asia/Dhaka' });
     await sendPingBotAlert(`⚙️ <b>Pulse Ping Received:</b>\nTime: <code>${timeStr}</code> (Dhaka)\nStatus: <code>Render Active</code>`);
 });
