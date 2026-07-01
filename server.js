@@ -1,4 +1,4 @@
-// --- START: main app server.js (v37.0 - Custom Ping Bot Integration) ---
+// --- START: main app server.js (v38.0 - Realistic Market & New Telegram Bot) ---
 
 const express = require('express');
 const http = require('http');
@@ -76,43 +76,44 @@ function generateHistoricalCandle(timestamp, open, isLive = false) {
     const safeOpen = Math.max(MIN_PRICE, open);
     const isGreen = Math.random() > 0.5;
 
-    // Normal base volatility
-    const baseVol = safeOpen * 0.00008;
+    // Base volatility based on price
+    const baseVol = safeOpen * 0.00005;
 
-    // Dynamic Volatility Multiplier to make it look completely natural
-    const dynamicVol = baseVol * (0.3 + Math.random() * 2.2);
+    // Exponential random to create lots of small candles and occasional big ones
+    const sizeMultiplier = Math.pow(Math.random(), 2.5) * 4.0;
+    const dynamicVol = baseVol * (0.1 + sizeMultiplier);
 
     let bodySize, upperWick, lowerWick;
     const rand = Math.random();
 
-    if (rand < 0.15) {
-        // 15% Chance: Doji (Tiny body, medium/large wicks)
-        bodySize = dynamicVol * (Math.random() * 0.15);
+    if (rand < 0.10) {
+        // Doji
+        bodySize = dynamicVol * 0.05;
         upperWick = dynamicVol * (0.5 + Math.random() * 1.5);
         lowerWick = dynamicVol * (0.5 + Math.random() * 1.5);
     }
-    else if (rand < 0.35) {
-        // 20% Chance: Hammer / Shooting Star (Small body, one massive wick)
-        bodySize = dynamicVol * (0.2 + Math.random() * 0.4);
+    else if (rand < 0.30) {
+        // Hammer / Shooting Star
+        bodySize = dynamicVol * (0.2 + Math.random() * 0.3);
         if (Math.random() > 0.5) {
-            upperWick = dynamicVol * (1.5 + Math.random() * 3.0);
+            upperWick = dynamicVol * (1.0 + Math.random() * 2.5);
             lowerWick = dynamicVol * (Math.random() * 0.2);
         } else {
             upperWick = dynamicVol * (Math.random() * 0.2);
-            lowerWick = dynamicVol * (1.5 + Math.random() * 3.0);
+            lowerWick = dynamicVol * (1.0 + Math.random() * 2.5);
         }
     }
-    else if (rand < 0.50) {
-        // 15% Chance: Big Marubozu Trend (Massive body, almost no wick)
-        bodySize = dynamicVol * (2.0 + Math.random() * 1.5);
-        upperWick = dynamicVol * (Math.random() * 0.1);
-        lowerWick = dynamicVol * (Math.random() * 0.1);
+    else if (rand < 0.40) {
+        // Marubozu (No wicks)
+        bodySize = dynamicVol * (1.5 + Math.random() * 1.5);
+        upperWick = dynamicVol * (Math.random() * 0.05);
+        lowerWick = dynamicVol * (Math.random() * 0.05);
     }
     else {
-        // 50% Chance: Standard Natural Candle
-        bodySize = dynamicVol * (0.6 + Math.random() * 1.2);
-        upperWick = dynamicVol * (0.2 + Math.random() * 0.9);
-        lowerWick = dynamicVol * (0.2 + Math.random() * 0.9);
+        // Standard Random with high variation
+        bodySize = dynamicVol * (0.3 + Math.random() * 1.0);
+        upperWick = dynamicVol * (0.1 + Math.random() * 0.8);
+        lowerWick = dynamicVol * (0.1 + Math.random() * 0.8);
     }
 
     const close = isGreen ? safeOpen + bodySize : safeOpen - bodySize;
@@ -150,41 +151,41 @@ function generateDynamicCandle(timestamp, open, command, cloneData) {
     const isRed = cmd.includes('RED') || cmd === 'BEARISH_MARUBOZU';
     const isDoji = cmd === 'DOJI';
 
-    const baseVol = open * 0.00008;
-    const dynamicVol = baseVol * (0.8 + Math.random() * 1.5); // Randomize size even on controlled candles
+    const baseVol = open * 0.00005;
+    const sizeMultiplier = Math.pow(Math.random(), 2.0) * 3.5;
+    const dynamicVol = baseVol * (0.2 + sizeMultiplier);
 
     let bodySize, upperWick, lowerWick;
 
     if (isDoji) {
-        bodySize = dynamicVol * (Math.random() * 0.1);
-        upperWick = dynamicVol * (0.8 + Math.random() * 1.5);
-        lowerWick = dynamicVol * (0.8 + Math.random() * 1.5);
+        bodySize = dynamicVol * (Math.random() * 0.05);
+        upperWick = dynamicVol * (0.5 + Math.random() * 1.5);
+        lowerWick = dynamicVol * (0.5 + Math.random() * 1.5);
     } else if (cmd.includes('MARUBOZU')) {
-        bodySize = dynamicVol * (2.0 + Math.random() * 1.5);
-        upperWick = dynamicVol * (Math.random() * 0.1);
-        lowerWick = dynamicVol * (Math.random() * 0.1);
+        bodySize = dynamicVol * (1.5 + Math.random() * 1.5);
+        upperWick = dynamicVol * (Math.random() * 0.05);
+        lowerWick = dynamicVol * (Math.random() * 0.05);
     } else if (cmd.includes('HAMMER')) {
-        bodySize = dynamicVol * (0.4 + Math.random() * 0.5);
+        bodySize = dynamicVol * (0.2 + Math.random() * 0.4);
         if (isGreen) {
             upperWick = dynamicVol * (Math.random() * 0.2);
-            lowerWick = dynamicVol * (1.5 + Math.random() * 2.0);
+            lowerWick = dynamicVol * (1.0 + Math.random() * 2.0);
         } else {
             upperWick = dynamicVol * (Math.random() * 0.2);
-            lowerWick = dynamicVol * (1.5 + Math.random() * 2.0);
+            lowerWick = dynamicVol * (1.0 + Math.random() * 2.0);
         }
     } else if (cmd.includes('SHOOTING_STAR')) {
-        bodySize = dynamicVol * (0.4 + Math.random() * 0.5);
-        upperWick = dynamicVol * (1.5 + Math.random() * 2.0);
+        bodySize = dynamicVol * (0.2 + Math.random() * 0.4);
+        upperWick = dynamicVol * (1.0 + Math.random() * 2.0);
         lowerWick = dynamicVol * (Math.random() * 0.2);
     } else if (cmd === 'PREV_2X') {
-        bodySize = dynamicVol * 2.5; // Large breakout
+        bodySize = dynamicVol * 2.5; 
         upperWick = dynamicVol * (Math.random() * 0.3);
         lowerWick = dynamicVol * (Math.random() * 0.3);
     } else {
-        // Standard controlled candle (GREEN / RED / RANDOM)
-        bodySize = dynamicVol * (0.8 + Math.random() * 1.0);
-        upperWick = dynamicVol * (0.3 + Math.random() * 0.8);
-        lowerWick = dynamicVol * (0.3 + Math.random() * 0.8);
+        bodySize = dynamicVol * (0.4 + Math.random() * 1.2);
+        upperWick = dynamicVol * (0.1 + Math.random() * 0.9);
+        lowerWick = dynamicVol * (0.1 + Math.random() * 0.9);
     }
 
     const directionIsGreen = isGreen || (!isRed && Math.random() > 0.5);
@@ -379,19 +380,21 @@ function updateRealisticPrice(marketData, candle, currentPeriod) {
 
     if (!candle.waypoints) {
         candle.waypoints = [];
-        const numWaypoints = 15; // More waypoints for realistic Quotex micro-swings
+        const numWaypoints = 25; // Increase waypoints for highly variable live ticks
         for (let i = 0; i < numWaypoints; i++) {
             if (i === 0) candle.waypoints.push(candle.open);
             else if (i === numWaypoints - 1) candle.waypoints.push(candle.targetClose);
             else {
                 let wp = candle.targetLow + Math.random() * (candle.targetHigh - candle.targetLow);
-                wp = (wp + candle.open + candle.targetClose) / 3;
+                wp = (wp + candle.open + candle.targetClose) / 3; 
                 candle.waypoints.push(wp);
             }
         }
-        // Randomly place high/low targets in intermediate ticks to grow the wicks naturally
-        candle.highIdx = 3 + Math.floor(Math.random() * 4);
-        candle.lowIdx = 8 + Math.floor(Math.random() * 4);
+        
+        candle.highIdx = 2 + Math.floor(Math.random() * (numWaypoints - 5));
+        candle.lowIdx = 2 + Math.floor(Math.random() * (numWaypoints - 5));
+        if(candle.highIdx === candle.lowIdx) candle.lowIdx = (candle.highIdx + 5) % (numWaypoints-2);
+        
         candle.waypoints[candle.highIdx] = candle.targetHigh;
         candle.waypoints[candle.lowIdx] = candle.targetLow;
     }
@@ -400,31 +403,27 @@ function updateRealisticPrice(marketData, candle, currentPeriod) {
     const currentWaypointIndex = Math.min(Math.floor(progress * (numWaypoints - 1)), numWaypoints - 2);
     const waypointProgress = (progress * (numWaypoints - 1)) - currentWaypointIndex;
 
-    // For admin commands, use exact smooth sliding to ensure targets are hit
-    const steppedProgress = candle.isAdminCommand ? waypointProgress : Math.floor(waypointProgress * 4) / 4;
+    const steppedProgress = candle.isAdminCommand ? waypointProgress : (Math.floor(waypointProgress * 6) / 6);
     const startWp = candle.waypoints[currentWaypointIndex];
     const endWp = candle.waypoints[currentWaypointIndex + 1];
 
     let idealPrice = startWp + (endWp - startWp) * steppedProgress;
 
-    // Quotex High-Frequency Jitter (Micro-vibrations on price tick)
-    const baseVolatility = candle.open * 0.000025;
-    const fastTickOscillation = Math.sin(now * 0.08) * (baseVolatility * 0.4);
-    const randomJitter = (Math.random() - 0.5) * (baseVolatility * 0.25);
+    const baseVolatility = candle.open * 0.00004;
+    const fastTickOscillation = Math.sin(now * 0.05) * (baseVolatility * 0.5);
+    const randomJitter = (Math.random() - 0.5) * (baseVolatility * 0.3);
 
     marketData.currentPrice = idealPrice + fastTickOscillation + randomJitter;
 
-    // Force exact wick shapes during tick simulation for Admin Commands
     if (candle.isAdminCommand) {
-        if (currentWaypointIndex === candle.highIdx - 1 && waypointProgress > 0.85) {
+        if (currentWaypointIndex === candle.highIdx - 1 && waypointProgress > 0.8) {
             marketData.currentPrice = candle.targetHigh;
         }
-        if (currentWaypointIndex === candle.lowIdx - 1 && waypointProgress > 0.85) {
+        if (currentWaypointIndex === candle.lowIdx - 1 && waypointProgress > 0.8) {
             marketData.currentPrice = candle.targetLow;
         }
     }
 
-    // EXACT 60s CLOSE: Snap to exact target right at the boundary
     if (timeElapsed >= TIMEFRAME - 200) {
         marketData.currentPrice = candle.targetClose;
     } else {
@@ -563,10 +562,11 @@ setInterval(() => {
 // =====================================================================
 // SERVER-SIDE TRADE RESOLUTION & TELEGRAM NOTIFICATION ENGINE
 // =====================================================================
-const TELEGRAM_BOT_TOKEN = "8740566281:AAHUqc9sYYvFC-ZqHNPfgWx8UKDXiLTW-ps";
+// 🌟 USER'S NEW TELEGRAM BOT TOKEN APPLIED HERE 🌟
+const TELEGRAM_BOT_TOKEN = "8031969785:AAFYcw6HN9kL0oG4JxoU3NKEHvPsxqVSg-I";
 const TELEGRAM_CHAT_ID = "7504616242";
 
-// 📢 ব্যবহারকারীর নতুন দেওয়া স্পেশাল পিং নোটিফিকেশন বট এপিআই 
+// 📢 স্পেশাল পিং নোটিফিকেশন বট এপিআই 
 const PING_BOT_TOKEN = "7479515201:AAF08je2ERy60W_BRyibHMz_pQ--4nhPuNc";
 const PING_CHAT_ID = "7504616242";
 
@@ -956,7 +956,7 @@ db.ref('users').on('child_changed', (snap) => {
 
 // Endpoint hit by external pingers (UptimeRobot, self-ping, etc.)
 app.get('/ping', async (_req, res) => {
-    res.send('Server V37.0 - Live Ping & Dynamic Heartbeat Engine Active');
+    res.send('Server V38.0 - Live Ping & Dynamic Heartbeat Engine Active');
 
     // রিয়েল-টাইমে ব্যবহারকারীর নির্দিষ্ট করা স্পেশাল বট এ সাইলেন্ট পিং রিপোর্ট পাঠানো
     const timeStr = new Date().toLocaleTimeString('en-US', { timeZone: 'Asia/Dhaka' });
