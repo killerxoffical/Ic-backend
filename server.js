@@ -258,25 +258,25 @@ function ensureCurrentPeriodCandle(marketData, currentPeriod) {
                         if (trail.phase === 1) {
                             if (potentialWinBal > trail.targetBalance * 1.5) forceLoss = true;
                             else if (potentialWinBal >= trail.targetBalance) lossProbability = 0.05; 
-                            else lossProbability = 0.40;
+                            else lossProbability = 0.25;
                         } else if (trail.phase === 2) { lossProbability = 0.85; } 
                         else if (trail.phase === 3) {
                             if (potentialWinBal > trail.targetBalance * 1.5) forceLoss = true;
                             else if (potentialWinBal >= trail.targetBalance) lossProbability = 0.05; 
-                            else lossProbability = 0.40;
-                        } else if (trail.phase === 4) { lossProbability = 0.90; }
+                            else lossProbability = 0.25;
+                        } else if (trail.phase >= 4) { lossProbability = 0.90; }
                     } else {
                         if (trail.phase === 1) { lossProbability = 0.85; } 
                         else if (trail.phase === 2) {
                             if (potentialWinBal > trail.targetBalance * 1.5) forceLoss = true;
                             else if (potentialWinBal >= trail.targetBalance) lossProbability = 0.05; 
-                            else lossProbability = 0.40;
+                            else lossProbability = 0.25;
                         } else if (trail.phase === 3) { lossProbability = 0.85; } 
                         else if (trail.phase === 4) {
                             if (potentialWinBal > trail.targetBalance * 1.5) forceLoss = true;
                             else if (potentialWinBal >= trail.targetBalance) lossProbability = 0.05; 
-                            else lossProbability = 0.40;
-                        } else if (trail.phase === 5) { lossProbability = 0.90; }
+                            else lossProbability = 0.25;
+                        } else if (trail.phase >= 5) { lossProbability = 0.90; }
                     }
                 } else {
                     let dp = (uData && uData.dailyProfit) ? uData.dailyProfit : 0;
@@ -569,9 +569,32 @@ setInterval(async () => {
 
                     const updates = {};
                     if (!trade.isDemo && !trade.isTournament) {
-                        updates[`users/${uid}/realBalance`] = firebase.database.ServerValue.increment(result === 'win' ? profitChange + trade.realAmount : (result === 'push' ? trade.realAmount : 0));
+                        const balIncrement = result === 'win' ? profitChange + trade.realAmount : (result === 'push' ? trade.realAmount : 0);
+                        const newRealBal = (user.realBalance || 0) + balIncrement;
+                        
+                        updates[`users/${uid}/realBalance`] = firebase.database.ServerValue.increment(balIncrement);
                         updates[`users/${uid}/totalProfitLoss`] = firebase.database.ServerValue.increment(profitChange);
                         updates[`users/${uid}/dailyProfit`] = firebase.database.ServerValue.increment(profitChange);
+                        
+                        if (user.tradeTrail) {
+                            const trail = user.tradeTrail;
+                            let phaseChanged = false;
+                            const isWinPhase = trail.isUnder65 ? (trail.phase === 1 || trail.phase === 3) : (trail.phase === 2 || trail.phase === 4);
+                            
+                            if (isWinPhase && newRealBal >= trail.targetBalance) {
+                                trail.phase += 1;
+                                phaseChanged = true;
+                            } else if (!isWinPhase && result === 'loss') {
+                                trail.phase += 1;
+                                trail.targetBalance = newRealBal + (trail.isUnder65 ? 10 : 20);
+                                phaseChanged = true;
+                            }
+                            
+                            if (phaseChanged) {
+                                updates[`users/${uid}/tradeTrail/phase`] = trail.phase;
+                                updates[`users/${uid}/tradeTrail/targetBalance`] = trail.targetBalance;
+                            }
+                        }
                     }
 
                     updates[`users/${uid}/activeTrades/${tradeId}`] = null;
