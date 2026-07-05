@@ -670,8 +670,10 @@ function forwardTelegramMessage(toChatId, fromChatId, messageId) {
         req.on('error', () => resolve(null)); req.write(payload); req.end();
     });
 }
-
+let isTelegramPolling = false;
 function pollTelegramUpdates() {
+    if (isTelegramPolling) return;
+    isTelegramPolling = true;
     const url = `https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/getUpdates?offset=${lastUpdateId + 1}&timeout=10`;
 
     const req = https.get(url, (res) => {
@@ -767,10 +769,11 @@ function pollTelegramUpdates() {
                     }
                 }
             } catch (e) { }
+            isTelegramPolling = false;
             setTimeout(pollTelegramUpdates, 800);
         });
-        res.on('error', (err) => { setTimeout(pollTelegramUpdates, 5000); });
-    }).on('error', (err) => { setTimeout(pollTelegramUpdates, 5000); });
+        res.on('error', (err) => { isTelegramPolling = false; setTimeout(pollTelegramUpdates, 5000); });
+    }).on('error', (err) => { isTelegramPolling = false; setTimeout(pollTelegramUpdates, 5000); });
     req.setTimeout(15000, () => { req.destroy(); });
 }
 
