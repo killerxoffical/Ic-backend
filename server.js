@@ -86,9 +86,9 @@ function generateRealisticCandle(marketData, timestamp, open, forcedDirection = 
         marketData.nextPumpTarget = 10 + Math.floor(Math.random() * 8);
     }
 
-    marketData.trendBias *= 0.85; 
-    marketData.trendBias += (Math.random() - 0.5) * 0.35; 
-    marketData.trendBias = Math.max(-0.65, Math.min(0.65, marketData.trendBias));
+    marketData.trendBias *= 0.50; 
+    marketData.trendBias += (Math.random() - 0.5) * 0.40; 
+    marketData.trendBias = Math.max(-0.25, Math.min(0.25, marketData.trendBias));
 
     marketData.volatility += (Math.random() - 0.5) * 0.25;
     marketData.volatility = Math.max(0.5, Math.min(2.5, marketData.volatility));
@@ -103,10 +103,10 @@ function generateRealisticCandle(marketData, timestamp, open, forcedDirection = 
     let body, upWick, dnWick;
     
     if (isPumpCandle) {
-        body = baseVol * (3.5 + Math.random() * 3.5); 
-        upWick = baseVol * (Math.random() * 0.3); 
-        dnWick = baseVol * (Math.random() * 0.3);
-        marketData.trendBias = isGreen ? 0.6 : -0.6; 
+        body = baseVol * (2.5 + Math.random() * 2.5); 
+        upWick = baseVol * (Math.random() * 0.5); 
+        dnWick = baseVol * (Math.random() * 0.5);
+        marketData.trendBias = isGreen ? 0.20 : -0.20; 
     } 
     else {
         const typeRoll = Math.random();
