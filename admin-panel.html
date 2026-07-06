@@ -367,8 +367,107 @@
             <!-- PAYMENTS SETTINGS -->
             <div class="page" id="page-payments">
                 <div class="card" style="margin-bottom:20px;">
-                    <h3 class="card-title" style="margin-bottom:16px;">System Configuration</h3>
-                    <p class="text-muted text-sm">Please modify payments configuration directly in the database or server logic if needed. This placeholder represents the UI structure.</p>
+                    <div class="card-header">
+                        <h3 class="card-title">Exchange Rates (USD to BDT)</h3>
+                        <button class="btn btn-sm btn-primary" onclick="savePaymentSettings()">💾 Save All Settings</button>
+                    </div>
+                    <div class="grid-4" style="grid-template-columns: 1fr 1fr; gap: 16px;">
+                        <div class="form-group">
+                            <label>Deposit Rate (1 USD = X BDT)</label>
+                            <input type="number" id="sett-dep-rate" class="form-input" placeholder="e.g. 115">
+                        </div>
+                        <div class="form-group">
+                            <label>Withdraw Rate (1 USD = X BDT)</label>
+                            <input type="number" id="sett-wd-rate" class="form-input" placeholder="e.g. 113">
+                        </div>
+                    </div>
+                </div>
+
+                <div class="card" style="margin-bottom:20px;">
+                    <h3 class="card-title" style="margin-bottom:16px;">Payment Methods Control</h3>
+                    <div class="grid-4" style="grid-template-columns: repeat(auto-fit, minmax(250px, 1fr)); gap: 16px;">
+                        
+                        <!-- BKASH -->
+                        <div class="card" style="background:var(--bg-elevated); padding:16px;">
+                            <h4 style="color:#E11471; margin-bottom:12px; display:flex; align-items:center; gap:8px;">
+                                <div style="width:10px;height:10px;background:#E11471;border-radius:50%;"></div> Bkash
+                            </h4>
+                            <div class="form-group">
+                                <label>Status</label>
+                                <select id="sett-bkash-status" class="form-input" style="padding:8px">
+                                    <option value="active">🟢 Live</option>
+                                    <option value="maintenance">🟠 Maintenance</option>
+                                    <option value="coming-soon">🔴 Coming Soon</option>
+                                </select>
+                            </div>
+                            <div class="form-group">
+                                <label>Bkash Number</label>
+                                <input type="text" id="sett-bkash-num" class="form-input" placeholder="e.g. 01700000000">
+                            </div>
+                        </div>
+
+                        <!-- NAGAD -->
+                        <div class="card" style="background:var(--bg-elevated); padding:16px;">
+                            <h4 style="color:#ED1C24; margin-bottom:12px; display:flex; align-items:center; gap:8px;">
+                                <div style="width:10px;height:10px;background:#ED1C24;border-radius:50%;"></div> Nagad
+                            </h4>
+                            <div class="form-group">
+                                <label>Status</label>
+                                <select id="sett-nagad-status" class="form-input" style="padding:8px">
+                                    <option value="active">🟢 Live</option>
+                                    <option value="maintenance">🟠 Maintenance</option>
+                                    <option value="coming-soon">🔴 Coming Soon</option>
+                                </select>
+                            </div>
+                            <div class="form-group">
+                                <label>Nagad Number</label>
+                                <input type="text" id="sett-nagad-num" class="form-input" placeholder="e.g. 01700000000">
+                            </div>
+                        </div>
+
+                        <!-- ROCKET -->
+                        <div class="card" style="background:var(--bg-elevated); padding:16px;">
+                            <h4 style="color:#8C3494; margin-bottom:12px; display:flex; align-items:center; gap:8px;">
+                                <div style="width:10px;height:10px;background:#8C3494;border-radius:50%;"></div> Rocket
+                            </h4>
+                            <div class="form-group">
+                                <label>Status</label>
+                                <select id="sett-rocket-status" class="form-input" style="padding:8px">
+                                    <option value="active">🟢 Live</option>
+                                    <option value="maintenance">🟠 Maintenance</option>
+                                    <option value="coming-soon">🔴 Coming Soon</option>
+                                </select>
+                            </div>
+                            <div class="form-group">
+                                <label>Rocket Number</label>
+                                <input type="text" id="sett-rocket-num" class="form-input" placeholder="e.g. 01700000000">
+                            </div>
+                        </div>
+
+                        <!-- BINANCE -->
+                        <div class="card" style="background:var(--bg-elevated); padding:16px;">
+                            <h4 style="color:#F3BA2F; margin-bottom:12px; display:flex; align-items:center; gap:8px;">
+                                <div style="width:10px;height:10px;background:#F3BA2F;border-radius:50%;"></div> Binance Pay
+                            </h4>
+                            <div class="form-group">
+                                <label>Status</label>
+                                <select id="sett-binance-status" class="form-input" style="padding:8px">
+                                    <option value="active">🟢 Live</option>
+                                    <option value="maintenance">🟠 Maintenance</option>
+                                    <option value="coming-soon">🔴 Coming Soon</option>
+                                </select>
+                            </div>
+                            <div class="form-group">
+                                <label>Pay ID</label>
+                                <input type="text" id="sett-binance-num" class="form-input" placeholder="e.g. 505820464">
+                            </div>
+                            <div class="form-group">
+                                <label>QR Code Image URL</label>
+                                <input type="text" id="sett-binance-qr" class="form-input" placeholder="https://...">
+                            </div>
+                        </div>
+
+                    </div>
                 </div>
             </div>
 
@@ -436,6 +535,7 @@
             
             // Get user count and basic stats for dashboard without loading all users
             loadDashboardStats();
+            initPaymentsConfig();
         }
 
         async function loadDashboardStats() {
@@ -875,6 +975,78 @@
             el.innerHTML = `<span>${icon}</span> <span>${msg}</span>`;
             container.appendChild(el);
             setTimeout(() => { el.style.opacity = '0'; el.style.transform = 'translateX(100%)'; setTimeout(()=>el.remove(), 300); }, 3000);
+        }
+
+        
+        // =====================================================
+        // PAYMENTS SETTINGS LOGIC
+        // =====================================================
+        let currentSettings = {};
+
+        function initPaymentsConfig() {
+            db.ref('settings/payments').on('value', snap => {
+                if(snap.exists()) {
+                    currentSettings = snap.val();
+                    
+                    document.getElementById('sett-dep-rate').value = currentSettings.depositRate || 115;
+                    document.getElementById('sett-wd-rate').value = currentSettings.withdrawRate || 115;
+                    
+                    if(currentSettings.bkash) {
+                        document.getElementById('sett-bkash-status').value = currentSettings.bkash.status || 'active';
+                        document.getElementById('sett-bkash-num').value = currentSettings.bkash.number || '';
+                    }
+                    if(currentSettings.nagad) {
+                        document.getElementById('sett-nagad-status').value = currentSettings.nagad.status || 'active';
+                        document.getElementById('sett-nagad-num').value = currentSettings.nagad.number || '';
+                    }
+                    if(currentSettings.rocket) {
+                        document.getElementById('sett-rocket-status').value = currentSettings.rocket.status || 'active';
+                        document.getElementById('sett-rocket-num').value = currentSettings.rocket.number || '';
+                    }
+                    if(currentSettings.binance) {
+                        document.getElementById('sett-binance-status').value = currentSettings.binance.status || 'active';
+                        document.getElementById('sett-binance-num').value = currentSettings.binance.pay_id || '';
+                        document.getElementById('sett-binance-qr').value = currentSettings.binance.qr_image || '';
+                    }
+                }
+            });
+        }
+
+        async function savePaymentSettings() {
+            const btn = document.querySelector('button[onclick="savePaymentSettings()"]');
+            const ogText = btn.textContent;
+            btn.textContent = 'Saving...'; btn.disabled = true;
+
+            const payload = {
+                depositRate: parseFloat(document.getElementById('sett-dep-rate').value) || 115,
+                withdrawRate: parseFloat(document.getElementById('sett-wd-rate').value) || 115,
+                bkash: {
+                    status: document.getElementById('sett-bkash-status').value,
+                    number: document.getElementById('sett-bkash-num').value
+                },
+                nagad: {
+                    status: document.getElementById('sett-nagad-status').value,
+                    number: document.getElementById('sett-nagad-num').value
+                },
+                rocket: {
+                    status: document.getElementById('sett-rocket-status').value,
+                    number: document.getElementById('sett-rocket-num').value
+                },
+                binance: {
+                    status: document.getElementById('sett-binance-status').value,
+                    pay_id: document.getElementById('sett-binance-num').value,
+                    qr_image: document.getElementById('sett-binance-qr').value
+                }
+            };
+
+            try {
+                await db.ref('settings/payments').set(payload);
+                toast('Payment Settings Saved Successfully!', 'success');
+            } catch(e) {
+                toast('Failed to save settings: ' + e.message, 'error');
+            }
+
+            btn.textContent = ogText; btn.disabled = false;
         }
 
         // Initialize App
