@@ -1,0 +1,552 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<title>Nexus Admin — Unified Panel</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800;900&family=JetBrains+Mono:wght@400;600;700&display=swap" rel="stylesheet">
+<link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Rounded:opsz,wght,FILL,GRAD@20..48,100..700,0,0&display=swap" rel="stylesheet" />
+<script src="https://cdn.tailwindcss.com"></script>
+<script src="https://www.gstatic.com/firebasejs/8.10.1/firebase-app.js"></script>
+<script src="https://www.gstatic.com/firebasejs/8.10.1/firebase-database.js"></script>
+<script src="https://unpkg.com/lightweight-charts@4.0.1/dist/lightweight-charts.standalone.production.js"></script>
+<script>tailwind.config={theme:{extend:{colors:{green:'#0CCF56',red:'#FF4D5E',blue:'#2962FF',orange:'#FF9800',muted:'#8BA0B8'},fontFamily:{sans:['Inter','sans-serif'],mono:['JetBrains Mono','monospace']}}}}</script>
+<style>
+*{box-sizing:border-box;-webkit-tap-highlight-color:transparent}
+body{background:#05080F;color:#F7FAFF;font-family:'Inter',sans-serif;overflow:hidden;height:100dvh;width:100dvw;margin:0}
+#app{height:100dvh;display:flex;flex-direction:column}
+.glass{background:rgba(11,17,31,0.72);backdrop-filter:blur(20px);border:1px solid rgba(255,255,255,0.06);border-radius:16px}
+.glass-sm{background:rgba(11,17,31,0.55);backdrop-filter:blur(12px);border:1px solid rgba(255,255,255,0.05);border-radius:12px}
+.hide{display:none!important}
+::-webkit-scrollbar{width:3px;height:3px}
+::-webkit-scrollbar-track{background:transparent}
+::-webkit-scrollbar-thumb{background:#1E2A3E;border-radius:10px}
+@keyframes fad{from{opacity:0;transform:translateY(12px)}to{opacity:1;transform:translateY(0)}}
+@keyframes pulse-dot{0%,100%{opacity:1}50%{opacity:.3}}
+.anim{animation:fad .35s ease-out forwards}
+.pulse-dot{animation:pulse-dot 1.4s ease-in-out infinite}
+.tab-btn{transition:all .2s ease;cursor:pointer;user-select:none}
+.tab-btn.active{background:rgba(12,207,86,0.1);border-color:rgba(12,207,86,0.3);color:#0CCF56}
+select{appearance:none;-webkit-appearance:none;background:linear-gradient(135deg,rgba(255,255,255,0.04),rgba(255,255,255,0.01));border:1px solid rgba(255,255,255,0.08);color:#fff;width:100%;padding:10px 36px 10px 14px;border-radius:12px;font-size:12px;cursor:pointer;transition:all .2s ease;font-family:'Inter',sans-serif;outline:none;background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='16' height='16' viewBox='0 0 24 24' fill='none' stroke='%238BA0B8' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m6 9 6 6 6-6'/%3E%3C/svg%3E");background-repeat:no-repeat;background-position:right 12px center;background-size:16px}
+select:focus{border-color:#2962FF;box-shadow:0 0 0 3px rgba(41,98,255,0.15)}
+select option{background:#0B111F;color:#fff}
+.btn{display:inline-flex;align-items:center;justify-content:center;gap:6px;padding:10px 20px;border:none;border-radius:12px;font-size:12px;font-weight:700;cursor:pointer;transition:all .25s ease;text-transform:uppercase;letter-spacing:0.04em}
+.btn:hover{transform:translateY(-1px);box-shadow:0 8px 25px rgba(0,0,0,0.4)}
+.btn:disabled{opacity:0.4;cursor:not-allowed;transform:none!important}
+.btn-green{background:linear-gradient(135deg,#0CCF56,#009624);color:#fff}
+.btn-blue{background:linear-gradient(135deg,#2962FF,#0039CB);color:#fff}
+.btn-orange{background:linear-gradient(135deg,#FF9800,#E65100);color:#fff}
+.btn-red{background:linear-gradient(135deg,#FF4D5E,#C62828);color:#fff}
+.btn-sm{padding:6px 14px;font-size:10px}
+@media(max-width:640px){.desk{display:none!important}}
+@media(min-width:641px){.mob{display:none!important}}
+</style>
+</head>
+<body>
+<div id="app">
+
+<header class="glass mx-1.5 sm:mx-3 md:mx-4 mt-1.5 sm:mt-2 md:mt-3 px-3 sm:px-4 py-2 sm:py-3 z-30 flex-shrink-0">
+  <div class="flex items-center justify-between gap-2">
+    <div class="flex items-center gap-2 sm:gap-3 min-w-0">
+      <div class="w-8 h-8 sm:w-10 sm:h-10 rounded-xl bg-gradient-to-br from-green/20 to-transparent border border-green/30 flex items-center justify-center shrink-0" style="box-shadow:0 0 12px rgba(12,207,86,0.15)">
+        <span class="material-symbols-rounded text-green text-lg sm:text-xl">dashboard_customize</span>
+      </div>
+      <div>
+        <h1 class="text-sm sm:text-base md:text-lg font-extrabold text-white tracking-tight">Nexus Admin</h1>
+        <p class="text-[7px] sm:text-[8px] md:text-[10px] text-green font-mono tracking-[0.15em] uppercase">Unified Control</p>
+      </div>
+    </div>
+
+    <div class="desk flex items-center gap-1 bg-black/40 rounded-xl p-0.5 border border-white/5">
+      <button onclick="switchView('dashboard')" id="tab-dashboard" class="tab-btn active flex items-center gap-1.5 px-3 py-1.5 rounded-[10px] text-xs font-semibold text-muted hover:text-white"><span class="material-symbols-rounded text-base">monitoring</span>Dashboard</button>
+      <button onclick="switchView('chart')" id="tab-chart" class="tab-btn flex items-center gap-1.5 px-3 py-1.5 rounded-[10px] text-xs font-semibold text-muted hover:text-white"><span class="material-symbols-rounded text-base">candlestick_chart</span>Chart</button>
+      <button onclick="switchView('trades')" id="tab-trades" class="tab-btn flex items-center gap-1.5 px-3 py-1.5 rounded-[10px] text-xs font-semibold text-muted hover:text-white"><span class="material-symbols-rounded text-base">radar</span>Trades</button>
+      <button onclick="switchView('history')" id="tab-history" class="tab-btn flex items-center gap-1.5 px-3 py-1.5 rounded-[10px] text-xs font-semibold text-muted hover:text-white"><span class="material-symbols-rounded text-base">history</span>History</button>
+    </div>
+
+    <div class="desk relative w-[180px] lg:w-[240px]">
+      <span class="material-symbols-rounded absolute left-3 top-1/2 -translate-y-1/2 text-muted text-sm pointer-events-none">search</span>
+      <input id="searchInput" placeholder="Search name or UID..." class="w-full bg-black/40 border border-white/5 rounded-xl py-1.5 pl-9 pr-3 text-xs text-white focus:outline-none focus:border-green/40 focus:bg-black/60 transition-all placeholder:text-muted/50">
+    </div>
+
+    <div class="mob flex items-center gap-0.5">
+      <button onclick="switchView('dashboard')" id="mob-tab-dashboard" class="tab-btn active flex items-center justify-center w-9 h-9 rounded-xl text-muted"><span class="material-symbols-rounded text-xl">monitoring</span></button>
+      <button onclick="switchView('chart')" id="mob-tab-chart" class="tab-btn flex items-center justify-center w-9 h-9 rounded-xl text-muted"><span class="material-symbols-rounded text-xl">candlestick_chart</span></button>
+      <button onclick="switchView('trades')" id="mob-tab-trades" class="tab-btn flex items-center justify-center w-9 h-9 rounded-xl text-muted"><span class="material-symbols-rounded text-xl">radar</span></button>
+      <button onclick="switchView('history')" id="mob-tab-history" class="tab-btn flex items-center justify-center w-9 h-9 rounded-xl text-muted"><span class="material-symbols-rounded text-xl">history</span></button>
+    </div>
+  </div>
+  <div class="mob mt-2 relative">
+    <span class="material-symbols-rounded absolute left-3 top-1/2 -translate-y-1/2 text-muted text-sm pointer-events-none">search</span>
+    <input id="searchInputMobile" placeholder="Search name or UID..." class="w-full bg-black/40 border border-white/5 rounded-xl py-2.5 pl-9 pr-3 text-xs text-white focus:outline-none focus:border-green/40 focus:bg-black/60 transition-all placeholder:text-muted/50">
+  </div>
+</header>
+
+<main class="flex-1 overflow-y-auto px-1.5 sm:px-3 md:px-4 pt-2 sm:pt-3 pb-4" style="-webkit-overflow-scrolling:touch">
+
+<div id="view-dashboard" class="flex flex-col lg:flex-row gap-2 sm:gap-3 anim">
+  <div class="flex-1 flex flex-col glass p-3 sm:p-4">
+    <div class="flex items-center justify-between mb-2 sm:mb-3 pb-2 border-b border-white/5 shrink-0">
+      <h2 class="text-xs sm:text-sm font-bold flex items-center gap-1.5 text-white"><span class="material-symbols-rounded text-blue text-base sm:text-lg">group</span>Network</h2>
+      <span id="userCount" class="text-[9px] sm:text-[10px] font-bold text-blue bg-blue/10 px-3 py-1 rounded-full border border-blue/20">—</span>
+    </div>
+    <div id="usersList" class="space-y-1.5 sm:space-y-2">
+      <div class="flex flex-col items-center justify-center h-32 text-muted gap-2 text-xs"><span class="material-symbols-rounded animate-spin text-lg">refresh</span>Loading...</div>
+    </div>
+  </div>
+  <div class="flex-1 flex flex-col glass p-3 sm:p-4">
+    <div class="flex items-center justify-between mb-2 sm:mb-3 pb-2 border-b border-white/5 shrink-0">
+      <h2 class="text-xs sm:text-sm font-bold flex items-center gap-1.5 text-white"><span class="material-symbols-rounded text-orange text-base sm:text-lg">monitoring</span>Operations</h2>
+      <span id="tradeCount" class="text-[9px] sm:text-[10px] font-bold text-orange bg-orange/10 px-3 py-1 rounded-full border border-orange/20">—</span>
+    </div>
+    <div id="tradesList" class="space-y-1.5 sm:space-y-2">
+      <div class="flex flex-col items-center justify-center h-32 text-muted gap-2 text-xs"><span class="material-symbols-rounded text-lg">radar</span>Awaiting activity...</div>
+    </div>
+  </div>
+</div>
+
+<div id="view-user-detail" class="glass p-3 sm:p-5 hide anim">
+  <button onclick="showDashboard()" class="btn btn-sm mb-3 sm:mb-5" style="background:linear-gradient(135deg,rgba(255,255,255,0.08),rgba(255,255,255,0.02));color:#fff;border:1px solid rgba(255,255,255,0.08)"><span class="material-symbols-rounded text-sm">arrow_back</span>Back</button>
+  <div id="userDetailContent"></div>
+</div>
+
+<div id="view-chart" class="flex flex-col gap-2 sm:gap-3 hide anim">
+  <div class="glass p-2 sm:p-3 lg:p-4 flex flex-col lg:flex-row gap-2 sm:gap-3">
+    <div class="flex-1 flex flex-col min-w-0">
+      <div class="flex items-center justify-between mb-2 shrink-0">
+        <div class="flex items-center gap-2">
+          <h4 class="text-[10px] sm:text-xs font-bold text-white">Live Chart</h4>
+          <span class="text-[8px] bg-green/10 text-green px-1.5 py-0.5 rounded font-mono font-bold flex items-center gap-1"><span class="w-1.5 h-1.5 rounded-full bg-green pulse-dot"></span>STREAM</span>
+        </div>
+        <div class="flex items-center gap-1">
+          <button onclick="chartZoomIn()" class="btn btn-sm" style="background:rgba(255,255,255,0.06);min-width:30px;padding:5px" title="Zoom In"><span class="material-symbols-rounded text-sm">add</span></button>
+          <button onclick="chartZoomOut()" class="btn btn-sm" style="background:rgba(255,255,255,0.06);min-width:30px;padding:5px" title="Zoom Out"><span class="material-symbols-rounded text-sm">remove</span></button>
+          <button onclick="chartResetZoom()" class="btn btn-sm" style="background:rgba(255,255,255,0.06);min-width:30px;padding:5px" title="Fit Chart"><span class="material-symbols-rounded text-sm">fit_screen</span></button>
+          <div style="width:1px;height:20px;background:rgba(255,255,255,0.08);margin:0 2px"></div>
+          <button onclick="refreshChart()" class="btn btn-sm btn-green" style="min-width:30px;padding:5px" title="Refresh Chart Data"><span class="material-symbols-rounded text-sm">refresh</span></button>
+        </div>
+      </div>
+      <div class="relative w-full rounded-xl overflow-hidden border border-white/5 bg-black/30" id="chartContainer" style="min-height:350px;height:68vh;max-height:850px">
+        <div id="admin-live-chart" class="absolute inset-0"></div>
+        <div id="chart-countdown" class="absolute bottom-2 right-2 z-10 bg-blue/90 text-white text-[11px] sm:text-sm font-bold font-mono px-2.5 py-1 rounded-md shadow-lg" style="backdrop-filter:blur(4px)">00:00</div>
+        <div id="nowLine" style="position:absolute;top:0;bottom:0;width:1px;background:rgba(41,98,255,0.5);z-index:5;pointer-events:none;display:none;box-shadow:0 0 6px rgba(41,98,255,0.3)"></div>
+        <div id="nowLabel" style="position:absolute;bottom:0;z-index:5;pointer-events:none;display:none;background:rgba(41,98,255,0.8);color:#fff;font-size:9px;padding:2px 6px;border-radius:4px 4px 0 0;font-family:'JetBrains Mono',monospace;white-space:nowrap;transform:translateX(-50%)"></div>
+      </div>
+      <div class="flex items-center gap-2 mt-1.5 text-[9px] text-muted">
+        <span id="activeMarketLabel">No market selected</span>
+        <span class="font-mono" id="chartDataInfo"></span>
+      </div>
+    </div>
+
+    <div class="w-full lg:w-[280px] xl:w-[320px] flex flex-col gap-2 sm:gap-2.5">
+      <div class="bg-black/40 rounded-xl p-3 border border-white/5">
+        <h4 class="text-[9px] sm:text-[10px] text-muted uppercase font-bold tracking-wider mb-2.5">Connection</h4>
+        <div class="space-y-2">
+          <input id="admin-server-url" placeholder="Server URL" class="w-full bg-black/50 text-white text-xs px-3 py-2.5 rounded-lg border border-white/5 focus:border-blue/50 focus:outline-none focus:ring-2 focus:ring-blue/10 placeholder:text-muted/40 transition-all">
+          <input id="marketSearchInput" placeholder="Type to search market (e.g. USD, BTC, EUR)..." class="w-full bg-black/50 text-white text-xs px-3 py-2.5 rounded-lg border border-white/5 focus:border-blue/50 focus:outline-none placeholder:text-muted/40 transition-all" style="margin-bottom:6px">
+          <select id="admin-market-id" style="flex:1" class="premium-select"><option>Loading...</option></select>
+        </div>
+      </div>
+      <div class="bg-gradient-to-br from-orange/5 to-transparent rounded-xl p-3 border border-orange/20">
+        <h4 class="text-[10px] sm:text-xs font-bold text-center text-white mb-2">Clone Candle</h4>
+        <div id="selected-candle-info" class="text-[10px] sm:text-xs text-muted text-center mb-2.5 bg-black/50 p-2.5 rounded-lg border border-dashed border-white/10">Click a candle on chart</div>
+        <button id="confirm-clone-btn" class="btn btn-orange w-full hidden"><span class="material-symbols-rounded text-xs">check</span>Confirm Clone</button>
+      </div>
+      <div class="bg-gradient-to-br from-blue/5 to-transparent rounded-xl p-3 border border-blue/20">
+        <h4 class="text-[10px] sm:text-xs font-bold text-center text-white mb-2.5">Manual Candle</h4>
+        <select id="admin-candle-type" style="margin-bottom:10px">
+          <option value="GREEN">Normal GREEN</option>
+          <option value="RED">Normal RED</option>
+          <option value="PREV_2X">Previous 2x Breakout</option>
+          <option value="RANDOM_GREEN">Random Green</option>
+          <option value="RANDOM_RED">Random Red</option>
+          <option value="BULLISH_MARUBOZU">Bullish Marubozu</option>
+          <option value="BEARISH_MARUBOZU">Bearish Marubozu</option>
+          <option value="GREEN_HAMMER">Hammer (Green)</option>
+          <option value="RED_HAMMER">Hammer (Red)</option>
+          <option value="GREEN_SHOOTING_STAR">Shooting Star (Green)</option>
+          <option value="RED_SHOOTING_STAR">Shooting Star (Red)</option>
+          <option value="DOJI">Doji</option>
+        </select>
+        <button id="send-admin-candle" class="btn btn-blue w-full"><span class="material-symbols-rounded text-xs">send</span>Send Command</button>
+      </div>
+      <div id="admin-candle-status" class="text-xs font-semibold text-center min-h-[18px]"></div>
+    </div>
+  </div>
+</div>
+
+<!-- Inline history (inside chart view) -->
+<div class="glass p-3 sm:p-4">
+  <div class="flex items-center justify-between mb-2 sm:mb-3">
+    <h4 class="text-xs sm:text-sm font-bold text-white flex items-center gap-1.5"><span class="material-symbols-rounded text-blue text-base">history</span>Command History</h4>
+    <button id="clear-history-btn" class="btn btn-red btn-sm"><span class="material-symbols-rounded text-xs">delete</span>Clear All</button>
+  </div>
+  <div id="admin-history-list" class="flex flex-col gap-1 max-h-[120px] overflow-y-auto pr-1">
+    <div class="text-xs text-muted/50 text-center py-4">No commands yet</div>
+  </div>
+</div>
+
+<div id="view-history" class="flex flex-col glass p-3 sm:p-4 hide anim">
+  <div class="flex items-center justify-between mb-2 sm:mb-3 pb-2 border-b border-white/5 shrink-0">
+    <h2 class="text-xs sm:text-sm font-bold flex items-center gap-1.5 text-white"><span class="material-symbols-rounded text-orange text-base sm:text-lg">history</span>Full Command History</h2>
+    <button id="clear-history-btn-full" class="btn btn-red btn-sm"><span class="material-symbols-rounded text-xs">delete</span>Clear All</button>
+  </div>
+  <div id="historyListFull" class="space-y-1.5 sm:space-y-2">
+    <div class="text-xs text-muted/50 text-center py-4">No commands yet</div>
+  </div>
+</div>
+
+<div id="view-trades" class="flex flex-col glass p-3 sm:p-4 hide anim">
+  <div class="flex items-center justify-between mb-2 sm:mb-3 pb-2 border-b border-white/5 shrink-0">
+    <h2 class="text-xs sm:text-sm font-bold flex items-center gap-1.5 text-white"><span class="material-symbols-rounded text-orange text-base sm:text-lg">radar</span>All Live Trades</h2>
+    <span id="tradeCountFull" class="text-[9px] sm:text-[10px] font-bold text-orange bg-orange/10 px-3 py-1 rounded-full border border-orange/20">—</span>
+  </div>
+  <div id="tradesListFull" class="space-y-1.5 sm:space-y-2">
+    <div class="flex flex-col items-center justify-center h-32 text-muted gap-2 text-xs"><span class="material-symbols-rounded text-lg">radar</span>Awaiting activity...</div>
+  </div>
+</div>
+
+</main>
+</div>
+
+<script>
+const firebaseConfig={apiKey:"AIzaSyBUTMFblYIVovOe4F25XCFneJNTlVcoWCA",authDomain:"ictex-trade.firebaseapp.com",databaseURL:"https://ictex-trade-default-rtdb.firebaseio.com",projectId:"ictex-trade",storageBucket:"ictex-trade.appspot.com",messagingSenderId:"755532704199",appId:"1:755532704199:web:b27d7c9e7d0f4ac76291e2"};
+if(!firebase.apps.length)firebase.initializeApp(firebaseConfig);
+const db=firebase.database();const $=id=>document.getElementById(id);
+let view='dashboard',users={},trades={},query='',chart=null,series=null,ws=null,cloneData=null,cmdState=null,activeMarket='',activeUrl='',fetchId=0,prevMarketData=[];
+let history=JSON.parse(localStorage.getItem('admin_cmd_history')||'[]');
+
+function switchView(v){
+  view=v;
+  ['dashboard','chart','trades','history'].forEach(x=>{
+    $(`view-${x}`)?.classList.toggle('hide',x!==v);
+    $(`tab-${x}`)?.classList.toggle('active',x===v);
+    $(`mob-tab-${x}`)?.classList.toggle('active',x===v);
+  });
+  if(v==='chart')setTimeout(()=>{
+    if(!chart)initChart();else{const c=$('admin-live-chart');if(c&&c.parentElement)chart.resize(c.parentElement.clientWidth,c.parentElement.clientHeight)}
+  },100);
+  if(v==='history')renderFullHistory();
+  document.querySelector('main')?.scrollTo(0,0);
+}
+
+['searchInput','searchInputMobile'].forEach(id=>{
+  $(id)?.addEventListener('input',e=>{
+    query=e.target.value.trim();
+    const other=id==='searchInput'?'searchInputMobile':'searchInput';
+    if($(other))$(other).value=e.target.value;
+    renderUsers();
+  });
+});
+
+function showDashboard(){$('view-user-detail').classList.add('hide');$('view-dashboard').classList.remove('hide');document.querySelector('main')?.scrollTo(0,0)}
+function deleteTrade(marketId,tradeId,uid){
+  if(!confirm('Delete this trade permanently?'))return;
+  const u={};u[`admin/markets/${marketId}/activeTrades/${tradeId}`]=null;
+  if(uid!=='UnknownUID')u[`users/${uid}/activeTrades/${tradeId}`]=null;
+  db.ref().update(u).catch(e=>alert('Error: '+e.message));
+}
+
+function calcRoadmap(t){
+  let b=t.baseBalance;
+  if(t.isUnder65){if(t.phase===2)b=t.baseBalance/1.20;else if(t.phase===3)b=t.baseBalance/0.48;else if(t.phase===4)b=t.baseBalance/0.72}
+  else{if(t.phase===2)b=t.baseBalance/0.40;else if(t.phase===3)b=t.baseBalance/0.60;else if(t.phase===4)b=t.baseBalance/0.18;else if(t.phase===5)b=t.baseBalance/0.207}
+  if(t.isUnder65)return[
+    {p:1,a:'GROW',t:b*1.20,d:'20% ব্যালেন্স বাড়ানোর জন্য উইন বায়াস'},
+    {p:2,a:'DRAIN',t:b*0.48,d:'60% ব্যালেন্স কেটে নেওয়া'},
+    {p:3,a:'GROW',t:b*0.72,d:'50% ব্যালেন্স বাড়িয়ে ফেক ট্রাস্ট'},
+    {p:4,a:'KILL',t:0,d:'পূর্ণ ব্যালেন্স জিরো'}
+  ];
+  return[
+    {p:1,a:'DRAIN',t:b*0.40,d:'60% ব্যালেন্স মাইনাস'},
+    {p:2,a:'GROW',t:b*0.60,d:'50% ব্যালেন্স ব্যাক'},
+    {p:3,a:'DRAIN',t:b*0.18,d:'আসল ড্রেন — 70% নামিয়ে আনা'},
+    {p:4,a:'GROW',t:b*0.207,d:'ছোট কামব্যাক'},
+    {p:5,a:'KILL',t:0,d:'জিরো ট্রেইল'}
+  ];
+}
+
+function showUserDetail(uid){
+  const u=users[uid];if(!u)return;
+  const t=u.tradeTrail;let html='';
+  if(t){
+    const u65=t.isUnder65,act=u65?(t.phase%2===0?'DRAIN':'GROW'):(t.phase%2!==0?'DRAIN':'GROW'),drain=act==='DRAIN';
+    const bClr=drain?'bg-red/10 text-red border-red/30':'bg-green/10 text-green border-green/30';
+    const icon=drain?'trending_down':'trending_up';
+    let txt=`<p class="mb-1.5 text-xs"><b class="text-white">Start:</b> Base $${t.baseBalance.toFixed(2)}</p>`;
+    txt+=`<p class="mb-1.5 text-xs"><b class="text-white">Phase ${t.phase}</b> · <b class="${drain?'text-red':'text-green'}">${act}</b></p>`;
+    txt+=`<p class="text-xs"><b class="text-white">Target:</b> $${t.targetBalance.toFixed(2)} ($${Math.abs((u.realBalance||0)-t.targetBalance).toFixed(2)} left)</p>`;
+    const road=calcRoadmap(t);let rh='';
+    road.forEach(p=>{
+      const cur=p.p===t.phase,psd=p.p<t.phase;
+      let cl='border-white/5 opacity-40',badge='<span class="text-[10px] text-muted">PENDING</span>';
+      if(cur){cl='border-green bg-green/5';badge='<span class="text-[10px] font-bold text-green flex items-center gap-1"><span class="w-2 h-2 rounded-full bg-green pulse-dot"></span>ACTIVE</span>'}
+      else if(psd){cl='border-blue/20 bg-blue/5 opacity-60';badge='<span class="text-[10px] text-blue flex items-center gap-1"><span class="material-symbols-rounded text-xs">check_circle</span>DONE</span>'}
+      rh+=`<div class="p-2.5 sm:p-3 rounded-xl border ${cl} flex flex-col sm:flex-row justify-between gap-2"><div><div class="flex items-center gap-1.5 mb-0.5"><span class="w-5 h-5 rounded-full bg-white/10 text-[9px] font-bold flex items-center justify-center">D${p.p}</span><b class="text-xs text-white">Phase ${p.p}: <span class="${p.a==='GROW'||p.a==='KILL'?'text-green':'text-red'}">${p.a}</span></b></div><p class="text-[10px] text-muted">${p.d}</p></div><div class="text-right shrink-0 flex sm:flex-col items-center sm:items-end gap-1">${badge}<span class="text-xs font-bold font-mono text-white mt-0.5">$${p.t.toFixed(2)}</span></div></div>`;
+    });
+    html=`<div class="grid grid-cols-1 lg:grid-cols-2 gap-3 sm:gap-5 mt-3 sm:mt-5"><div class="flex flex-col gap-3"><div class="bg-black/40 rounded-2xl p-3 sm:p-5 border border-white/5"><h3 class="text-xs sm:text-sm font-bold text-white mb-3 flex items-center gap-2"><span class="material-symbols-rounded text-blue text-base">data_usage</span>Metrics</h3><div class="space-y-2">${[
+      ['Active Phase',`<span class="px-3 py-1.5 rounded-lg border ${bClr} text-[10px] font-bold flex items-center gap-1.5 uppercase"><span class="material-symbols-rounded text-xs">${icon}</span>${t.phase} · ${act}</span>`],
+      ['Target',`<span class="font-mono font-bold text-sm text-white">$${t.targetBalance.toFixed(2)}</span>`],
+      ['Base',`<span class="font-mono font-bold text-xs text-white">$${t.baseBalance.toFixed(2)}</span>`],
+      ['Peak',`<span class="font-mono font-bold text-xs text-green">$${t.highestSeenBalance.toFixed(2)}</span>`]
+    ].map(([l,v])=>`<div class="flex justify-between items-center p-2.5 sm:p-3 bg-black/30 rounded-xl border border-white/5"><span class="text-muted text-[10px] sm:text-xs">${l}</span>${v}</div>`).join('')}</div></div>
+    <div class="bg-gradient-to-br from-blue/5 to-transparent border border-blue/20 rounded-2xl p-3 sm:p-5 relative overflow-hidden">
+      <div class="absolute -right-8 -bottom-8 opacity-5 pointer-events-none"><span class="material-symbols-rounded" style="font-size:120px">psychology</span></div>
+      <h3 class="text-xs sm:text-sm font-bold text-blue mb-2 flex items-center gap-2 relative z-10"><span class="material-symbols-rounded text-base">terminal</span>AI Report</h3>
+      <div class="text-blue-100/70 text-xs leading-relaxed relative z-10">${txt}</div>
+      <div class="mt-3 p-3 rounded-xl border flex items-start gap-2.5 relative z-10 ${drain?'bg-red/10 border-red/20':'bg-green/10 border-green/20'}">
+        <span class="material-symbols-rounded text-sm ${drain?'text-red':'text-green'}">${drain?'gpp_bad':'gpp_good'}</span>
+        <span class="text-[10px] sm:text-xs ${drain?'text-red/90':'text-green/90'}">${drain?'Warning: AI favoring broker profit.':'Fake trust mode: User wins occasionally.'}</span>
+      </div>
+    </div></div>
+    <div class="bg-black/40 rounded-2xl p-3 sm:p-5 border border-white/5">
+      <h3 class="text-xs sm:text-sm font-bold text-white mb-3 flex items-center gap-2"><span class="material-symbols-rounded text-green text-sm">route</span>Roadmap</h3>
+      <div class="space-y-2.5 max-h-[300px] sm:max-h-[400px] overflow-y-auto pr-1">${rh}</div>
+    </div></div>`;
+  }else html=`<div class="flex flex-col items-center justify-center h-48 text-muted gap-3"><span class="material-symbols-rounded text-3xl opacity-50">hourglass_empty</span><p class="text-sm">No trail started yet</p></div>`;
+
+  $('userDetailContent').innerHTML=`
+    <div class="flex flex-col lg:flex-row justify-between items-start lg:items-center gap-3 border-b border-white/5 pb-4 sm:pb-6">
+      <div><h2 class="text-lg sm:text-2xl lg:text-3xl font-extrabold text-white break-all">${u.name||'Unknown'}</h2>
+        <div class="flex flex-wrap gap-1.5 mt-1.5 text-[10px] font-mono"><span class="bg-black/40 text-muted px-2.5 py-1 rounded-lg border border-white/5">${uid}</span><span class="text-blue bg-blue/10 px-2.5 py-1 rounded-lg">${u.email||'No email'}</span></div>
+      </div>
+      <div class="bg-gradient-to-br from-black/60 to-black/30 p-3 sm:p-5 rounded-2xl border border-white/5 w-full lg:w-auto" style="box-shadow:inset 0 2px 10px rgba(0,0,0,0.5)">
+        <p class="text-[9px] text-muted uppercase font-bold tracking-widest">Balance</p>
+        <p class="text-xl sm:text-2xl lg:text-3xl font-extrabold font-mono text-green">$${(u.realBalance||0).toFixed(2)}</p>
+        <p class="text-[10px] ${(u.dailyProfit||0)>=0?'text-green':'text-red'} mt-1 font-mono flex items-center gap-1"><span class="material-symbols-rounded text-xs">${(u.dailyProfit||0)>=0?'trending_up':'trending_down'}</span>$${(u.dailyProfit||0).toFixed(2)}</p>
+      </div>
+    </div>${html}`;
+  $('view-dashboard').classList.add('hide');$('view-user-detail').classList.remove('hide');
+  document.querySelector('main')?.scrollTo(0,0);
+}
+
+function renderUsers(){
+  const el=$('usersList');el.innerHTML='';let c=0;const q=query.toLowerCase();
+  for(let uid in users){const u=users[uid],t=u.tradeTrail,n=u.name||'Unknown';
+    if(q){if(!n.toLowerCase().includes(q)&&!uid.toLowerCase().includes(q))continue}else if((u.realBalance||0)<=0&&!t)continue;c++;
+    let badge=`<span class="text-[8px] sm:text-[9px] text-muted bg-black/40 border border-white/5 px-2 py-0.5 rounded-md font-mono">—</span>`,bl='border-l-2 border-white/10',hv='hover:border-white/20';
+    if(t){const u65=t.isUnder65,a=u65?(t.phase%2===0?'DRAIN':'GROW'):(t.phase%2!==0?'DRAIN':'GROW'),d=a==='DRAIN';
+      bl=d?'border-l-2 border-red':'border-l-2 border-green';
+      hv=d?'hover:border-red/40 hover:bg-red/5':'hover:border-green/40 hover:bg-green/5';
+      badge=`<span class="text-[8px] sm:text-[9px] font-bold px-2 py-0.5 rounded-md border ${d?'bg-red/10 text-red border-red/20':'bg-green/10 text-green border-green/20'}">P${t.phase} ${a}</span>`}
+    el.innerHTML+=`<div onclick="showUserDetail('${uid}')" class="bg-black/30 border border-transparent ${hv} transition-all duration-200 cursor-pointer rounded-xl p-2.5 sm:p-3 ${bl} flex items-center group">
+      <div class="flex-1 min-w-0 pr-2"><h3 class="font-bold text-white text-[11px] sm:text-xs truncate group-hover:text-blue transition-colors">${n}</h3><p class="text-[8px] sm:text-[10px] text-muted font-mono truncate">${uid}</p></div>
+      <div class="text-right shrink-0"><p class="font-mono font-extrabold text-[10px] sm:text-xs text-white">$${(u.realBalance||0).toFixed(2)}</p>${badge}</div>
+    </div>`}
+  if(!c)el.innerHTML=`<div class="flex flex-col items-center justify-center h-32 text-muted gap-2 text-xs"><span class="material-symbols-rounded text-xl opacity-50">search_off</span>No results</div>`;
+  $('userCount').textContent=`${c} Online`;
+}
+
+function renderTrades(){
+  ['tradesList','tradesListFull'].forEach(id=>{const el=$(id);if(el)el.innerHTML=''});
+  let c=0,n=Date.now();
+  for(let m in trades){const mt=trades[m].activeTrades;if(!mt)continue;
+    for(let tid in mt){c++;const t=mt[tid]||{},amt=t.amount||0,dir=t.direction||'UNKNOWN',uid=t.uid||'UnknownUID',exp=t.expiryTimestamp||0,tl=exp>0?Math.max(0,Math.floor((exp-n)/1000)):'∞',up=dir==='UP';
+      let dc='text-gray-400 border-gray-500/20',ic='question_mark',tc='text-gray-400',bc='bg-gray-500/10';
+      if(!up&&dir!=='UNKNOWN'){dc='text-red border-red/20';ic='arrow_downward';tc='text-red';bc='bg-red/10'}
+      if(up){dc='text-green border-green/20';ic='arrow_upward';tc='text-green';bc='bg-green/10'}
+      const nm=users[uid]?users[uid].name:'Unknown';
+      const card=`<div class="bg-black/30 rounded-xl p-2.5 sm:p-3 border border-white/5 flex items-center gap-2.5 sm:gap-3 hover:border-white/20 hover:bg-black/40 transition-all">
+        <div class="w-9 h-9 sm:w-10 sm:h-10 rounded-xl border flex items-center justify-center ${bc} ${dc} shrink-0"><span class="material-symbols-rounded text-sm sm:text-base">${ic}</span></div>
+        <div class="flex-1 min-w-0"><div class="flex justify-between items-center mb-0.5"><h3 class="font-bold text-[10px] sm:text-xs text-white flex items-center gap-1.5 truncate"><span class="truncate">${m.toUpperCase()}</span><span class="text-[7px] sm:text-[8px] font-bold ${tc} bg-black/40 px-1.5 py-0.5 rounded-md shrink-0">${dir}</span></h3><span class="font-mono font-extrabold text-white text-[10px] sm:text-xs shrink-0 ml-1">$${amt.toFixed(2)}</span></div>
+        <div class="flex justify-between items-center"><span class="text-[8px] sm:text-[10px] text-muted truncate flex items-center gap-1"><span class="material-symbols-rounded text-[10px]">person</span><span class="truncate">${nm}</span></span>
+          <span class="text-[8px] sm:text-[9px] bg-orange/10 border border-orange/20 text-orange px-2 py-0.5 rounded-md font-mono font-bold flex items-center gap-1 shrink-0 ml-1"><span class="material-symbols-rounded text-[9px]">timer</span>${tl}s</span>
+        </div></div>
+        <div class="shrink-0 pl-2 border-l border-white/5"><button onclick="deleteTrade('${m}','${tid}','${uid}')" class="w-8 h-8 sm:w-9 sm:h-9 rounded-xl bg-red/5 text-red border border-transparent hover:bg-red/20 hover:border-red/30 flex items-center justify-center transition-all"><span class="material-symbols-rounded text-sm sm:text-base">delete</span></button></div>
+      </div>`;
+      ['tradesList','tradesListFull'].forEach(id=>{const el=$(id);if(el)el.innerHTML+=card});
+    }}
+  if(!c){const e=`<div class="flex flex-col items-center justify-center h-32 text-muted gap-2 text-xs"><span class="material-symbols-rounded text-xl opacity-50">done_all</span>All clear</div>`;
+    ['tradesList','tradesListFull'].forEach(id=>{const el=$(id);if(el)el.innerHTML=e})}
+  ['tradeCount','tradeCountFull'].forEach(id=>{const el=$(id);if(el)el.textContent=`${c} Running`});
+}
+
+function initChart(){
+  if(chart){try{chart.remove()}catch(e){}chart=null}
+  const c=$('admin-live-chart');if(!c||!c.parentElement)return;
+  const w=c.parentElement.clientWidth||400,h=c.parentElement.clientHeight||300;
+  chart=LightweightCharts.createChart(c,{width:w,height:h,layout:{background:{color:'transparent'},textColor:'#8BA0B8'},grid:{vertLines:{color:'rgba(255,255,255,0.03)'},horzLines:{color:'rgba(255,255,255,0.03)'}},timeScale:{timeVisible:true,secondsVisible:true,borderColor:'rgba(255,255,255,0.06)'},rightPriceScale:{borderColor:'rgba(255,255,255,0.06)'},crosshair:{mode:LightweightCharts.CrosshairMode.Normal}});
+  series=chart.addCandlestickSeries({upColor:'#0CCF56',downColor:'#FF4D5E',borderVisible:false,wickUpColor:'#0CCF56',wickDownColor:'#FF4D5E'});
+  chart.subscribeClick(p=>{
+    if(!p.time)return;
+    const d=prevMarketData.find(x=>x.time===p.time);if(!d)return;
+    series.setMarkers([{time:p.time,position:'aboveBar',color:'#FF9800',shape:'arrowDown',text:''}]);
+    const g=d.close>=d.open,bs=Math.abs(d.close-d.open),uw=d.high-Math.max(d.open,d.close),lw=Math.min(d.open,d.close)-d.low;
+    cloneData={refOpen:d.open,body:bs,upperWick:uw,lowerWick:lw,isGreen:g};
+    const th=uw+bs+lw||1,bp=Math.max(bs/th*55,2),upPx=uw/th*55,dnPx=lw/th*55,cl=g?'#0CCF56':'#FF4D5E';
+    $('selected-candle-info').innerHTML=`<div class="flex items-center justify-center gap-3"><div class="text-left text-[10px]"><b style="color:${cl}">${g?'GREEN':'RED'}</b><br>Body: ${bs.toFixed(4)}<br>Up: ${uw.toFixed(4)}<br>Dn: ${lw.toFixed(4)}</div>
+    <div class="flex flex-col items-center" style="height:60px;width:36px;background:#0B111F;border-radius:6px;border:1px solid rgba(255,255,255,0.1)">
+      <div style="width:2px;height:${upPx}px;background:${cl}"></div>
+      <div style="width:10px;height:${bp}px;background:${cl};border-radius:1px"></div>
+      <div style="width:2px;height:${dnPx}px;background:${cl}"></div>
+    </div></div>`;
+    $('confirm-clone-btn').classList.remove('hidden');
+  });
+}
+
+function chartZoomIn(){
+  if(!chart)return;
+  const r=chart.timeScale().getVisibleRange();
+  if(!r)return;
+  const m=(r.from+r.to)/2,s=r.to-r.from,ns=s*0.7;
+  chart.timeScale().setVisibleRange({from:m-ns/2,to:m+ns/2});
+}
+function chartZoomOut(){
+  if(!chart)return;
+  const r=chart.timeScale().getVisibleRange();
+  if(!r)return;
+  const m=(r.from+r.to)/2,s=r.to-r.from,ns=s*1.4;
+  chart.timeScale().setVisibleRange({from:m-ns/2,to:m+ns/2});
+}
+function chartResetZoom(){if(chart)chart.timeScale().fitContent()}
+
+function refreshChart(){
+  const m=$('admin-market-id')?.value.trim(),u=$('admin-server-url')?.value.trim();
+  if(m&&u){
+    const st=$('admin-candle-status');if(st)st.innerHTML='<span class="text-green">⟳ Refreshing...</span>';
+    connectWs(u,m);
+  }else{const st=$('admin-candle-status');if(st){st.style.color='#FF4D5E';st.textContent='Select a market first';setTimeout(()=>{if(st)st.textContent=''},2500)}}
+}
+
+function renderHistory(){
+  const el=$('admin-history-list');if(!el)return;
+  if(!history.length){el.innerHTML='<div class="text-xs text-muted/50 text-center py-3">No commands yet</div>';return}
+  el.innerHTML='';
+  history.forEach(h=>{const d=document.createElement('div');d.className='bg-black/30 p-2 rounded-lg text-[10px] border-l-[3px] flex justify-between items-center hover:bg-black/40 transition-colors';d.style.borderLeftColor=h.c;d.innerHTML=`<span class="text-muted font-medium">${h.t}</span><span class="text-muted/40 text-[9px] font-mono">${h.time}</span>`;el.appendChild(d)});
+}
+
+function addHistory(text,color){
+  const time=new Date().toLocaleTimeString();
+  history.unshift({t:text,c:color,time});
+  if(history.length>50)history.pop();
+  localStorage.setItem('admin_cmd_history',JSON.stringify(history));
+  renderHistory();
+}
+
+async function connectWs(url,market){
+  fetchId++;const fid=fetchId;
+  if(ws){try{ws.close()}catch(e){}ws=null}
+  const st=$('admin-candle-status');if(st)st.innerHTML='<span class="text-orange">Loading market...</span>';
+  const label=$('activeMarketLabel');if(label)label.textContent='Loading: '+market;
+  let data=null,r=5;
+  while(r--){if(fid!==fetchId)return;
+    try{let u=url.replace(/\/$/,'');const res=await fetch(`${u}/api/history/${encodeURIComponent(market)}`);if(res.ok){data=await res.json();break}}catch(e){}await new Promise(r=>setTimeout(r,1000))}
+  if(fid!==fetchId)return;
+  if(data&&Array.isArray(data)){try{const f=data.map(c=>({time:Math.floor(c.timestamp/1000),open:c.open,high:c.high,low:c.low,close:c.close})).sort((a,b)=>a.time-b.time);prevMarketData=f;if(!chart)initChart();if(series)series.setData(f);if(st)st.textContent='';if(label)label.textContent='Market: '+market;const info=$('chartDataInfo');if(info)info.textContent=f.length+' candles'}catch(e){console.error(e)}}else{if(st){st.style.color='#FF4D5E';st.textContent='Failed to load history'}if(label)label.textContent='Error loading: '+market}
+  const u=url.replace(/\/$/,''),wsUrl=u.replace(/^http/,'ws');
+  try{ws=new WebSocket(wsUrl);ws.onopen=()=>ws.send(JSON.stringify({type:'subscribe',market}));ws.onmessage=msg=>{try{const d=JSON.parse(msg.data);if(d.candle&&series){const nc={time:Math.floor(d.candle.timestamp/1000),open:d.candle.open,high:d.candle.high,low:d.candle.low,close:d.candle.close};series.update(nc);const idx=prevMarketData.length-1;if(idx>=0&&prevMarketData[idx].time===nc.time)prevMarketData[idx]=nc;else prevMarketData.push(nc);const info=$('chartDataInfo');if(info)info.textContent=prevMarketData.length+' candles'}}catch(e){}}}catch(e){}}
+
+function onMarketChange(){
+  const m=$('admin-market-id')?.value.trim(),u=$('admin-server-url')?.value.trim();
+  if(m&&u&&(m!==activeMarket||u!==activeUrl)){activeMarket=m;activeUrl=u;if(!chart)initChart();else if(series)series.setData([]);connectWs(u,m)}
+}
+
+const allMarketOptions=[];
+
+function initMarketSearch(){
+  const inp=$('marketSearchInput'),sel=$('admin-market-id');
+  if(!inp||!sel)return;
+  const opts=sel.querySelectorAll('option');
+  allMarketOptions.length=0;
+  opts.forEach(o=>allMarketOptions.push({value:o.value,text:o.textContent}));
+  inp.addEventListener('input',function(){
+    const q=this.value.toLowerCase().trim().replace(/[^a-z0-9]/g,'');
+    sel.innerHTML='';
+    const filtered=allMarketOptions.filter(o=>{
+      const txt=o.text.toLowerCase().replace(/[^a-z0-9]/g,'');
+      const val=o.value.toLowerCase().replace(/[^a-z0-9]/g,'');
+      return txt.includes(q)||val.includes(q)||o.text.toLowerCase().includes(this.value.toLowerCase().trim())||o.value.toLowerCase().includes(this.value.toLowerCase().trim());
+    });
+    if(filtered.length){filtered.forEach(o=>{const ne=document.createElement('option');ne.value=o.value;ne.textContent=o.text;sel.appendChild(ne)});sel.size=Math.min(filtered.length,8);sel.style.height='auto'}
+    else{sel.innerHTML='<option value="">No match</option>';sel.size=1}
+    const evt=new Event('change');sel.dispatchEvent(evt);
+  });
+}
+
+function renderFullHistory(){
+  const el=$('historyListFull');if(!el)return;
+  if(!history.length){el.innerHTML='<div class="text-xs text-muted/50 text-center py-8">No commands yet</div>';return}
+  el.innerHTML='';
+  history.forEach(h=>{
+    const d=document.createElement('div');
+    d.className='glass-sm p-3 flex items-center justify-between hover:bg-white/5 transition-all cursor-default';
+    d.innerHTML=`<div class="flex items-center gap-2.5 min-w-0"><div class="w-2 h-2 rounded-full shrink-0" style="background:${h.c}"></div><span class="text-xs sm:text-sm text-white truncate">${h.t}</span></div><span class="text-[9px] sm:text-[10px] text-muted/50 font-mono shrink-0 ml-2">${h.time}</span>`;
+    el.appendChild(d);
+  });
+}
+
+function updateNowLine(){
+  const line=$('nowLine'),label=$('nowLabel'),chartContainer=$('chartContainer');
+  if(!line||!label||!chartContainer||!chart)return;
+  const now=Math.floor(Date.now()/1000);
+  const x=chart.timeScaleToCoordinate(now);
+  if(x!==null&&x>=0&&x<=chartContainer.clientWidth){
+    line.style.display='block';line.style.left=x+'px';
+    label.style.display='block';label.style.left=x+'px';
+    const d=new Date();label.textContent=d.toLocaleTimeString();
+  }else{line.style.display='none';label.style.display='none'}
+}
+
+document.addEventListener('DOMContentLoaded',()=>{
+  const sv=localStorage.getItem('admin_api_server_url');
+  if(sv)$('admin-server-url').value=sv;else db.ref('admin/settings/activeServerUrl').once('value').then(s=>{const v=s.val();if(v)$('admin-server-url').value=v.replace(/^ws/,'http').replace(/\/$/,'')}).catch(()=>{});
+  if(!$('admin-server-url').value)$('admin-server-url').value='https://ic-backend-l5sm.onrender.com';
+
+  db.ref('admin/markets').once('value').then(s=>{
+    const mk=s.val()||{},sel=$('admin-market-id');if(!sel)return;sel.innerHTML='';
+    const ids=Object.keys(mk);
+    if(ids.length){ids.forEach(id=>{const obj=mk[id];let n=id;if(typeof obj==='object'&&obj)n=obj.name||obj.symbol||obj.asset||id;const o=document.createElement('option');o.value=id;o.textContent=n!==id&&n?`${n} (${id})`:id;sel.appendChild(o)});const evt=new Event('change');sel.dispatchEvent(evt)}
+    else sel.innerHTML='<option value="BTC/USD">BTC/USD (Default)</option>';
+    initMarketSearch();
+  }).catch(()=>{const sel=$('admin-market-id');if(sel)sel.innerHTML='<option value="BTC/USD">BTC/USD</option>';initMarketSearch()});
+
+  renderHistory();
+  if($('admin-market-id'))$('admin-market-id').addEventListener('change',onMarketChange);
+  if($('admin-server-url')){$('admin-server-url').addEventListener('change',onMarketChange);$('admin-server-url').addEventListener('keyup',e=>{if(e.key==='Enter')onMarketChange()})}
+  setTimeout(onMarketChange,1500);
+
+  $('confirm-clone-btn')?.addEventListener('click',async()=>{
+    if(!cloneData)return;const m=$('admin-market-id')?.value.trim(),u=$('admin-server-url')?.value.trim();if(!m||!u)return;
+    const st=$('admin-candle-status');if(st)st.innerHTML='<span class="text-orange">Sending...</span>';
+    try{const r=await fetch(`${u}/api/admin/command`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({marketId:m,command:'CUSTOM_CLONE',cloneData})}).then(r=>r.json());
+      if(r.success){const cm=Math.floor(Date.now()/60000);cmdState={status:'WAITING',targetMin:cm+1};cloneData=null;$('confirm-clone-btn').classList.add('hidden');if($('send-admin-candle'))$('send-admin-candle').disabled=true;if($('admin-candle-type'))$('admin-candle-type').disabled=true;if(st)st.innerHTML='<span class="text-orange">Scheduled...</span>';addHistory(`Clone (Min ${cm+1})`,'#FF9800')}
+      else{if(st){st.style.color='#FF4D5E';st.innerHTML='ERROR: '+(r.error||'Rejected')}}
+    }catch(e){if(st){st.style.color='#FF4D5E';st.innerHTML='ERROR: '+e.message}}
+  });
+
+  $('send-admin-candle')?.addEventListener('click',async()=>{
+    const m=$('admin-market-id')?.value.trim(),t=$('admin-candle-type')?.value,u=$('admin-server-url')?.value.replace(/\/$/,'');
+    if(!u)return alert('Enter Server URL');localStorage.setItem('admin_api_server_url',u);
+    const st=$('admin-candle-status');if(st)st.innerHTML='<span class="text-orange">Sending...</span>';
+    try{const req=await fetch(`${u}/api/admin/command`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({marketId:m,command:t})}),raw=await req.text();let r;try{r=JSON.parse(raw)}catch(e){throw new Error(req.ok?'Invalid response':`API error (${req.status})`)}
+      if(req.ok&&r.success){if(st){st.style.color='#0CCF56';st.innerHTML=`SUCCESS: ${t}`}addHistory(`Manual: ${t}`,'#2962FF')}else{if(st){st.style.color='#FF4D5E';st.innerHTML='ERROR: '+(r.error||'Rejected')}}
+    }catch(e){if(st){st.style.color='#FF4D5E';st.innerHTML='ERROR: '+e.message}}
+  });
+
+  $('clear-history-btn')?.addEventListener('click',()=>{if(confirm('Clear command history?')){history=[];localStorage.removeItem('admin_cmd_history');renderHistory();renderFullHistory()}});
+  $('clear-history-btn-full')?.addEventListener('click',()=>{if(confirm('Clear all command history?')){history=[];localStorage.removeItem('admin_cmd_history');renderHistory();renderFullHistory()}});
+
+  setInterval(()=>{
+    const n=Date.now(),ms=60000-(n%60000),sec=Math.floor(ms/1000),min=Math.floor(n/60000);
+    const el=$('chart-countdown');if(el)el.textContent=`00:${String(sec).padStart(2,'0')}`;
+    if(cmdState){const st=$('admin-candle-status');
+      if(cmdState.status==='WAITING'){if(min===cmdState.targetMin)cmdState.status='CLONING';else if(st)st.innerHTML=`<div class="bg-orange/10 p-2.5 rounded-lg border border-orange/30 text-[10px] text-center"><b>WAITING</b><br><span class="text-muted">${sec}s</span></div>`}
+      if(cmdState.status==='CLONING'){if(min>cmdState.targetMin){cmdState.status='DONE';if(st)st.innerHTML=`<div class="bg-green/10 p-2.5 rounded-lg border border-green/30 text-[10px] text-green text-center"><b>SUCCESS</b></div>`;addHistory('Clone Executed','#0CCF56');if(series)series.setMarkers([]);setTimeout(()=>{if(cmdState?.status==='DONE'){cmdState=null;if(st)st.innerHTML='';if($('selected-candle-info'))$('selected-candle-info').innerHTML='Click a candle';if($('send-admin-candle'))$('send-admin-candle').disabled=false;if($('admin-candle-type'))$('admin-candle-type').disabled=false;$('confirm-clone-btn')?.classList.add('hidden')}},4000)}
+      else if(st)st.innerHTML=`<div class="bg-blue/10 p-2.5 rounded-lg border border-blue/30 text-[10px] text-center"><b>CLONING</b><br><span class="text-muted">${sec}s</span></div>`}}
+    updateNowLine();
+  },1000);
+
+  const doResize=()=>{if(chart){const c=$('admin-live-chart');if(c&&c.parentElement)chart.resize(c.parentElement.clientWidth,c.parentElement.clientHeight)}updateNowLine()};
+  window.addEventListener('resize',doResize);
+  const ro=new ResizeObserver(doResize);const ct=$('chartContainer');if(ct)ro.observe(ct);
+  setTimeout(updateNowLine,500);
+});
+
+db.ref('users').on('value',s=>{users=s.val()||{};renderUsers()});
+db.ref('admin/markets').on('value',s=>{trades=s.val()||{};renderTrades()});
+setInterval(renderTrades,1000);
+</script>
+</body>
+</html>
