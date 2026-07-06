@@ -397,8 +397,13 @@
         // REPLACE WITH ACTUAL CONFIG IN PRODUCTION IF NEEDED
         // For security, admin panel should be hosted securely or use service account
         const firebaseConfig = {
-            databaseURL: "https://ictex-141a2-default-rtdb.firebaseio.com",
-            projectId: "ictex-141a2"
+            apiKey: "AIzaSyBUTMFblYIVovOe4F25XCFneJNTlVcoWCA",
+            authDomain: "ictex-trade.firebaseapp.com",
+            databaseURL: "https://ictex-trade-default-rtdb.firebaseio.com",
+            projectId: "ictex-trade",
+            storageBucket: "ictex-trade.appspot.com",
+            messagingSenderId: "755532704199",
+            appId: "1:755532704199:web:b27d7c9e7d0f4ac76291e2"
         };
         if (!firebase.apps.length) { firebase.initializeApp(firebaseConfig); }
         const db = firebase.database();
@@ -489,16 +494,24 @@
         // =====================================================
         let currentUsersCache = {};
         
-        async function loadUsers() {
+        let usersListener = null;
+        function loadUsers() {
             renderSkeletons('usersList', 6, 6);
-            try {
-                // Fetch latest 50 users for speed
-                const snap = await db.ref('users').orderByChild('createdAt').limitToLast(50).once('value');
+            // Real-time listener instead of once
+            if(usersListener) db.ref('users').off('value', usersListener);
+            
+            // Limit to last 100 so it loads instantly but stays real-time
+            usersListener = db.ref('users').limitToLast(100).on('value', snap => {
                 currentUsersCache = snap.exists() ? snap.val() : {};
-                renderUsersUI(currentUsersCache);
-            } catch(e) {
+                if(!document.getElementById('userSearch').value.trim()) {
+                    renderUsersUI(currentUsersCache);
+                }
+                
+                // Update dash total loosely based on loaded count if no search
+                document.getElementById('dashUsers').textContent = "Live";
+            }, e => {
                 document.getElementById('usersList').innerHTML = `<tr><td colspan="6" class="text-danger">Failed to load users: ${e.message}</td></tr>`;
-            }
+            });
         }
 
         async function searchUsers() {
@@ -658,11 +671,12 @@
         // =====================================================
         // REFERRALS
         // =====================================================
-        async function loadReferrals() {
+        let referralsListener = null;
+        function loadReferrals() {
             renderSkeletons('referralsList', 5, 5);
-            try {
-                // We fetch all users once to build the network map. This is heavy but requested only on this tab.
-                const snap = await db.ref('users').once('value');
+            if(referralsListener) db.ref('users').off('value', referralsListener);
+            
+            referralsListener = db.ref('users').on('value', snap => {
                 const users = snap.exists() ? snap.val() : {};
                 
                 let network = {};
@@ -703,9 +717,9 @@
                     }
                 });
                 document.getElementById('referralsList').innerHTML = h || '<tr><td colspan="5" style="text-align:center;color:var(--text-muted)">No referrals found</td></tr>';
-            } catch(e) {
+            }, e => {
                 document.getElementById('referralsList').innerHTML = `<tr><td colspan="5" class="text-danger">Failed: ${e.message}</td></tr>`;
-            }
+            });
         }
 
         window.viewReferralNetwork = function(refersArray, referrerName) {
