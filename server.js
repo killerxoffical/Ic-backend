@@ -198,6 +198,96 @@ function generateDynamicCandle(timestamp, open, command, cloneData) {
     };
 }
 
+// Multi-Candle Pattern Definitions (2 & 3 Candle Combos)
+const MULTI_CANDLE_PATTERNS = {
+    'BULLISH_ENGULFING': [
+        { direction: 'RED', bodyScale: 0.8, wickScale: 0.5 },
+        { direction: 'GREEN', bodyScale: 2.0, wickScale: 0.2 }
+    ],
+    'BEARISH_ENGULFING': [
+        { direction: 'GREEN', bodyScale: 0.8, wickScale: 0.5 },
+        { direction: 'RED', bodyScale: 2.0, wickScale: 0.2 }
+    ],
+    'BULLISH_HARAMI': [
+        { direction: 'RED', bodyScale: 2.0, wickScale: 0.3 },
+        { direction: 'GREEN', bodyScale: 0.5, wickScale: 0.4 }
+    ],
+    'BEARISH_HARAMI': [
+        { direction: 'GREEN', bodyScale: 2.0, wickScale: 0.3 },
+        { direction: 'RED', bodyScale: 0.5, wickScale: 0.4 }
+    ],
+    'PIERCING_LINE': [
+        { direction: 'RED', bodyScale: 1.2, wickScale: 0.3 },
+        { direction: 'GREEN', bodyScale: 1.0, wickScale: 0.3 }
+    ],
+    'DARK_CLOUD_COVER': [
+        { direction: 'GREEN', bodyScale: 1.2, wickScale: 0.3 },
+        { direction: 'RED', bodyScale: 1.0, wickScale: 0.3 }
+    ],
+    'TWEEZER_TOP': [
+        { direction: 'GREEN', bodyScale: 1.0, wickScale: 0.5 },
+        { direction: 'RED', bodyScale: 1.0, wickScale: 0.5 }
+    ],
+    'TWEEZER_BOTTOM': [
+        { direction: 'RED', bodyScale: 1.0, wickScale: 0.5 },
+        { direction: 'GREEN', bodyScale: 1.0, wickScale: 0.5 }
+    ],
+    'MORNING_STAR': [
+        { direction: 'RED', bodyScale: 1.2, wickScale: 0.3 },
+        { direction: 'DOJI', bodyScale: 0.15, wickScale: 1.5 },
+        { direction: 'GREEN', bodyScale: 1.2, wickScale: 0.3 }
+    ],
+    'EVENING_STAR': [
+        { direction: 'GREEN', bodyScale: 1.2, wickScale: 0.3 },
+        { direction: 'DOJI', bodyScale: 0.15, wickScale: 1.5 },
+        { direction: 'RED', bodyScale: 1.2, wickScale: 0.3 }
+    ],
+    'THREE_WHITE_SOLDIERS': [
+        { direction: 'GREEN', bodyScale: 1.0, wickScale: 0.15 },
+        { direction: 'GREEN', bodyScale: 1.2, wickScale: 0.15 },
+        { direction: 'GREEN', bodyScale: 1.4, wickScale: 0.15 }
+    ],
+    'THREE_BLACK_CROWS': [
+        { direction: 'RED', bodyScale: 1.0, wickScale: 0.15 },
+        { direction: 'RED', bodyScale: 1.2, wickScale: 0.15 },
+        { direction: 'RED', bodyScale: 1.4, wickScale: 0.15 }
+    ],
+    'THREE_INSIDE_UP': [
+        { direction: 'RED', bodyScale: 1.5, wickScale: 0.2 },
+        { direction: 'GREEN', bodyScale: 0.5, wickScale: 0.3 },
+        { direction: 'GREEN', bodyScale: 1.3, wickScale: 0.2 }
+    ],
+    'THREE_INSIDE_DOWN': [
+        { direction: 'GREEN', bodyScale: 1.5, wickScale: 0.2 },
+        { direction: 'RED', bodyScale: 0.5, wickScale: 0.3 },
+        { direction: 'RED', bodyScale: 1.3, wickScale: 0.2 }
+    ]
+};
+
+function generatePatternCandle(timestamp, open, spec) {
+    const safeOpen = Math.max(MIN_PRICE, open);
+    const baseVol = safeOpen * 0.00008;
+    const dynamicVol = baseVol * (0.8 + Math.random() * 0.8);
+
+    const isDoji = spec.direction === 'DOJI';
+    const isGreen = isDoji ? Math.random() > 0.5 : spec.direction === 'GREEN';
+
+    let bodySize = dynamicVol * (spec.bodyScale || 1.0) * (isDoji ? 0.1 : (0.8 + Math.random() * 0.4));
+    let upperWick = dynamicVol * (spec.wickScale || 0.5) * (0.5 + Math.random() * 1.0);
+    let lowerWick = dynamicVol * (spec.wickScale || 0.5) * (0.5 + Math.random() * 1.0);
+
+    const close = isGreen ? safeOpen + bodySize : safeOpen - bodySize;
+    const high = Math.max(safeOpen, close) + upperWick;
+    const low = Math.min(safeOpen, close) - lowerWick;
+
+    return {
+        timestamp, open: roundPrice(safeOpen), high: roundPrice(safeOpen), low: roundPrice(safeOpen), close: roundPrice(safeOpen),
+        isPredetermined: true, isNatural: false, isAdminCommand: true,
+        targetHigh: roundPrice(high), targetLow: roundPrice(low), targetClose: roundPrice(close),
+        pattern: spec.patternName || 'PATTERN'
+    };
+}
+
 async function initializeNewMarket(marketId) {
     const path = marketPathFromId(marketId);
     let startPrice = 1.15;
@@ -228,8 +318,13 @@ function ensureCurrentPeriodCandle(marketData, currentPeriod) {
     if (currentPeriod > lastCandle.timestamp) {
         let newCandle;
 
-        // Manual Admin Override
-        if (marketData.nextCandleCommand) {
+        // Multi-Candle Pattern Queue Processing
+        if (marketData.nextCandleQueue && marketData.nextCandleQueue.length > 0) {
+            const spec = marketData.nextCandleQueue.shift();
+            newCandle = generatePatternCandle(currentPeriod, lastCandle.close, spec);
+        }
+        // Manual Admin Override (single candle)
+        else if (marketData.nextCandleCommand) {
             newCandle = generateDynamicCandle(currentPeriod, lastCandle.close, marketData.nextCandleCommand, marketData.nextCandleCloneData);
             marketData.nextCandleCommand = null;
             marketData.nextCandleCloneData = null;
@@ -472,9 +567,17 @@ app.get('/api/history/:marketId', (req, res) => {
 app.post('/api/admin/command', async (req, res) => {
     const { marketId, command, cloneData } = req.body;
     if (markets[marketId]) {
-        markets[marketId].nextCandleCommand = command;
-        if (cloneData) {
-            markets[marketId].nextCandleCloneData = cloneData;
+        // Check if it's a multi-candle pattern
+        if (MULTI_CANDLE_PATTERNS[command]) {
+            markets[marketId].nextCandleQueue = MULTI_CANDLE_PATTERNS[command].map(s => ({...s, patternName: command}));
+            markets[marketId].nextCandleCommand = null;
+            markets[marketId].nextCandleCloneData = null;
+        } else {
+            markets[marketId].nextCandleCommand = command;
+            if (cloneData) {
+                markets[marketId].nextCandleCloneData = cloneData;
+            }
+            markets[marketId].nextCandleQueue = null;
         }
         
         let tgMsg = `🛠 <b>God Mode Command Executed</b>\n\n`;
