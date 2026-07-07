@@ -56,6 +56,52 @@ db.ref('admin/settings/activeServerUrl').on('value', (snap) => {
     cachedServerUrl = snap.val() || "";
 });
 
+// ==========================================
+// REFERRAL COMMISSION SYSTEM (SECURE)
+// ==========================================
+db.ref('deposit_requests').on('child_changed', async (snapshot) => {
+    try {
+        const deposit = snapshot.val();
+        // Check if status changed to approved and commission is not yet paid
+        if (deposit && deposit.status === 'approved' && !deposit.commissionPaid && deposit.mentorCommission > 0) {
+            const depositRef = snapshot.ref;
+            // Lock immediately to prevent double processing
+            await depositRef.child('commissionPaid').set(true);
+            
+            // Get mentor ID from user data
+            const userSnap = await db.ref(`users/${deposit.userId}`).once('value');
+            const user = userSnap.val();
+            
+            if (user && user.mentorId) {
+                const mentorId = user.mentorId;
+                // Double check it's exactly 5% of amountUSD
+                const expectedCommission = parseFloat((deposit.amountUSD * 0.05).toFixed(2));
+                const commissionToPay = expectedCommission > 0 ? expectedCommission : (parseFloat(deposit.mentorCommission) || 0);
+                
+                if (commissionToPay > 0) {
+                    // Instantly and securely add to mentor's commissionWallet
+                    await db.ref(`users/${mentorId}/commissionWallet/balance`).set(firebase.database.ServerValue.increment(commissionToPay));
+                    await db.ref(`users/${mentorId}/commissionWallet/totalEarned`).set(firebase.database.ServerValue.increment(commissionToPay));
+                    
+                    // Add history log for mentor
+                    const historyId = Date.now() + Math.random().toString(36).substr(2, 5);
+                    await db.ref(`users/${mentorId}/transactions/${historyId}`).set({
+                        id: historyId,
+                        type: 'referral_commission',
+                        amount: commissionToPay,
+                        timestamp: firebase.database.ServerValue.TIMESTAMP,
+                        status: 'completed',
+                        note: `5% Commission for deposit from ${deposit.userName || deposit.userId}`
+                    });
+                    console.log(`[Referral System] Successfully paid $${commissionToPay} commission to mentor ${mentorId} for deposit ${snapshot.key}`);
+                }
+            }
+        }
+    } catch (e) {
+        console.error("[Referral System] Error processing commission:", e);
+    }
+});
+
 function roundPrice(v) { return parseFloat(Math.max(MIN_PRICE, v).toFixed(5)); }
 function marketPathFromId(marketId) { return String(marketId || '').replace(/[\.\/ ]/g, '-').toLowerCase(); }
 
