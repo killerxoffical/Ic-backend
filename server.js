@@ -85,41 +85,41 @@ function generateHistoricalCandle(timestamp, open, isLive = false) {
     let bodySize, upperWick, lowerWick;
     const rand = Math.random();
 
-    if (rand < 0.15) {
-        // 15% Chance: Doji (Tiny body, medium/large wicks)
+    if (rand < 0.07) {
+        // 7% Chance: Doji (Tiny body, medium/large wicks)
         bodySize = dynamicVol * (Math.random() * 0.15);
-        upperWick = dynamicVol * (0.5 + Math.random() * 1.5);
-        lowerWick = dynamicVol * (0.5 + Math.random() * 1.5);
+        upperWick = dynamicVol * (0.4 + Math.random() * 1.0);
+        lowerWick = dynamicVol * (0.4 + Math.random() * 1.0);
     }
-    else if (rand < 0.35) {
-        // 20% Chance: Hammer / Shooting Star (Small body, one massive wick)
+    else if (rand < 0.17) {
+        // 10% Chance: Hammer / Shooting Star (Small body, one massive wick)
         bodySize = dynamicVol * (0.2 + Math.random() * 0.4);
         if (Math.random() > 0.5) {
-            upperWick = dynamicVol * (1.5 + Math.random() * 3.0);
+            upperWick = dynamicVol * (1.5 + Math.random() * 2.0);
             lowerWick = dynamicVol * (Math.random() * 0.2);
         } else {
             upperWick = dynamicVol * (Math.random() * 0.2);
-            lowerWick = dynamicVol * (1.5 + Math.random() * 3.0);
+            lowerWick = dynamicVol * (1.5 + Math.random() * 2.0);
         }
     }
-    else if (rand < 0.50) {
-        // 15% Chance: Big Marubozu Trend (Massive body, almost no wick)
-        bodySize = dynamicVol * (2.0 + Math.random() * 1.5);
+    else if (rand < 0.22) {
+        // 5% Chance: Big Marubozu Trend (Massive body, almost no wick)
+        bodySize = dynamicVol * (1.5 + Math.random() * 1.0);
         upperWick = dynamicVol * (Math.random() * 0.1);
         lowerWick = dynamicVol * (Math.random() * 0.1);
     }
-    else if (rand < 0.535) {
-        // 3.5% Chance: Huge Breakout (Massive candle, 5x to 10x normal size)
-        const multiplier = 5.0 + Math.random() * 5.0;
+    else if (rand < 0.235) {
+        // 1.5% Chance: Huge Breakout (Massive candle, 5x to 10x normal size)
+        const multiplier = 5.0 + Math.random() * 3.0;
         bodySize = dynamicVol * multiplier;
-        upperWick = dynamicVol * (Math.random() * 0.5);
-        lowerWick = dynamicVol * (Math.random() * 0.5);
+        upperWick = dynamicVol * (Math.random() * 0.4);
+        lowerWick = dynamicVol * (Math.random() * 0.4);
     }
     else {
-        // ~46.5% Chance: Standard Natural Candle
-        bodySize = dynamicVol * (0.6 + Math.random() * 1.2);
-        upperWick = dynamicVol * (0.2 + Math.random() * 0.9);
-        lowerWick = dynamicVol * (0.2 + Math.random() * 0.9);
+        // ~76.5% Chance: Standard Natural Candle (Medium body, moderate wicks)
+        bodySize = dynamicVol * (0.5 + Math.random() * 1.0);
+        upperWick = dynamicVol * (0.15 + Math.random() * 0.6);
+        lowerWick = dynamicVol * (0.15 + Math.random() * 0.6);
     }
 
     const close = isGreen ? safeOpen + bodySize : safeOpen - bodySize;
@@ -158,13 +158,13 @@ function generateDynamicCandle(timestamp, open, command, cloneData) {
     let shapeType = 'STANDARD';
     if (cmd === 'GREEN' || cmd === 'RED') {
         const r = Math.random();
-        if (r < 0.035) { // ~ 1 in 30 candles (huge breakout)
+        if (r < 0.015) { // 1.5% chance (huge breakout)
             shapeType = 'HUGE_BREAKOUT';
-        } else if (r < 0.18) { // 14.5% chance
+        } else if (r < 0.085) { // 7% chance
             shapeType = 'DOJI_LIKE';
-        } else if (r < 0.38) { // 20% chance
+        } else if (r < 0.185) { // 10% chance
             shapeType = Math.random() > 0.5 ? 'HAMMER_LIKE' : 'SHOOTING_STAR_LIKE';
-        } else if (r < 0.53) { // 15% chance
+        } else if (r < 0.235) { // 5% chance
             shapeType = 'MARUBOZU_LIKE';
         }
     }
@@ -181,35 +181,35 @@ function generateDynamicCandle(timestamp, open, command, cloneData) {
 
     if (isDojiShape) {
         bodySize = dynamicVol * (Math.random() * 0.15); // Smaller body for Doji-like
-        upperWick = dynamicVol * (0.8 + Math.random() * 2.0);
-        lowerWick = dynamicVol * (0.8 + Math.random() * 2.0);
+        upperWick = dynamicVol * (0.4 + Math.random() * 1.0);
+        lowerWick = dynamicVol * (0.4 + Math.random() * 1.0);
     } else if (cmd.includes('MARUBOZU') || shapeType === 'MARUBOZU_LIKE') {
-        bodySize = dynamicVol * (2.0 + Math.random() * 2.0);
-        upperWick = dynamicVol * (Math.random() * 0.2);
-        lowerWick = dynamicVol * (Math.random() * 0.2);
+        bodySize = dynamicVol * (1.5 + Math.random() * 1.0);
+        upperWick = dynamicVol * (Math.random() * 0.1);
+        lowerWick = dynamicVol * (Math.random() * 0.1);
     } else if (cmd.includes('HAMMER') || shapeType === 'HAMMER_LIKE') {
         bodySize = dynamicVol * (0.4 + Math.random() * 0.6);
         if (isGreen) {
-            upperWick = dynamicVol * (Math.random() * 0.3);
-            lowerWick = dynamicVol * (1.5 + Math.random() * 2.5);
+            upperWick = dynamicVol * (Math.random() * 0.2);
+            lowerWick = dynamicVol * (1.5 + Math.random() * 2.0);
         } else {
-            upperWick = dynamicVol * (Math.random() * 0.3);
-            lowerWick = dynamicVol * (1.5 + Math.random() * 2.5);
+            upperWick = dynamicVol * (Math.random() * 0.2);
+            lowerWick = dynamicVol * (1.5 + Math.random() * 2.0);
         }
     } else if (cmd.includes('SHOOTING_STAR') || shapeType === 'SHOOTING_STAR_LIKE') {
         bodySize = dynamicVol * (0.4 + Math.random() * 0.6);
-        upperWick = dynamicVol * (1.5 + Math.random() * 2.5);
-        lowerWick = dynamicVol * (Math.random() * 0.3);
+        upperWick = dynamicVol * (1.5 + Math.random() * 2.0);
+        lowerWick = dynamicVol * (Math.random() * 0.2);
     } else if (cmd === 'PREV_2X' || shapeType === 'HUGE_BREAKOUT') {
-        const multiplier = 5.0 + Math.random() * 5.0; // 5x to 10x size (massive 6-10 candle equivalent)
+        const multiplier = 5.0 + Math.random() * 3.0;
         bodySize = dynamicVol * multiplier;
-        upperWick = dynamicVol * (Math.random() * 0.5);
-        lowerWick = dynamicVol * (Math.random() * 0.5);
+        upperWick = dynamicVol * (Math.random() * 0.4);
+        lowerWick = dynamicVol * (Math.random() * 0.4);
     } else {
-        // Standard controlled candle (GREEN / RED / RANDOM)
-        bodySize = dynamicVol * (0.8 + Math.random() * 1.5);
-        upperWick = dynamicVol * (0.3 + Math.random() * 1.2);
-        lowerWick = dynamicVol * (0.3 + Math.random() * 1.2);
+        // Standard controlled candle (Medium body, moderate wicks)
+        bodySize = dynamicVol * (0.5 + Math.random() * 1.0);
+        upperWick = dynamicVol * (0.15 + Math.random() * 0.6);
+        lowerWick = dynamicVol * (0.15 + Math.random() * 0.6);
     }
 
     const directionIsGreen = isGreen || (!isRed && Math.random() > 0.5);
