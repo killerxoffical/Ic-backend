@@ -741,6 +741,7 @@ setInterval(async () => {
                 // 1. Send opening message to Telegram
                 if (!trade.tgMessageId && !trade.isDemo && !trade.isTournament) {
                     let currentBal = parseFloat(user.realBalance || 0); // Balance already has trade amount deducted
+                    let previousBal = currentBal + parseFloat(trade.amount || 0); // Reconstruct balance before trade
                     let expWinBal = currentBal + (trade.amount * payoutRate);
 
                     const msg = `🟢 <b>New Trade Opened</b>\n\n` +
@@ -750,6 +751,7 @@ setInterval(async () => {
                         `⏱ <b>Duration:</b> ${trade.expiryType === 'time' ? trade.expiryType : 'Seconds'}\n` +
                         `📊 <b>Direction:</b> ${trade.direction}\n` +
                         `💵 <b>Amount:</b> $${trade.amount}\n` +
+                        `⏮ <b>Previous Balance:</b> $${previousBal.toFixed(2)}\n` +
                         `💰 <b>Current Balance:</b> $${currentBal.toFixed(2)}\n\n` +
                         `💸 <b>Balance if Win:</b> $${expWinBal.toFixed(2)}\n` +
                         `💸 <b>Balance if Loss:</b> $${currentBal.toFixed(2)}`;
