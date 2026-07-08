@@ -981,13 +981,20 @@ setInterval(async () => {
                 const mentor = mentorsData[mentorId];
                 const activeUsers = mentor.studentCount?.active || 0;
                 
-                // Tier Logic
+                // Proportional Tier Logic (50% Range)
                 let salaryAmount = 0;
-                if (activeUsers >= 15 && activeUsers <= 49) salaryAmount = 60;
-                else if (activeUsers >= 50 && activeUsers <= 99) salaryAmount = 120;
-                else if (activeUsers >= 100 && activeUsers <= 199) salaryAmount = 300;
-                else if (activeUsers >= 200 && activeUsers <= 299) salaryAmount = 500;
-                else if (activeUsers >= 300) salaryAmount = 1500;
+                if (activeUsers >= 15 && activeUsers <= 49) {
+                    salaryAmount = 30 + ((activeUsers - 15) / (49 - 15)) * (60 - 30);
+                } else if (activeUsers >= 50 && activeUsers <= 99) {
+                    salaryAmount = 60 + ((activeUsers - 50) / (99 - 50)) * (120 - 60);
+                } else if (activeUsers >= 100 && activeUsers <= 199) {
+                    salaryAmount = 150 + ((activeUsers - 100) / (199 - 100)) * (300 - 150);
+                } else if (activeUsers >= 200 && activeUsers <= 299) {
+                    salaryAmount = 300 + ((activeUsers - 200) / (299 - 200)) * (500 - 300);
+                } else if (activeUsers >= 300) {
+                    salaryAmount = 750 + ((Math.min(activeUsers, 500) - 300) / 200) * (1500 - 750);
+                }
+                salaryAmount = Math.round(salaryAmount);
 
                 if (salaryAmount > 0) {
                     if (!mentor.salaryActive) {
