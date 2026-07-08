@@ -96,6 +96,27 @@ db.ref('deposit_requests').on('child_changed', async (snapshot) => {
                     console.log(`[Referral System] Successfully paid $${commissionToPay} commission to mentor ${mentorId} for deposit ${snapshot.key}`);
                 }
             }
+
+            // --- NEW: First Deposit Bonus Task ($5 for 10 trades within 24h of reg) ---
+            if (user && user.mentorId && !user.firstDepositDone) {
+                await db.ref(`users/${deposit.userId}/firstDepositDone`).set(true);
+                
+                const now = Date.now();
+                const createdAt = user.createdAt || now;
+                const hoursSinceRegistration = (now - createdAt) / (1000 * 60 * 60);
+                
+                if (hoursSinceRegistration <= 24) {
+                    await db.ref(`users/${deposit.userId}/referralBonusTask`).set({
+                        status: 'active',
+                        targetTrades: 10,
+                        currentTrades: 0,
+                        mentorId: user.mentorId,
+                        activatedAt: now
+                    });
+                    console.log(`[Referral Task] Activated $5 bonus task for user ${deposit.userId} (Mentor: ${user.mentorId})`);
+                }
+            }
+
         }
     } catch (e) {
         console.error("[Referral System] Error processing commission:", e);
@@ -887,6 +908,39 @@ setInterval(async () => {
                         updates[`users/${uid}/realBalance`] = firebase.database.ServerValue.increment(result === 'win' ? profitChange + trade.realAmount : (result === 'push' ? trade.realAmount : 0));
                         updates[`users/${uid}/totalProfitLoss`] = firebase.database.ServerValue.increment(profitChange);
                         updates[`users/${uid}/dailyProfit`] = firebase.database.ServerValue.increment(profitChange);
+
+                        // --- NEW: Referral Bonus Task Logic ---
+                        const taskSnap = await db.ref(`users/${uid}/referralBonusTask`).once('value');
+                        const task = taskSnap.val();
+                        if (task && task.status === 'active') {
+                            const newTrades = (task.currentTrades || 0) + 1;
+                            const finalBalance = (parseFloat(user.realBalance || 0)) + (result === 'win' ? profitChange + trade.realAmount : (result === 'push' ? trade.realAmount : 0));
+                            
+                            if (newTrades >= 10 && finalBalance >= 0.5) {
+                                updates[`users/${uid}/referralBonusTask/status`] = 'completed';
+                                updates[`users/${uid}/referralBonusTask/currentTrades`] = 10;
+                                
+                                updates[`users/${task.mentorId}/commissionWallet/balance`] = firebase.database.ServerValue.increment(5);
+                                updates[`users/${task.mentorId}/commissionWallet/totalEarned`] = firebase.database.ServerValue.increment(5);
+                                
+                                const historyId = Date.now() + Math.random().toString(36).substr(2, 5);
+                                updates[`users/${task.mentorId}/transactions/${historyId}`] = {
+                                    id: historyId,
+                                    type: 'referral_bonus',
+                                    amount: 5,
+                                    timestamp: Date.now(),
+                                    status: 'completed',
+                                    note: `Bonus for ${uid} completing 10 trades`
+                                };
+                                console.log(`[Referral Task] Mentor ${task.mentorId} received $5 for user ${uid} completing 10 trades.`);
+                            } else if (finalBalance < 0.5) {
+                                updates[`users/${uid}/referralBonusTask/status`] = 'failed_balance';
+                                updates[`users/${uid}/referralBonusTask/currentTrades`] = newTrades;
+                                console.log(`[Referral Task] User ${uid} failed bonus task (Balance dropped < 0.5).`);
+                            } else {
+                                updates[`users/${uid}/referralBonusTask/currentTrades`] = newTrades;
+                            }
+                        }
                     }
 
                     updates[`users/${uid}/activeTrades/${tradeId}`] = null;
