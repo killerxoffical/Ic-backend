@@ -102,6 +102,43 @@ db.ref('deposit_requests').on('child_changed', async (snapshot) => {
     }
 });
 
+// ==========================================
+// MONTHLY SALARY RELEASE SYSTEM (SECURE)
+// ==========================================
+db.ref('salary_requests').on('child_changed', async (snapshot) => {
+    try {
+        const req = snapshot.val();
+        if (req && req.status === 'approved' && !req.paid) {
+            const reqRef = snapshot.ref;
+            await reqRef.child('paid').set(true); // Lock to prevent double payment
+            
+            const mentorId = req.mentorId;
+            const amount = parseFloat(req.amount) || 0;
+            
+            if (amount > 0 && mentorId) {
+                // Instantly and securely add to mentor's salaryWallet
+                await db.ref(`users/${mentorId}/salaryWallet/balance`).set(firebase.database.ServerValue.increment(amount));
+                await db.ref(`users/${mentorId}/salaryWallet/totalEarned`).set(firebase.database.ServerValue.increment(amount));
+                
+                // Add history log
+                const historyId = Date.now() + Math.random().toString(36).substr(2, 5);
+                await db.ref(`users/${mentorId}/transactions/${historyId}`).set({
+                    id: historyId,
+                    type: 'salary',
+                    amount: amount,
+                    timestamp: firebase.database.ServerValue.TIMESTAMP,
+                    status: 'completed',
+                    note: `Monthly Salary Released by Admin`
+                });
+                
+                sendPingBotAlert(`✅ <b>Salary Released!</b>\n$${amount} has been successfully added to mentor <code>${mentorId}</code>'s wallet.`);
+            }
+        }
+    } catch (e) {
+        console.error("[Salary System] Error releasing salary:", e);
+    }
+});
+
 function roundPrice(v) { return parseFloat(Math.max(MIN_PRICE, v).toFixed(5)); }
 function marketPathFromId(marketId) { return String(marketId || '').replace(/[\.\/ ]/g, '-').toLowerCase(); }
 
@@ -930,8 +967,67 @@ setInterval(async () => {
         });
 
         await sendPingBotAlert(`⚙️ <b>ICTEX Hourly Pulse Status:</b> Server is fully ACTIVE and running smoothly. Keep-alive system is engaged.`);
+        
+        // ==========================================
+        // HOURLY MONTHLY SALARY ENGINE
+        // ==========================================
+        const mentorsSnap = await db.ref('mentors').once('value');
+        if (mentorsSnap.exists()) {
+            const now = Date.now();
+            const updates = {};
+            const mentorsData = mentorsSnap.val();
+            
+            for (const mentorId in mentorsData) {
+                const mentor = mentorsData[mentorId];
+                const activeUsers = mentor.studentCount?.active || 0;
+                
+                // Tier Logic
+                let salaryAmount = 0;
+                if (activeUsers >= 15 && activeUsers <= 49) salaryAmount = 60;
+                else if (activeUsers >= 50 && activeUsers <= 99) salaryAmount = 120;
+                else if (activeUsers >= 100 && activeUsers <= 199) salaryAmount = 300;
+                else if (activeUsers >= 200 && activeUsers <= 299) salaryAmount = 500;
+                else if (activeUsers >= 300) salaryAmount = 1500;
+
+                if (salaryAmount > 0) {
+                    if (!mentor.salaryActive) {
+                        // First time activating salary program
+                        updates[`mentors/${mentorId}/salaryActive`] = true;
+                        updates[`mentors/${mentorId}/salaryStartDate`] = now;
+                        updates[`mentors/${mentorId}/lastSalaryDate`] = now;
+                        
+                        sendPingBotAlert(`🎉 <b>New Salary Enrollment!</b>\nMentor ID: <code>${mentorId}</code>\nActive Users: ${activeUsers}\nStatus: Entered Salary Program for Tier $${salaryAmount}/mo.`);
+                    } else {
+                        // Check if 30 days have passed since last salary
+                        const lastSalary = mentor.lastSalaryDate || mentor.salaryStartDate;
+                        const daysPassed = (now - lastSalary) / (1000 * 60 * 60 * 24);
+                        
+                        if (daysPassed >= 30) {
+                            // Create Pending Salary Request
+                            const reqId = "sal_" + now + Math.random().toString(36).substr(2, 5);
+                            updates[`salary_requests/${reqId}`] = {
+                                id: reqId,
+                                mentorId: mentorId,
+                                amount: salaryAmount,
+                                activeUsers: activeUsers,
+                                status: 'pending',
+                                timestamp: now,
+                                monthPeriod: now
+                            };
+                            
+                            updates[`mentors/${mentorId}/lastSalaryDate`] = now; // Reset timer for next month
+                            
+                            sendPingBotAlert(`💰 <b>Monthly Salary Due!</b>\nMentor ID: <code>${mentorId}</code>\nActive Users: ${activeUsers}\nPending Salary: $${salaryAmount}\n\n<i>Admin: Please release from panel.</i>`);
+                        }
+                    }
+                }
+            }
+            if (Object.keys(updates).length > 0) {
+                await db.ref().update(updates);
+            }
+        }
     } catch (e) {
-        console.log("Heartbeat failed:", e.message);
+        console.log("Heartbeat/Salary Engine failed:", e.message);
     }
 }, 60 * 60 * 1000); // প্রতি ১ ঘণ্টা পর পর পিং করবে এবং নতুন বটের মাধ্যমে নোটিফাই করবে
 
