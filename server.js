@@ -1053,6 +1053,33 @@ setInterval(async () => {
                     if (mentor.cycleMinActive === undefined || activeUsers < mentor.cycleMinActive) {
                         updates[`mentors/${mentorId}/cycleMinActive`] = activeUsers;
                     }
+                    
+                    // Auto Cycle Generation
+                    const startDate = mentor.salaryStartDate || now;
+                    const lastDate = mentor.lastSalaryDate || startDate;
+                    const ldObj = new Date(lastDate);
+                    const nextSalaryDate = new Date(ldObj.getFullYear(), ldObj.getMonth() + 1, 1).getTime();
+                    
+                    if (now >= nextSalaryDate) {
+                        const cycleId = "CYC_" + lastDate;
+                        if (!mentor.pendingSalaries || !mentor.pendingSalaries[cycleId]) {
+                            const workedDays = Math.max(1, Math.ceil((nextSalaryDate - lastDate) / (1000 * 60 * 60 * 24)));
+                            const effectiveActiveUsers = mentor.cycleMinActive !== undefined ? mentor.cycleMinActive : activeUsers;
+                            
+                            updates[`mentors/${mentorId}/pendingSalaries/${cycleId}`] = {
+                                startDate: lastDate,
+                                endDate: nextSalaryDate,
+                                activeMembers: effectiveActiveUsers,
+                                workedDays: workedDays,
+                                status: 'pending',
+                                timestamp: now
+                            };
+                            updates[`mentors/${mentorId}/lastSalaryDate`] = nextSalaryDate;
+                            updates[`mentors/${mentorId}/cycleMinActive`] = activeUsers; // Reset for new cycle
+                            
+                            sendPingBotAlert(`💰 <b>Salary Generated!</b>\nMentor ID: <code>${mentorId}</code>\nCycle: ${new Date(lastDate).toLocaleDateString()} - ${new Date(nextSalaryDate).toLocaleDateString()}\nStatus: Pending Admin Approval.`);
+                        }
+                    }
                 }
             }
             if (Object.keys(updates).length > 0) {
