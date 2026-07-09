@@ -1044,6 +1044,10 @@ setInterval(async () => {
                     updates[`mentors/${mentorId}/lastSalaryDate`] = now;
                     
                     sendPingBotAlert(`🎉 <b>New Salary Enrollment!</b>\nMentor ID: <code>${mentorId}</code>\nActive Users: ${activeUsers}\nStatus: Entered Salary Program.`);
+                } else if (activeUsers < 15 && mentor.salaryActive) {
+                    // Demotion: Drop out of salary program
+                    updates[`mentors/${mentorId}/salaryActive`] = false;
+                    sendPingBotAlert(`⚠️ <b>Salary Program Demotion!</b>\nMentor ID: <code>${mentorId}</code>\nActive Users: ${activeUsers}\nStatus: Removed from Salary Program.`);
                 }
             }
             if (Object.keys(updates).length > 0) {
