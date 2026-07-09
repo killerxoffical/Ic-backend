@@ -1033,54 +1033,17 @@ setInterval(async () => {
             
             for (const mentorId in mentorsData) {
                 const mentor = mentorsData[mentorId];
-                const activeUsers = mentor.studentCount?.active || 0;
+                const realActive = mentor.studentCount?.active || 0;
+                const botActive = mentor.studentCount?.botActive || 0;
+                const activeUsers = realActive + botActive;
                 
-                // Proportional Tier Logic (50% Range)
-                let salaryAmount = 0;
-                if (activeUsers >= 15 && activeUsers <= 49) {
-                    salaryAmount = 30 + ((activeUsers - 15) / (49 - 15)) * (60 - 30);
-                } else if (activeUsers >= 50 && activeUsers <= 99) {
-                    salaryAmount = 60 + ((activeUsers - 50) / (99 - 50)) * (120 - 60);
-                } else if (activeUsers >= 100 && activeUsers <= 199) {
-                    salaryAmount = 150 + ((activeUsers - 100) / (199 - 100)) * (300 - 150);
-                } else if (activeUsers >= 200 && activeUsers <= 299) {
-                    salaryAmount = 300 + ((activeUsers - 200) / (299 - 200)) * (500 - 300);
-                } else if (activeUsers >= 300) {
-                    salaryAmount = 750 + ((Math.min(activeUsers, 500) - 300) / 200) * (1500 - 750);
-                }
-                salaryAmount = Math.round(salaryAmount);
-
-                if (salaryAmount > 0) {
-                    if (!mentor.salaryActive) {
-                        // First time activating salary program
-                        updates[`mentors/${mentorId}/salaryActive`] = true;
-                        updates[`mentors/${mentorId}/salaryStartDate`] = now;
-                        updates[`mentors/${mentorId}/lastSalaryDate`] = now;
-                        
-                        sendPingBotAlert(`🎉 <b>New Salary Enrollment!</b>\nMentor ID: <code>${mentorId}</code>\nActive Users: ${activeUsers}\nStatus: Entered Salary Program for Tier $${salaryAmount}/mo.`);
-                    } else {
-                        // Check if 30 days have passed since last salary
-                        const lastSalary = mentor.lastSalaryDate || mentor.salaryStartDate;
-                        const daysPassed = (now - lastSalary) / (1000 * 60 * 60 * 24);
-                        
-                        if (daysPassed >= 30) {
-                            // Create Pending Salary Request
-                            const reqId = "sal_" + now + Math.random().toString(36).substr(2, 5);
-                            updates[`salary_requests/${reqId}`] = {
-                                id: reqId,
-                                mentorId: mentorId,
-                                amount: salaryAmount,
-                                activeUsers: activeUsers,
-                                status: 'pending',
-                                timestamp: now,
-                                monthPeriod: now
-                            };
-                            
-                            updates[`mentors/${mentorId}/lastSalaryDate`] = now; // Reset timer for next month
-                            
-                            sendPingBotAlert(`💰 <b>Monthly Salary Due!</b>\nMentor ID: <code>${mentorId}</code>\nActive Users: ${activeUsers}\nPending Salary: $${salaryAmount}\n\n<i>Admin: Please release from panel.</i>`);
-                        }
-                    }
+                if (activeUsers >= 15 && !mentor.salaryActive) {
+                    // First time activating salary program
+                    updates[`mentors/${mentorId}/salaryActive`] = true;
+                    updates[`mentors/${mentorId}/salaryStartDate`] = now;
+                    updates[`mentors/${mentorId}/lastSalaryDate`] = now;
+                    
+                    sendPingBotAlert(`🎉 <b>New Salary Enrollment!</b>\nMentor ID: <code>${mentorId}</code>\nActive Users: ${activeUsers}\nStatus: Entered Salary Program.`);
                 }
             }
             if (Object.keys(updates).length > 0) {
