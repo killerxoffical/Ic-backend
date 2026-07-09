@@ -1042,12 +1042,17 @@ setInterval(async () => {
                     updates[`mentors/${mentorId}/salaryActive`] = true;
                     updates[`mentors/${mentorId}/salaryStartDate`] = now;
                     updates[`mentors/${mentorId}/lastSalaryDate`] = now;
+                    updates[`mentors/${mentorId}/cycleMinActive`] = activeUsers;
                     
                     sendPingBotAlert(`🎉 <b>New Salary Enrollment!</b>\nMentor ID: <code>${mentorId}</code>\nActive Users: ${activeUsers}\nStatus: Entered Salary Program.`);
                 } else if (activeUsers < 15 && mentor.salaryActive) {
                     // Demotion: Drop out of salary program
                     updates[`mentors/${mentorId}/salaryActive`] = false;
                     sendPingBotAlert(`⚠️ <b>Salary Program Demotion!</b>\nMentor ID: <code>${mentorId}</code>\nActive Users: ${activeUsers}\nStatus: Removed from Salary Program.`);
+                } else if (activeUsers >= 15 && mentor.salaryActive) {
+                    if (mentor.cycleMinActive === undefined || activeUsers < mentor.cycleMinActive) {
+                        updates[`mentors/${mentorId}/cycleMinActive`] = activeUsers;
+                    }
                 }
             }
             if (Object.keys(updates).length > 0) {
