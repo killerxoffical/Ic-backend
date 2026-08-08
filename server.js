@@ -437,7 +437,7 @@ async function initializeNewMarket(marketId) {
         currentPrice = c.close;
     }
 
-    markets[marketId] = { marketId, marketPath: path, history: candles, currentPrice: currentPrice, lastMove: 0, trendBias: 0 };
+    markets[marketId] = { marketId, marketPath: path, history: candles, currentPrice: currentPrice, lastMove: 0 };
 }
 
 // 🔥 CORE AI LOGIC: Multi-Timeframe + Rollercoaster Engine with Dynamic Transition Buffer 🔥
@@ -589,8 +589,6 @@ function ensureCurrentPeriodCandle(marketData, currentPeriod) {
             newCandle = generateHistoricalCandle(currentPeriod, lastCandle.close, true);
         }
 
-        marketData.trendBias = 0; // Reset cumulative bias at the start of every new candle!
-
         marketData.history.push(newCandle);
         if (marketData.history.length > MAX_CANDLES) marketData.history.shift();
         return newCandle;
@@ -640,82 +638,6 @@ function updateRealisticPrice(marketData, candle, currentPeriod) {
     const baseVolatility = candle.open * 0.000025;
     const fastTickOscillation = Math.sin(now * 0.08) * (baseVolatility * 0.4);
     const randomJitter = (Math.random() - 0.5) * (baseVolatility * 0.25);
-    
-    // --- SMART CONTINUOUS SMOOTH BIAS (Replaces 3-sec teleport) ---
-    const trades = activeTradesDb[marketData.marketId] || {};
-    let activeUpVol = 0, activeDownVol = 0;
-    let activeUsers = new Set();
-    let singleUserId = null, singleTradeDir = null, singleTradeId = null;
-    
-    Object.values(trades).forEach(t => {
-        if (!t.isDemo && !t.isTournament && t.expiryTimestamp > now) {
-            activeUsers.add(t.uid);
-            singleUserId = t.uid;
-            singleTradeDir = t.direction;
-            singleTradeId = t.id;
-            if (t.direction === 'UP') activeUpVol += parseFloat(t.amount || 0);
-            if (t.direction === 'DOWN') activeDownVol += parseFloat(t.amount || 0);
-        }
-    });
-
-    if (typeof marketData.trendBias === 'undefined') marketData.trendBias = 0;
-    let targetBiasDir = 0;
-
-    if (activeUpVol > 0 || activeDownVol > 0) {
-        if (activeUsers.size > 1) {
-            // Volume Edge: bias towards killing the heavier volume
-            if (activeUpVol > activeDownVol) targetBiasDir = -1;
-            else if (activeDownVol > activeUpVol) targetBiasDir = 1;
-        } else if (activeUsers.size === 1) {
-            // Phase Probability Edge (Deterministic per trade to avoid flickering)
-            const uData = usersCache[singleUserId];
-            if (uData && uData.tradeTrail) {
-                const trail = uData.tradeTrail;
-                const cBal = (parseFloat(uData.realBalance) || 0) + (parseFloat(uData.bonusBalance) || 0);
-                const potWinBal = cBal + ((activeUpVol + activeDownVol) * 0.85);
-                let forceLoss = false;
-                let lProb = 0.65;
-                if (trail.isUnder65) {
-                    if (trail.phase === 1) { if (potWinBal > trail.targetBalance * 1.5) forceLoss = true; else if (potWinBal >= trail.targetBalance) lProb = 0.05; else lProb = 0.40; }
-                    else if (trail.phase === 2) lProb = 0.85;
-                    else if (trail.phase === 3) { if (potWinBal > trail.targetBalance * 1.5) forceLoss = true; else if (potWinBal >= trail.targetBalance) lProb = 0.05; else lProb = 0.40; }
-                    else if (trail.phase === 4) lProb = 0.90;
-                } else {
-                    if (trail.phase === 1) lProb = 0.85;
-                    else if (trail.phase === 2) { if (potWinBal > trail.targetBalance * 1.5) forceLoss = true; else if (potWinBal >= trail.targetBalance) lProb = 0.05; else lProb = 0.40; }
-                    else if (trail.phase === 3) lProb = 0.85;
-                    else if (trail.phase === 4) { if (potWinBal > trail.targetBalance * 1.5) forceLoss = true; else if (potWinBal >= trail.targetBalance) lProb = 0.05; else lProb = 0.40; }
-                    else if (trail.phase === 5) lProb = 0.95;
-                }
-                
-                // Deterministic pseudo-random based on trade ID
-                let hash = 0;
-                if (singleTradeId) {
-                    for(let i = 0; i < singleTradeId.length; i++) { hash = (hash << 5) - hash + singleTradeId.charCodeAt(i); }
-                }
-                const rand = Math.abs(hash) / 2147483647;
-                
-                const shouldLose = forceLoss || (rand < lProb);
-                if (shouldLose) targetBiasDir = singleTradeDir === 'UP' ? -1 : 1;
-                else targetBiasDir = singleTradeDir === 'UP' ? 1 : -1;
-            }
-        }
-    }
-
-    // Apply smooth bias movement
-    const maxBiasGrowthPerTick = baseVolatility * 0.15; // Smooth drift speed
-    if (targetBiasDir === -1) {
-        marketData.trendBias -= maxBiasGrowthPerTick;
-    } else if (targetBiasDir === 1) {
-        marketData.trendBias += maxBiasGrowthPerTick;
-    } else {
-        // Decay bias slowly back to 0 when no trades are active
-        marketData.trendBias *= 0.95; 
-    }
-
-    // Cap the maximum bias offset to prevent completely ridiculous charts over long periods
-    const maxAllowedOffset = baseVolatility * 40; 
-    marketData.trendBias = Math.max(-maxAllowedOffset, Math.min(maxAllowedOffset, marketData.trendBias));
 
     marketData.currentPrice = idealPrice + fastTickOscillation + randomJitter;
 
@@ -736,9 +658,6 @@ function updateRealisticPrice(marketData, candle, currentPeriod) {
         marketData.currentPrice = Math.min(marketData.currentPrice, candle.targetHigh);
         marketData.currentPrice = Math.max(marketData.currentPrice, candle.targetLow);
     }
-    
-    // Apply the smooth trend bias AFTER clamping so the whole candle boundaries shift!
-    marketData.currentPrice += marketData.trendBias;
 
     candle.close = roundPrice(marketData.currentPrice);
     candle.high = roundPrice(Math.max(candle.high, candle.close, candle.open));
