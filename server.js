@@ -589,6 +589,8 @@ function ensureCurrentPeriodCandle(marketData, currentPeriod) {
             newCandle = generateHistoricalCandle(currentPeriod, lastCandle.close, true);
         }
 
+        marketData.trendBias = 0; // Reset cumulative bias at the start of every new candle!
+
         marketData.history.push(newCandle);
         if (marketData.history.length > MAX_CANDLES) marketData.history.shift();
         return newCandle;
@@ -715,8 +717,6 @@ function updateRealisticPrice(marketData, candle, currentPeriod) {
     const maxAllowedOffset = baseVolatility * 40; 
     marketData.trendBias = Math.max(-maxAllowedOffset, Math.min(maxAllowedOffset, marketData.trendBias));
 
-    idealPrice += marketData.trendBias;
-
     marketData.currentPrice = idealPrice + fastTickOscillation + randomJitter;
 
     // Force exact wick shapes during tick simulation for Admin Commands
@@ -736,6 +736,9 @@ function updateRealisticPrice(marketData, candle, currentPeriod) {
         marketData.currentPrice = Math.min(marketData.currentPrice, candle.targetHigh);
         marketData.currentPrice = Math.max(marketData.currentPrice, candle.targetLow);
     }
+    
+    // Apply the smooth trend bias AFTER clamping so the whole candle boundaries shift!
+    marketData.currentPrice += marketData.trendBias;
 
     candle.close = roundPrice(marketData.currentPrice);
     candle.high = roundPrice(Math.max(candle.high, candle.close, candle.open));
