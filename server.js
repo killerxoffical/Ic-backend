@@ -873,15 +873,12 @@ setInterval(async () => {
                         if (markets[mId] && markets[mId].currentPrice) {
                             exactPrice = markets[mId].currentPrice;
                         }
-                        // Lock it in the database so the scanner remembers it on the next loop
-                        await db.ref(`users/${uid}/activeTrades/${tradeId}/lockedClosingPrice`).set(exactPrice);
-                        continue; // Skip resolution on this tick, wait for the delay
+                        trade.lockedClosingPrice = exactPrice;
+                        // Lock it in the database asynchronously and proceed immediately
+                        db.ref(`users/${uid}/activeTrades/${tradeId}/lockedClosingPrice`).set(exactPrice).catch(()=>{});
                     }
 
-                    // Wait 1.5 seconds for client UI candle animation to beautifully finish
-                    if (now >= trade.expiryTimestamp + 1500) {
-
-                        let closingPrice = trade.lockedClosingPrice;
+                    let closingPrice = trade.lockedClosingPrice;
 
                     const betAmount = parseFloat(trade.amount);
                     const diff = closingPrice - trade.openPrice;
@@ -982,8 +979,6 @@ setInterval(async () => {
                         const icon = result === 'win' ? '✅' : (result === 'loss' ? '❌' : '🔄');
                         await sendTgMessage(`${icon} <b>Trade Closed: ${result.toUpperCase()}</b>\n💵 <b>Payout:</b> $${payout.toFixed(2)}`, trade.tgMessageId);
                     }
-                    
-                    } // <-- Closes the 1500ms delay block
                 }
             }
         }
