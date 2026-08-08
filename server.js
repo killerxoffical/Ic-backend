@@ -874,12 +874,9 @@ setInterval(async () => {
                             exactPrice = markets[mId].currentPrice;
                         }
                         trade.lockedClosingPrice = exactPrice;
-                        // Lock it in the database asynchronously
+                        // Lock it in the database asynchronously and proceed immediately
                         db.ref(`users/${uid}/activeTrades/${tradeId}/lockedClosingPrice`).set(exactPrice).catch(()=>{});
                     }
-
-                    // 2-second delay for beautiful UI candle switch
-                    if (now < trade.expiryTimestamp + 2000) continue;
 
                     let closingPrice = trade.lockedClosingPrice;
 
