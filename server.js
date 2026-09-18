@@ -37,7 +37,7 @@ const TIMEFRAME = 60000;
 const TICK_MS = 300;
 const MIN_PRICE = 0.00001;
 const HISTORY_SEED_COUNT = 100;
-const MAX_CANDLES = 5000;
+const MAX_CANDLES = 2880; // ২ দিন (৪৮ ঘণ্টা × ৬০ মিনিট = ২৮৮০ ক্যান্ডেল)0;
 
 // 🔥 ADMIN SMART SETTINGS 🔥
 const SMART_AUTO_PILOT = true;
@@ -728,42 +728,9 @@ app.post('/api/admin/command', async (req, res) => {
     }
 });
 
-// REST API for Manual Ping from Admin Panel & Pulse Logs Generator
-app.post('/api/admin/manual-ping', async (req, res) => {
-    try {
-        const timestamp = Date.now();
-
-        // ফায়ারবেসে লগ ডাটা পুশ করা (অন-স্ক্রিন টার্মিনালের জন্য)
-        const logRef = db.ref('admin/ping_logs').push();
-        await logRef.set({
-            timestamp: timestamp,
-            type: 'manual_ping',
-            status: 'success'
-        });
-
-        // পুরনো লগ পরিষ্কার করা (সর্বোচ্চ ৩০টি রাখবে)
-        db.ref('admin/ping_logs').once('value', (snap) => {
-            if (snap.exists()) {
-                const count = snap.numChildren();
-                if (count > 30) {
-                    let toDelete = count - 30;
-                    snap.forEach(child => {
-                        if (toDelete > 0) {
-                            child.ref.remove();
-                            toDelete--;
-                        }
-                    });
-                }
-            }
-        });
-
-        // স্পেশাল অ্যালার্ট বট এ মেসেজ পাঠানো (ব্যবহারকারীর নতুন দেওয়া বটের মাধ্যমে)
-        await sendPingBotAlert(`⚡️ <b>Manual Ping Triggered!</b>\n\nICTEX Nexus Monitor has verified active connection. Render is awake and sytem is operational.`);
-
-        res.json({ success: true, message: 'Pulse accepted' });
-    } catch (e) {
-        res.status(500).json({ success: false, error: e.message });
-    }
+// REST API for Manual Ping (Lightweight, No external Telegram bandwidth waste)
+app.post('/api/admin/manual-ping', (req, res) => {
+    res.json({ success: true, message: 'Server is active' });
 });
 
 // Main Ticker Loop
@@ -801,10 +768,6 @@ setInterval(() => {
 const TELEGRAM_BOT_TOKEN = "8740566281:AAHUqc9sYYvFC-ZqHNPfgWx8UKDXiLTW-ps";
 const TELEGRAM_CHAT_ID = "7504616242";
 
-// 📢 ব্যবহারকারীর নতুন দেওয়া স্পেশাল পিং নোটিফিকেশন বট এপিআই 
-const PING_BOT_TOKEN = "7479515201:AAF08je2ERy60W_BRyibHMz_pQ--4nhPuNc";
-const PING_CHAT_ID = "7504616242";
-
 async function sendTgMessage(text, replyToId = null) {
     try {
         const payload = { chat_id: TELEGRAM_CHAT_ID, text: text, parse_mode: 'HTML' };
@@ -814,15 +777,9 @@ async function sendTgMessage(text, replyToId = null) {
     } catch (e) { console.log("TG Error:", e.message); return null; }
 }
 
-// স্পেশাল বট এ সাইলেন্ট পিং মেসেজ পাঠানোর হেল্পার ফাংশন
-async function sendPingBotAlert(text) {
-    try {
-        await axios.post(`https://api.telegram.org/bot${PING_BOT_TOKEN}/sendMessage`, {
-            chat_id: PING_CHAT_ID,
-            text: text,
-            parse_mode: 'HTML'
-        });
-    } catch (e) { console.log("Ping Bot error:", e.message); }
+// Ping Bot removed to save Render outbound bandwidth
+function sendPingBotAlert(text) {
+    return Promise.resolve();
 }
 
 // =====================================================================
@@ -1141,53 +1098,23 @@ const activeSupportSessions = {};
 const adminSupportMap = {};
 const ADMIN_OWNER_ID = "7504616242";
 
-// 1. Render-Keep Alive Mechanism (Self-Ping every 4 minutes)
+// 1. Render-Keep Alive Mechanism (Self-Ping every 10 minutes, no database spam)
 setInterval(async () => {
     if (cachedServerUrl && cachedServerUrl.startsWith('https://')) {
         try {
-            // Pings /ping path of itself to prevent spin-down on Render free-tier
             await axios.get(`${cachedServerUrl}/ping`);
-
-            // ফায়ারবেস পিং লগে সাকসেস রিপোর্ট সেভ করা
-            const logRef = db.ref('admin/ping_logs').push();
-            await logRef.set({
-                timestamp: Date.now(),
-                type: 'auto_pulse',
-                status: 'success'
-            });
-
-            // পুরনো লগ ডিলিট করা (ডাটাবেজ হালকা রাখতে সর্বোচ্চ ৩০টি রাখবে)
-            db.ref('admin/ping_logs').once('value', (snap) => {
-                if (snap.exists()) {
-                    const count = snap.numChildren();
-                    if (count > 30) {
-                        let toDelete = count - 30;
-                        snap.forEach(child => {
-                            if (toDelete > 0) {
-                                child.ref.remove();
-                                toDelete--;
-                            }
-                        });
-                    }
-                }
-            });
-            console.log("⚙️ Render Keep-Alive: Self-Ping Successful.");
-        } catch (e) {
-            console.log("⚙️ Render Keep-Alive Error:", e.message);
-        }
+            console.log("⚙️ Render Keep-Alive: OK");
+        } catch (e) {}
     }
-}, 4 * 60 * 1000);
+}, 10 * 60 * 1000);
 
-// 2. 1-Hour Status Pulse Message to Telegram & Firebase Dead Man's Switch Update
+// 2. Hourly Heartbeat & Monthly Salary Engine (Clean, No Telegram Spam)
 setInterval(async () => {
     try {
-        // ফায়ারবেসে সার্ভারের লাইভ হার্টবিট রাইট করা (এডমিন প্যানেলে অফলাইন অ্যালার্টের জন্য)
         await db.ref('admin/server_status').set({
             lastActive: Date.now(),
             version: 'V35.0'
         });
-
-        await sendPingBotAlert(`⚙️ <b>ICTEX Hourly Pulse Status:</b> Server is fully ACTIVE and running smoothly. Keep-alive system is engaged.`);
         
         // ==========================================
         // HOURLY MONTHLY SALARY ENGINE
@@ -1457,12 +1384,8 @@ db.ref('users').on('child_changed', (snap) => {
 });
 
 // Endpoint hit by external pingers (UptimeRobot, self-ping, etc.)
-app.get('/ping', async (_req, res) => {
-    res.send('Server V37.0 - Live Ping & Dynamic Heartbeat Engine Active');
-
-    // রিয়েল-টাইমে ব্যবহারকারীর নির্দিষ্ট করা স্পেশাল বট এ সাইলেন্ট পিং রিপোর্ট পাঠানো
-    const timeStr = new Date().toLocaleTimeString('en-US', { timeZone: 'Asia/Dhaka' });
-    await sendPingBotAlert(`⚙️ <b>Pulse Ping Received:</b>\nTime: <code>${timeStr}</code> (Dhaka)\nStatus: <code>Render Active</code>`);
+app.get('/ping', (_req, res) => {
+    res.send('Server Active');
 });
 
 const PORT = process.env.PORT || 3000;
