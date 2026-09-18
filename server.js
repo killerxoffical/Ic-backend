@@ -833,7 +833,7 @@ const NOWPAYMENTS_API_KEY = "C8H6P5A-0QXM6SS-PHDQ107-SVN7AYG";
 // ১. পেমেন্ট ইনভয়েস জেনারেটর এপিআই
 app.post('/api/crypto/create-payment', async (req, res) => {
     try {
-        const { userId, amountUSD, userName, userEmail, promoCode } = req.body;
+        const { userId, amountUSD, userName, userEmail, currencySymbol, promoCode } = req.body;
         if (!userId || !amountUSD || amountUSD <= 0) {
             return res.status(400).json({ error: 'Invalid deposit parameters' });
         }
@@ -848,9 +848,13 @@ app.post('/api/crypto/create-payment', async (req, res) => {
             ipn_callback_url: `${cachedServerUrl || 'https://ic-backend-l5sm.onrender.com'}/api/crypto/webhook`,
             success_url: "https://ictex.iceiy.com",
             cancel_url: "https://ictex.iceiy.com",
-            is_fee_paid_by_user: false,
-            is_fixed_rate: true
+            is_fee_paid_by_user: false
         };
+
+        // যদি ইউজার নির্দিষ্ট কোনো কয়েনে ক্লিক করে (যেমন: btc, sol, trx)
+        if (currencySymbol) {
+            payload.pay_currency = currencySymbol;
+        }
 
         const response = await axios.post('https://api.nowpayments.io/v1/invoice', payload, {
             headers: {
