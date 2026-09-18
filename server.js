@@ -847,7 +847,9 @@ app.post('/api/crypto/create-payment', async (req, res) => {
             order_description: `Deposit for User ID ${userId}`,
             ipn_callback_url: `${cachedServerUrl || 'https://ic-backend-l5sm.onrender.com'}/api/crypto/webhook`,
             success_url: "https://ictex.iceiy.com",
-            cancel_url: "https://ictex.iceiy.com"
+            cancel_url: "https://ictex.iceiy.com",
+            is_fee_paid_by_user: false,
+            is_fixed_rate: true
         };
 
         const response = await axios.post('https://api.nowpayments.io/v1/invoice', payload, {
