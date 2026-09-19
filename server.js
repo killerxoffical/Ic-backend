@@ -1075,10 +1075,18 @@ setInterval(async () => {
 
                     await db.ref().update(updates);
 
-                    // Send Final Result Reply to Telegram
+                    // Send Final Result Reply to Telegram with Current Balance
                     if (trade.tgMessageId) {
                         const icon = result === 'win' ? '✅' : (result === 'loss' ? '❌' : '🔄');
-                        await sendTgMessage(`${icon} <b>Trade Closed: ${result.toUpperCase()}</b>\n💵 <b>Payout:</b> $${payout.toFixed(2)}`, trade.tgMessageId);
+                        const updatedUserSnap = await db.ref(`users/${uid}/realBalance`).once('value');
+                        const curRealBal = parseFloat(updatedUserSnap.val() || 0);
+                        
+                        await sendTgMessage(
+                            `${icon} <b>Trade Closed: ${result.toUpperCase()}</b>\n` +
+                            `💵 <b>Payout:</b> $${payout.toFixed(2)}\n` +
+                            `💰 <b>Current Balance:</b> $${curRealBal.toFixed(2)}`,
+                            trade.tgMessageId
+                        );
                     }
                 }
             }
@@ -1262,10 +1270,51 @@ function pollTelegramUpdates() {
 
                             if (textLower === '/start') {
                                 if (activeSupportSessions[chatId]) { await sendTelegramMessage(chatId, `⚠️ *Active Help Session*\nPlease end the active session first using /endhelp.`); continue; }
-                                await sendTelegramMessage(chatId, `✨ *WELCOME TO ICTEX SECURE GATEWAY* ✨\n\nHello Trader! I am the official ICTEX Security and 2FA Bot.\n\n*Available Commands:*\n🔑 /linkictex - Link account securely.\n👤 /accounts - View linked profiles.\n💬 /help - Open a direct support session.`);
+                                await sendTelegramMessage(chatId, `✨ *WELCOME TO ICTEX SECURE GATEWAY* ✨\n\nHello Trader! I am the official ICTEX Security and Referral Bot.\n\n*Available Commands:*\n🔑 /linkictex - Link account securely.\n👤 /accounts - View linked profile.\n🔍 /check <UID> - Verify your referred member stats.\n💬 /help - Open a direct support session.`);
+                            }
+                            else if (textLower === '/accounts') {
+                                try {
+                                    const snap = await db.ref('users').orderByChild('telegramChatId').equalTo(chatId).once('value');
+                                    if (snap.exists()) {
+                                        let u = null, uUid = '';
+                                        snap.forEach(c => { u = c.val(); uUid = c.key; });
+                                        const realBal = parseFloat(u.realBalance || 0).toFixed(2);
+                                        const bonusBal = parseFloat(u.bonusBalance || 0).toFixed(2);
+                                        const kyc = (u.kycStatus || 'unverified').toUpperCase();
+                                        const numId = u.numericId || uUid.slice(-8);
+
+                                        await sendTelegramMessage(chatId, 
+                                            `👤 *LINKED ICTEX PROFILE*\n\n` +
+                                            `📛 *Name:* ${u.name || u.displayName || 'Trader'}\n` +
+                                            `📧 *Email:* \`${u.email || 'N/A'}\`\n` +
+                                            `🆔 *Trader UID:* \`${numId}\`\n` +
+                                            `🌍 *Country:* ${u.country || 'N/A'}\n` +
+                                            `💰 *Real Balance:* $${realBal}\n` +
+                                            `🎁 *Bonus Balance:* $${bonusBal}\n` +
+                                            `🛡 *KYC Status:* ${kyc}\n` +
+                                            `🔗 *Referral Code:* \`${numId}\`\n\n` +
+                                            `_💡 Send /check <UID> to view your student details._`
+                                        );
+                                    } else {
+                                        await sendTelegramMessage(chatId, `⚠️ *No Account Linked*\nNo ICTEX account is currently paired with this Telegram.\n\nUse /linkictex to pair your account.`);
+                                    }
+                                } catch (e) {
+                                    console.error("/accounts error:", e);
+                                    await sendTelegramMessage(chatId, `⚠️ Error fetching linked profile.`);
+                                }
                             }
                             else if (textLower === '/linkictex') {
                                 if (activeSupportSessions[chatId]) { await sendTelegramMessage(chatId, `⚠️ Please end the active help session first using /endhelp.`); continue; }
+                                
+                                // 1 Telegram = 1 Account Strict Restriction
+                                const existingSnap = await db.ref('users').orderByChild('telegramChatId').equalTo(chatId).once('value');
+                                if (existingSnap.exists()) {
+                                    let existingNumId = '';
+                                    existingSnap.forEach(c => { existingNumId = c.val().numericId || c.key.slice(-8); });
+                                    await sendTelegramMessage(chatId, `⚠️ *ALREADY LINKED*\nThis Telegram is already bound to ICTEX Account \`#${existingNumId}\`.\n\n1 Telegram account can only be linked to 1 ICTEX account. Unlink from your profile first to switch.`);
+                                    continue;
+                                }
+
                                 if (activeLinkingSessions[chatId]) {
                                     clearTimeout(activeLinkingSessions[chatId].timeoutRef);
                                     if (activeLinkingSessions[chatId].linkMessageId) deleteTelegramMessage(chatId, activeLinkingSessions[chatId].linkMessageId);
@@ -1281,6 +1330,101 @@ function pollTelegramUpdates() {
                                         delete activeLinkingSessions[chatId];
                                     }, 60000)
                                 };
+                            }
+                            else if (textLower.startsWith('/check') || /^\d{6,10}$/.test(text)) {
+                                const checkTargetUid = textLower.startsWith('/check') ? text.replace('/check', '').trim() : text.trim();
+                                if (!checkTargetUid) {
+                                    await sendTelegramMessage(chatId, `💡 *Usage:* \`/check <Trader UID>\`\nExample: \`/check 07402558\``);
+                                    continue;
+                                }
+
+                                // 1. Identify Requester's Referral Code
+                                const myUserSnap = await db.ref('users').orderByChild('telegramChatId').equalTo(chatId).once('value');
+                                if (!myUserSnap.exists()) {
+                                    await sendTelegramMessage(chatId, `⚠️ *Link Required*\nPlease link your ICTEX account first using /linkictex to check your referral network.`);
+                                    continue;
+                                }
+
+                                let myUser = null, myUid = '';
+                                myUserSnap.forEach(c => { myUser = c.val(); myUid = c.key; });
+                                const myRefCode = (myUser.numericId || myUid.slice(-8)).toString().toUpperCase();
+
+                                // 2. Find Target User
+                                const allUsersSnap = await db.ref('users').once('value');
+                                const allUsers = allUsersSnap.exists() ? allUsersSnap.val() : {};
+                                
+                                let target = null, targetUid = '';
+                                Object.keys(allUsers).forEach(uKey => {
+                                    const u = allUsers[uKey];
+                                    const numId = (u.numericId || '').toString();
+                                    if (numId === checkTargetUid || uKey === checkTargetUid || uKey.slice(-8) === checkTargetUid) {
+                                        target = u;
+                                        targetUid = uKey;
+                                    }
+                                });
+
+                                if (!target) {
+                                    await sendTelegramMessage(chatId, `❌ *User Not Found*\nNo account exists with Trader UID \`${checkTargetUid}\`.`);
+                                    continue;
+                                }
+
+                                // 3. Verify if target is in requester's referral network
+                                const targetMentor = (target.mentorId || '').toString().toUpperCase();
+                                if (targetMentor !== myRefCode && targetMentor !== myUid.toUpperCase()) {
+                                    await sendTelegramMessage(chatId, 
+                                        `❌ *NOT IN YOUR REFERRAL NETWORK*\n\n` +
+                                        `Trader UID \`${checkTargetUid}\` did *NOT* register using your referral code (\`${myRefCode}\`).`
+                                    );
+                                    continue;
+                                }
+
+                                // 4. Compute Comprehensive Referral Statistics
+                                const targetName = target.name || target.displayName || 'Trader';
+                                const targetCountry = target.country || 'N/A';
+                                const targetBalance = parseFloat(target.realBalance || 0).toFixed(2);
+                                const targetPnl = parseFloat(target.totalProfitLoss || 0).toFixed(2);
+                                
+                                const totalDeposit = parseFloat(target.taskProgress?.totalDepositAmount || 0);
+                                
+                                // Fetch transactions for last deposit & total withdraw
+                                const txs = target.transactions ? Object.values(target.transactions) : [];
+                                let totalWithdraw = 0;
+                                let lastDepositAmt = 0;
+                                let lastDepositDate = 'N/A';
+
+                                txs.forEach(t => {
+                                    if (t.type === 'withdraw' && (t.status === 'succeeded' || t.status === 'completed')) {
+                                        totalWithdraw += Math.abs(parseFloat(t.amount || 0));
+                                    }
+                                    if (t.type === 'deposit' && (t.status === 'succeeded' || t.status === 'completed')) {
+                                        if (t.timestamp && (!lastDepositAmt || t.timestamp > (t._lastTs || 0))) {
+                                            lastDepositAmt = Math.abs(parseFloat(t.amount || 0));
+                                            lastDepositDate = new Date(t.timestamp).toLocaleDateString();
+                                            t._lastTs = t.timestamp;
+                                        }
+                                    }
+                                });
+
+                                // Calculate Total Commission Earned From this user (5% deposit + $5 task if completed)
+                                const depositCommission = totalDeposit * 0.05;
+                                const taskBonus = (target.referralBonusTask && target.referralBonusTask.status === 'completed') ? 5 : 0;
+                                const totalEarnedFromUser = depositCommission + taskBonus;
+
+                                await sendTelegramMessage(chatId,
+                                    `📊 *REFERRAL STUDENT REPORT*\n\n` +
+                                    `👤 *Name:* ${targetName}\n` +
+                                    `🆔 *Trader UID:* \`${target.numericId || targetUid.slice(-8)}\`\n` +
+                                    `🌍 *Country:* ${targetCountry}\n` +
+                                    `💰 *Real Balance:* $${targetBalance}\n` +
+                                    `📈 *Overall PnL:* $${targetPnl}\n` +
+                                    `💵 *Total Deposited:* $${totalDeposit.toFixed(2)}\n` +
+                                    `🕒 *Last Deposit:* $${lastDepositAmt.toFixed(2)} (${lastDepositDate})\n` +
+                                    `💸 *Total Withdrawn:* $${totalWithdraw.toFixed(2)}\n` +
+                                    `────────────────────\n` +
+                                    `🏆 *Your Total Earnings From User:* $${totalEarnedFromUser.toFixed(2)}\n` +
+                                    `• 5% Deposit Commission: $${depositCommission.toFixed(2)}\n` +
+                                    `• $5 First Deposit Bonus Task: ${taskBonus > 0 ? '✅ $5.00 Earned' : '⏳ In Progress / Not Met'}`
+                                );
                             }
                             else if (textLower === '/help') {
                                 if (activeSupportSessions[chatId]) { await sendTelegramMessage(chatId, `⚠️ You are already in an active support session.`); continue; }
@@ -1311,12 +1455,22 @@ function pollTelegramUpdates() {
                                             const linkSnap = await db.ref(`telegram_links/${linkCode}`).once('value');
                                             if (linkSnap.exists()) {
                                                 const uid = linkSnap.val().uid;
+
+                                                // Enforce: 1 Telegram = 1 Account
+                                                const existingSnap = await db.ref('users').orderByChild('telegramChatId').equalTo(chatId).once('value');
+                                                if (existingSnap.exists()) {
+                                                    let existingNumId = '';
+                                                    existingSnap.forEach(c => { existingNumId = c.val().numericId || c.key.slice(-8); });
+                                                    await sendTelegramMessage(chatId, `⚠️ *LINKING CANCELLED*\nThis Telegram is already bound to ICTEX Account \`#${existingNumId}\`. 1 Telegram account can only link 1 ICTEX account.`);
+                                                    continue;
+                                                }
+
                                                 await db.ref(`users/${uid}`).update({ telegramChatId: chatId, twoFactorEnabled: true });
                                                 await linkSnap.ref.remove();
                                                 clearTimeout(session.timeoutRef);
                                                 if (session.linkMessageId) deleteTelegramMessage(chatId, session.linkMessageId);
                                                 delete activeLinkingSessions[chatId];
-                                                await sendTelegramMessage(chatId, `🎉 *ACCOUNT PAIRED SUCCESSFULLY!* 🎉\nYour Telegram profile is now fully bound to your ICTEX Trading Account.`);
+                                                await sendTelegramMessage(chatId, `🎉 *ACCOUNT PAIRED SUCCESSFULLY!* 🎉\nYour Telegram profile is now bound to ICTEX Account.\n\nType /accounts to view profile or /check <UID> to inspect referrals.`);
                                             } else {
                                                 await sendTelegramMessage(chatId, `❌ *PAIRING ATTEMPT FAILED*\nThe linking code is invalid or expired.`);
                                             }
