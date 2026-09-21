@@ -1020,14 +1020,12 @@ app.post('/api/crypto/webhook', async (req, res) => {
                     const userId = order.userId;
                     const finalAmount = order.amountUSD || paidUSD;
 
-                    // ২. ইউজারের রিয়েল ব্যালেন্সে অটোমেটিক ডলার যোগ
-                    await db.ref(`users/${userId}`).update({
-                        realBalance: firebase.database.ServerValue.increment(finalAmount),
-                        lastDepositDate: firebase.database.ServerValue.TIMESTAMP,
-                        'taskProgress/totalDepositAmount': firebase.database.ServerValue.increment(finalAmount),
-                        'taskProgress/currentDepositAmount': firebase.database.ServerValue.increment(finalAmount),
-                        'taskProgress/depositCount': firebase.database.ServerValue.increment(1)
-                    });
+                    // ২. ইউজারের রিয়েল ব্যালেন্সে অটোমেটিক ডলার যোগ (Safe Transaction)
+                    await db.ref(`users/${userId}/realBalance`).transaction(curr => (curr || 0) + finalAmount);
+                    await db.ref(`users/${userId}/lastDepositDate`).set(Date.now());
+                    await db.ref(`users/${userId}/taskProgress/totalDepositAmount`).transaction(curr => (curr || 0) + finalAmount);
+                    await db.ref(`users/${userId}/taskProgress/currentDepositAmount`).transaction(curr => (curr || 0) + finalAmount);
+                    await db.ref(`users/${userId}/taskProgress/depositCount`).transaction(curr => (curr || 0) + 1);
 
                     // ৩. ট্রানজেকশন সফল মার্ক করা
                     await db.ref(`users/${userId}/transactions/${orderId}/status`).set('succeeded');
@@ -1042,10 +1040,9 @@ app.post('/api/crypto/webhook', async (req, res) => {
                             mentorSnap.forEach(c => { mentorUid = c.key; });
                             if (mentorUid) {
                                 const comm = finalAmount * 0.05;
-                                await db.ref(`mentors/${mentorUid}/commissionWallet`).update({
-                                    balance: firebase.database.ServerValue.increment(comm),
-                                    totalEarned: firebase.database.ServerValue.increment(comm)
-                                });
+                                await db.ref(`mentors/${mentorUid}/commissionWallet/balance`).transaction(curr => (curr || 0) + comm);
+                                await db.ref(`mentors/${mentorUid}/commissionWallet/totalEarned`).transaction(curr => (curr || 0) + comm);
+                                
                                 const commTx = `REFBONUS_${Date.now()}`;
                                 await db.ref(`users/${mentorUid}/transactions/${commTx}`).set({
                                     id: commTx,
