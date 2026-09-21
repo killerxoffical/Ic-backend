@@ -45,10 +45,11 @@ const SMART_AUTO_PILOT = true;
 const markets = {};
 const activeTradesDb = {};
 
-// Cache users to make sync decisions in real-time
+// Cache users to make sync decisions in real-time (Zero Bandwidth & Ultra-Fast)
 const usersCache = {};
 db.ref('users').on('child_added', snap => { usersCache[snap.key] = snap.val(); });
 db.ref('users').on('child_changed', snap => { usersCache[snap.key] = snap.val(); });
+db.ref('users').on('child_removed', snap => { delete usersCache[snap.key]; });
 
 // ক্যাশ করা সার্ভার ইউআরএল (Keep-Alive এর জন্য)
 let cachedServerUrl = "";
@@ -73,27 +74,45 @@ db.ref('deposit_requests').on('child_changed', async (snapshot) => {
             const user = userSnap.val();
             
             if (user && user.mentorId) {
-                const mentorId = user.mentorId;
-                // Double check it's exactly 5% of amountUSD
+                const mentorCode = user.mentorId;
                 const expectedCommission = parseFloat((deposit.amountUSD * 0.05).toFixed(2));
                 const commissionToPay = expectedCommission > 0 ? expectedCommission : (parseFloat(deposit.mentorCommission) || 0);
                 
                 if (commissionToPay > 0) {
-                    // Instantly and securely add to mentor's commissionWallet
-                    await db.ref(`users/${mentorId}/commissionWallet/balance`).set(firebase.database.ServerValue.increment(commissionToPay));
-                    await db.ref(`users/${mentorId}/commissionWallet/totalEarned`).set(firebase.database.ServerValue.increment(commissionToPay));
+                    // ৮-ডিজিট কোড দিয়ে মেন্টরের আসল Firebase UID খুঁজে বের করা
+                    let targetMentorUid = null;
+                    const mentorLookup = await db.ref('mentors').orderByChild('mentorId').equalTo(mentorCode).once('value');
+                    if (mentorLookup.exists()) {
+                        mentorLookup.forEach(c => { targetMentorUid = c.key; });
+                    }
+                    if (!targetMentorUid) {
+                        const userLookup = await db.ref('users').orderByChild('numericId').equalTo(mentorCode).once('value');
+                        if (userLookup.exists()) {
+                            userLookup.forEach(c => { targetMentorUid = c.key; });
+                        }
+                    }
+
+                    const finalMentorUid = targetMentorUid || mentorCode;
+
+                    // মেন্টরের আসল অ্যাকাউন্টে ৫% কমিশন যোগ
+                    const mentorUpdates = {};
+                    mentorUpdates[`mentors/${finalMentorUid}/commissionWallet/balance`] = firebase.database.ServerValue.increment(commissionToPay);
+                    mentorUpdates[`mentors/${finalMentorUid}/commissionWallet/totalEarned`] = firebase.database.ServerValue.increment(commissionToPay);
+                    mentorUpdates[`users/${finalMentorUid}/commissionWallet/balance`] = firebase.database.ServerValue.increment(commissionToPay);
+                    mentorUpdates[`users/${finalMentorUid}/commissionWallet/totalEarned`] = firebase.database.ServerValue.increment(commissionToPay);
                     
-                    // Add history log for mentor
                     const historyId = Date.now() + Math.random().toString(36).substr(2, 5);
-                    await db.ref(`users/${mentorId}/transactions/${historyId}`).set({
+                    mentorUpdates[`users/${finalMentorUid}/transactions/${historyId}`] = {
                         id: historyId,
                         type: 'referral_commission',
                         amount: commissionToPay,
                         timestamp: firebase.database.ServerValue.TIMESTAMP,
                         status: 'completed',
                         note: `5% Commission for deposit from ${deposit.userName || deposit.userId}`
-                    });
-                    console.log(`[Referral System] Successfully paid $${commissionToPay} commission to mentor ${mentorId} for deposit ${snapshot.key}`);
+                    };
+
+                    await db.ref().update(mentorUpdates);
+                    console.log(`[Referral System] Successfully paid $${commissionToPay} commission to mentor ${finalMentorUid} for deposit ${snapshot.key}`);
                 }
             }
 
@@ -791,25 +810,26 @@ const NOWPAYMENTS_API_KEY = "C8H6P5A-0QXM6SS-PHDQ107-SVN7AYG";
 app.post('/api/crypto/create-payment', async (req, res) => {
     try {
         const { userId, amountUSD, userName, userEmail, currencySymbol, promoCode } = req.body;
-        if (!userId || !amountUSD || amountUSD <= 0) {
+        if (!userId || !amountUSD || parseFloat(amountUSD) <= 0) {
             return res.status(400).json({ error: 'Invalid deposit parameters' });
         }
 
-        const orderId = 'CRYPTO_' + Date.now() + '_' + Math.random().toString(36).substr(2, 5);
+        const orderId = 'CRYPTO_' + Date.now() + '_' + Math.random().toString(36).substr(2, 6);
+        const serverOrigin = (cachedServerUrl || 'https://ic-backend-l5sm.onrender.com').replace(/\/$/, '');
 
         const payload = {
             price_amount: parseFloat(amountUSD),
             price_currency: "usd",
             order_id: orderId,
             order_description: `Deposit for User ID ${userId}`,
-            ipn_callback_url: `${cachedServerUrl || 'https://ic-backend-l5sm.onrender.com'}/api/crypto/webhook`,
+            ipn_callback_url: `${serverOrigin}/api/crypto/webhook`,
             success_url: "https://ictex.iceiy.com",
             cancel_url: "https://ictex.iceiy.com",
             is_fee_paid_by_user: false
         };
 
-        if (currencySymbol) {
-            payload.pay_currency = currencySymbol;
+        if (currencySymbol && currencySymbol !== 'multi') {
+            payload.pay_currency = currencySymbol.toLowerCase();
         }
 
         const response = await axios.post('https://api.nowpayments.io/v1/invoice', payload, {
@@ -850,11 +870,11 @@ app.post('/api/crypto/create-payment', async (req, res) => {
         }
     } catch (e) {
         console.error("Crypto Invoice Error:", e.response ? e.response.data : e.message);
-        res.status(500).json({ error: e.message });
+        res.status(500).json({ error: e.response?.data?.message || e.message });
     }
 });
 
-// ২. অটো-এপ্রুভ ইনস্ট্যান্ট ওয়েবহুক
+// ২. অটো-এপ্রুভ ইনস্ট্যান্ট ও সিকিউর ওয়েবহুক (ডাবল ডিপোজিট প্রতিরোধক ও ফেক-পেমেন্ট হ্যাক প্রটেকশন)
 app.post('/api/crypto/webhook', async (req, res) => {
     try {
         const data = req.body;
@@ -862,58 +882,138 @@ app.post('/api/crypto/webhook', async (req, res) => {
 
         const paymentStatus = data.payment_status; // 'finished' or 'confirmed'
         const orderId = data.order_id;
+        const paymentId = data.payment_id;
         const paidUSD = parseFloat(data.price_amount || data.pay_amount || 0);
 
         if ((paymentStatus === 'finished' || paymentStatus === 'confirmed') && orderId) {
-            const orderSnap = await db.ref(`crypto_deposit_orders/${orderId}`).once('value');
-            if (orderSnap.exists()) {
-                const order = orderSnap.val();
-                if (order.status !== 'completed') {
-                    // ১. অর্ডার স্ট্যাটাস কমপ্লিট করা
-                    await db.ref(`crypto_deposit_orders/${orderId}/status`).set('completed');
-                    await db.ref(`crypto_deposit_orders/${orderId}/completedAt`).set(Date.now());
+            
+            // 🔒 HACK PREVENTION: সরাসরি NOWPayments সার্ভার থেকে লাইভ পেমেন্ট স্টেটাস ভেরিফাই করা
+            if (paymentId) {
+                try {
+                    const verifyResponse = await axios.get(`https://api.nowpayments.io/v1/payment/${paymentId}`, {
+                        headers: { 'x-api-key': NOWPAYMENTS_API_KEY }
+                    });
+                    const realPayment = verifyResponse.data;
+                    if (!realPayment || (realPayment.payment_status !== 'finished' && realPayment.payment_status !== 'confirmed')) {
+                        console.warn(`🚨 [Fake Hack Attempt Blocked] Payment ID ${paymentId} is NOT verified!`);
+                        return res.status(400).send('Fake payment rejected');
+                    }
+                } catch (verifyErr) {
+                    console.error("NOWPayments Verification Error:", verifyErr.message);
+                    return res.status(400).send('Payment verification failed');
+                }
+            }
 
-                    const userId = order.userId;
-                    const finalAmount = order.amountUSD || paidUSD;
+            const orderRef = db.ref(`crypto_deposit_orders/${orderId}`);
+            
+            // ডাবল ব্যালেন্স ক্রেডিট আটকানোর জন্য অ্যাটমিক ট্রানজ্যাকশন লক (Atomic Status Lock)
+            const lockResult = await orderRef.child('status').transaction((currentStatus) => {
+                if (currentStatus === 'completed') {
+                    return; // অলরেডি কমপ্লিট হয়ে থাকলে প্রসেস বাতিল করবে
+                }
+                return 'completed';
+            });
 
-                    // ২. ইউজারের রিয়েল ব্যালেন্সে অটোমেটিক ডলার যোগ
-                    await db.ref(`users/${userId}/realBalance`).transaction(curr => (curr || 0) + finalAmount);
-                    await db.ref(`users/${userId}/lastDepositDate`).set(Date.now());
-                    await db.ref(`users/${userId}/taskProgress/totalDepositAmount`).transaction(curr => (curr || 0) + finalAmount);
-                    await db.ref(`users/${userId}/taskProgress/currentDepositAmount`).transaction(curr => (curr || 0) + finalAmount);
-                    await db.ref(`users/${userId}/taskProgress/depositCount`).transaction(curr => (curr || 0) + 1);
+            // এই রিকোয়েস্টটিই প্রথম স্ট্যাটাস 'completed' করতে পেরেছে কি না যাচাই
+            if (lockResult.committed && lockResult.snapshot.val() === 'completed') {
+                const orderSnap = await orderRef.once('value');
+                const order = orderSnap.val() || {};
+                
+                await orderRef.child('completedAt').set(Date.now());
+                const userId = order.userId;
+                const finalAmount = parseFloat(order.amountUSD) || paidUSD;
 
-                    // ৩. ট্রানজেকশন সফল মার্ক করা
-                    await db.ref(`users/${userId}/transactions/${orderId}/status`).set('succeeded');
+                if (!userId || finalAmount <= 0) {
+                    return res.status(200).send('OK');
+                }
 
-                    // ৪. ৫% রেফারেল কমিশন স্বয়ংক্রিয়ভাবে মেন্টর ওয়ালেটে পাঠানো
-                    const userSnap = await db.ref(`users/${userId}`).once('value');
-                    const userData = userSnap.val();
-                    if (userData && userData.mentorId) {
-                        const mentorSnap = await db.ref('mentors').orderByChild('mentorId').equalTo(userData.mentorId).once('value');
-                        if (mentorSnap.exists()) {
-                            let mentorUid;
-                            mentorSnap.forEach(c => { mentorUid = c.key; });
-                            if (mentorUid) {
-                                const comm = finalAmount * 0.05;
-                                await db.ref(`mentors/${mentorUid}/commissionWallet/balance`).transaction(curr => (curr || 0) + comm);
-                                await db.ref(`mentors/${mentorUid}/commissionWallet/totalEarned`).transaction(curr => (curr || 0) + comm);
-                                
-                                const commTx = `REFBONUS_${Date.now()}`;
-                                await db.ref(`users/${mentorUid}/transactions/${commTx}`).set({
-                                    id: commTx,
-                                    timestamp: Date.now(),
-                                    status: 'succeeded',
-                                    amount: comm,
-                                    method: 'Referral Commission (5%)',
-                                    type: 'bonus'
-                                });
-                            }
+                // ইউজার ডাটা ফেচ করা
+                const userSnap = await db.ref(`users/${userId}`).once('value');
+                const userData = userSnap.val() || {};
+
+                // ১. প্রোমো কোড বোনাস ক্যালকুলেশন
+                let bonusAmount = 0;
+                if (order.promoCode) {
+                    const promoSnap = await db.ref(`admin/promo_codes/${order.promoCode}`).once('value');
+                    const promo = promoSnap.val();
+                    if (promo && promo.status === 'active' && finalAmount >= (promo.minDeposit || 10)) {
+                        bonusAmount = parseFloat((finalAmount * (promo.bonusPercentage / 100)).toFixed(2));
+                        if (promo.maxBonus) {
+                            bonusAmount = Math.min(bonusAmount, promo.maxBonus);
                         }
                     }
-
-                    console.log(`🎉 [Crypto Deposit Success] $${finalAmount} credited to user: ${userId}`);
                 }
+
+                // ২. ব্যালেন্স ও হিস্ট্রি আপডেট অবজেক্ট
+                const updates = {};
+                updates[`users/${userId}/realBalance`] = firebase.database.ServerValue.increment(finalAmount);
+                if (bonusAmount > 0) {
+                    updates[`users/${userId}/bonusBalance`] = firebase.database.ServerValue.increment(bonusAmount);
+                    updates[`users/${userId}/maxBonusLimit`] = firebase.database.ServerValue.increment(bonusAmount);
+                }
+                updates[`users/${userId}/lastDepositDate`] = Date.now();
+                updates[`users/${userId}/taskProgress/totalDepositAmount`] = firebase.database.ServerValue.increment(finalAmount);
+                updates[`users/${userId}/taskProgress/currentDepositAmount`] = firebase.database.ServerValue.increment(finalAmount);
+                updates[`users/${userId}/taskProgress/depositCount`] = firebase.database.ServerValue.increment(1);
+                updates[`users/${userId}/dailyBonus/qualifyingDeposit`] = firebase.database.ServerValue.increment(finalAmount);
+                updates[`users/${userId}/transactions/${orderId}/status`] = 'succeeded';
+
+                // ৩. ৫% রেফারেল কমিশন স্বয়ংক্রিয়ভাবে মেন্টর ওয়ালেটে পাঠানো
+                if (userData.mentorId) {
+                    const mentorId = userData.mentorId;
+                    const commission = parseFloat((finalAmount * 0.05).toFixed(2));
+                    
+                    if (commission > 0) {
+                        updates[`mentors/${mentorId}/commissionWallet/balance`] = firebase.database.ServerValue.increment(commission);
+                        updates[`mentors/${mentorId}/commissionWallet/totalEarned`] = firebase.database.ServerValue.increment(commission);
+                        updates[`users/${mentorId}/commissionWallet/balance`] = firebase.database.ServerValue.increment(commission);
+                        updates[`users/${mentorId}/commissionWallet/totalEarned`] = firebase.database.ServerValue.increment(commission);
+
+                        const commTx = `REFBONUS_${Date.now()}`;
+                        updates[`users/${mentorId}/transactions/${commTx}`] = {
+                            id: commTx,
+                            timestamp: Date.now(),
+                            status: 'succeeded',
+                            amount: commission,
+                            method: 'Referral Commission (5%)',
+                            type: 'bonus'
+                        };
+                    }
+
+                    // ৪. ফার্স্ট ডিপোজিট বোনাস টাস্ক ($৫ বোনাস ১০টি ট্রেডের জন্য)
+                    if (!userData.firstDepositDone) {
+                        updates[`users/${userId}/firstDepositDone`] = true;
+                        const now = Date.now();
+                        const createdAt = userData.createdAt || now;
+                        const hoursSinceRegistration = (now - createdAt) / (1000 * 60 * 60);
+
+                        if (hoursSinceRegistration <= 24) {
+                            updates[`users/${userId}/referralBonusTask`] = {
+                                status: 'active',
+                                targetTrades: 10,
+                                currentTrades: 0,
+                                mentorId: mentorId,
+                                activatedAt: now
+                            };
+                        }
+                    }
+                }
+
+                await db.ref().update(updates);
+
+                // টেলিগ্রাম চ্যানেল/বটে ইনস্ট্যান্ট অ্যালার্ট পাঠানো
+                sendTgMessage(
+                    `⚡ <b>Crypto Deposit Auto-Approved!</b>\n\n` +
+                    `👤 <b>User:</b> ${order.userName || 'Trader'} (<code>${userId}</code>)\n` +
+                    `💰 <b>Deposited:</b> $${finalAmount.toFixed(2)} USD\n` +
+                    (bonusAmount > 0 ? `🎁 <b>Bonus Credited:</b> $${bonusAmount.toFixed(2)} USD\n` : '') +
+                    `🔗 <b>Method:</b> ${(order.currencySymbol || 'CRYPTO').toUpperCase()}\n` +
+                    `🧾 <b>Order ID:</b> <code>${orderId}</code>`
+                ).catch(() => {});
+
+                console.log(`🎉 [Crypto Deposit Success] $${finalAmount} credited to user: ${userId}`);
+            } else {
+                console.log(`ℹ️ [Crypto Webhook] Order ${orderId} already processed.`);
             }
         }
         res.status(200).send('OK');
@@ -923,31 +1023,35 @@ app.post('/api/crypto/webhook', async (req, res) => {
     }
 });
 
-// Scanner Loop (Resolves trades securely from Server to handle offline users)
+// ⚡ HIGH-PERFORMANCE IN-MEMORY TRADE RESOLUTION ENGINE (Zero-Bandwidth, Anti-Glitch Lock)
+const processingTrades = new Set(); // ডাবল রেজোলিউশন প্রতিরোধক মেমোরি গার্ড
+
 setInterval(async () => {
     const now = Date.now();
     try {
-        const usersSnap = await db.ref('users').once('value');
-        if (!usersSnap.exists()) return;
-
-        const users = usersSnap.val();
+        // ফায়ারবেস ডাউনলোড বন্ধ: সরাসরি ইন-মেমোরি ক্যাশ থেকে নিমেষেই রিড হবে
+        const users = usersCache;
+        if (!users || Object.keys(users).length === 0) return;
 
         for (const uid in users) {
             const user = users[uid];
-            if (!user.activeTrades) continue;
+            if (!user || !user.activeTrades) continue;
 
             for (const tradeId in user.activeTrades) {
                 const trade = user.activeTrades[tradeId];
+                if (!trade || processingTrades.has(tradeId)) continue; // ইতিমধ্যে প্রসেসিং হলে স্কিপ করবে
+
                 const payoutRate = trade.payoutRate || 1.85;
 
-                // 1. Send opening message to Telegram
+                // ১. টেলিগ্রামে ওপেনিং ট্রেড নোটিফিকেশন পাঠানো (একবারই পাঠাবে)
                 if (!trade.tgMessageId && !trade.isDemo && !trade.isTournament) {
-                    let currentBal = parseFloat(user.realBalance || 0); // Balance already has trade amount deducted
-                    let previousBal = currentBal + parseFloat(trade.amount || 0); // Reconstruct balance before trade
+                    processingTrades.add(tradeId); // লক
+                    let currentBal = parseFloat(user.realBalance || 0);
+                    let previousBal = currentBal + parseFloat(trade.amount || 0);
                     let expWinBal = currentBal + (trade.amount * payoutRate);
 
                     const msg = `🟢 <b>New Trade Opened</b>\n\n` +
-                        `👤 <b>Name:</b> ${user.name}\n` +
+                        `👤 <b>Name:</b> ${user.name || 'Trader'}\n` +
                         `🆔 <b>UID:</b> ${uid}\n` +
                         `📈 <b>Market:</b> ${trade.market}\n` +
                         `⏱ <b>Duration:</b> ${trade.expiryType === 'time' ? trade.expiryType : 'Seconds'}\n` +
@@ -958,32 +1062,35 @@ setInterval(async () => {
                         `💸 <b>Balance if Win:</b> $${expWinBal.toFixed(2)}\n` +
                         `💸 <b>Balance if Loss:</b> $${currentBal.toFixed(2)}`;
 
-                    const msgId = await sendTgMessage(msg);
-                    if (msgId) await db.ref(`users/${uid}/activeTrades/${tradeId}/tgMessageId`).set(msgId);
+                    sendTgMessage(msg).then(msgId => {
+                        if (msgId) {
+                            db.ref(`users/${uid}/activeTrades/${tradeId}/tgMessageId`).set(msgId);
+                            trade.tgMessageId = msgId;
+                        }
+                        processingTrades.delete(tradeId); // আনলক
+                    }).catch(() => processingTrades.delete(tradeId));
                 }
 
-                // 2. Resolve Trade upon expiry
+                // ২. ট্রেডের সময় শেষ হলে রেজোলিউশন করা
                 if (now >= trade.expiryTimestamp) {
-                    
-                    if (!trade.lockedClosingPrice) {
-                        let exactPrice = trade.openPrice;
-                        const mId = trade.marketId;
-                        if (markets[mId] && markets[mId].currentPrice) {
-                            exactPrice = markets[mId].currentPrice;
-                        }
-                        trade.lockedClosingPrice = exactPrice;
-                        // Lock it in the database asynchronously and proceed immediately
-                        db.ref(`users/${uid}/activeTrades/${tradeId}/lockedClosingPrice`).set(exactPrice).catch(()=>{});
-                    }
+                    processingTrades.add(tradeId); // অ্যাটমিক লক যাতে ডাবল ক্যালকুলেশন না হয়
 
                     let closingPrice = trade.lockedClosingPrice;
+                    if (!closingPrice) {
+                        closingPrice = trade.openPrice;
+                        const mId = trade.marketId;
+                        if (markets[mId] && markets[mId].currentPrice) {
+                            closingPrice = markets[mId].currentPrice;
+                        }
+                        trade.lockedClosingPrice = closingPrice;
+                        db.ref(`users/${uid}/activeTrades/${tradeId}/lockedClosingPrice`).set(closingPrice).catch(()=>{});
+                    }
 
                     const betAmount = parseFloat(trade.amount);
                     const diff = closingPrice - trade.openPrice;
 
                     let result = 'push', payout = betAmount, profitChange = 0;
                     if (Math.abs(diff) < 1e-6) {
-                        // Prevent PUSH if possible by giving a slight edge based on random
                         const randomEdge = Math.random() > 0.5 ? 0.00001 : -0.00001;
                         closingPrice += randomEdge;
                         const newDiff = closingPrice - trade.openPrice;
@@ -998,7 +1105,7 @@ setInterval(async () => {
                         result = 'loss'; payout = 0; profitChange = -betAmount;
                     }
 
-                    // Batch DB Updates
+                    // ব্যাচ আপডেট অবজেক্ট
                     const updates = {};
                     if (!trade.isDemo && !trade.isTournament) {
                         const realAmt = parseFloat(trade.realAmount) || 0;
@@ -1025,27 +1132,47 @@ setInterval(async () => {
                             if (toBonus > 0) updates[`users/${uid}/bonusBalance`] = firebase.database.ServerValue.increment(toBonus);
                             if (toReal > 0) updates[`users/${uid}/realBalance`] = firebase.database.ServerValue.increment(toReal);
                         }
-                        // Note: If 'loss', balances were already deducted upfront during placement, so no addition needed.
                         
                         updates[`users/${uid}/totalProfitLoss`] = firebase.database.ServerValue.increment(profitChange);
-                        updates[`users/${uid}/dailyProfit`] = firebase.database.ServerValue.increment(profitChange);
+                        
+                        // 🔒 DATE GLITCH FIX: সার্ভার সাইডে আজকের তারিখ সিঙ্ক রাখা যাতে সকালে প্রফিট রিসেট না হয়
+                        const todayUTC = new Date().toISOString().slice(0, 10);
+                        if (user.dailyProfitDate !== todayUTC) {
+                            updates[`users/${uid}/dailyProfit`] = profitChange;
+                            updates[`users/${uid}/dailyProfitDate`] = todayUTC;
+                            user.dailyProfitDate = todayUTC;
+                            user.dailyProfit = profitChange;
+                        } else {
+                            updates[`users/${uid}/dailyProfit`] = firebase.database.ServerValue.increment(profitChange);
+                            user.dailyProfit = (parseFloat(user.dailyProfit) || 0) + profitChange;
+                        }
 
-                        // --- NEW: Referral Bonus Task Logic ---
+                        // রেফারেল বোনাস টাস্ক ট্র্যাকিং ($৫ বোনাস)
                         const taskSnap = await db.ref(`users/${uid}/referralBonusTask`).once('value');
                         const task = taskSnap.val();
                         if (task && task.status === 'active') {
                             const newTrades = (task.currentTrades || 0) + 1;
-                            const finalBalance = (parseFloat(user.realBalance || 0)) + (result === 'win' ? profitChange + trade.realAmount : (result === 'push' ? trade.realAmount : 0));
+                            const finalBalance = (parseFloat(user.realBalance || 0)) + (result === 'win' ? profitChange + (trade.realAmount || 0) : (result === 'push' ? (trade.realAmount || 0) : 0));
                             
                             if (newTrades >= 10 && finalBalance >= 0.5) {
                                 updates[`users/${uid}/referralBonusTask/status`] = 'completed';
                                 updates[`users/${uid}/referralBonusTask/currentTrades`] = 10;
                                 
-                                updates[`users/${task.mentorId}/commissionWallet/balance`] = firebase.database.ServerValue.increment(5);
-                                updates[`users/${task.mentorId}/commissionWallet/totalEarned`] = firebase.database.ServerValue.increment(5);
+                                // আসল মেন্টর UID বের করা
+                                let taskMentorUid = null;
+                                const mentorLookup = await db.ref('mentors').orderByChild('mentorId').equalTo(task.mentorId).once('value');
+                                if (mentorLookup.exists()) {
+                                    mentorLookup.forEach(c => { taskMentorUid = c.key; });
+                                }
+                                const finalTaskMentorUid = taskMentorUid || task.mentorId;
+
+                                updates[`mentors/${finalTaskMentorUid}/commissionWallet/balance`] = firebase.database.ServerValue.increment(5);
+                                updates[`mentors/${finalTaskMentorUid}/commissionWallet/totalEarned`] = firebase.database.ServerValue.increment(5);
+                                updates[`users/${finalTaskMentorUid}/commissionWallet/balance`] = firebase.database.ServerValue.increment(5);
+                                updates[`users/${finalTaskMentorUid}/commissionWallet/totalEarned`] = firebase.database.ServerValue.increment(5);
                                 
                                 const historyId = Date.now() + Math.random().toString(36).substr(2, 5);
-                                updates[`users/${task.mentorId}/transactions/${historyId}`] = {
+                                updates[`users/${finalTaskMentorUid}/transactions/${historyId}`] = {
                                     id: historyId,
                                     type: 'referral_bonus',
                                     amount: 5,
@@ -1053,7 +1180,7 @@ setInterval(async () => {
                                     status: 'completed',
                                     note: `Bonus for ${uid} completing 10 trades`
                                 };
-                                console.log(`[Referral Task] Mentor ${task.mentorId} received $5 for user ${uid} completing 10 trades.`);
+                                console.log(`[Referral Task] Mentor ${finalTaskMentorUid} received $5 for user ${uid} completing 10 trades.`);
                             } else if (finalBalance < 0.5) {
                                 updates[`users/${uid}/referralBonusTask/status`] = 'failed_balance';
                                 updates[`users/${uid}/referralBonusTask/currentTrades`] = newTrades;
@@ -1064,6 +1191,7 @@ setInterval(async () => {
                         }
                     }
 
+                    // অ্যাক্টিভ ট্রেড মুছে ট্রেড হিস্ট্রিতে সেভ করা
                     updates[`users/${uid}/activeTrades/${tradeId}`] = null;
                     updates[`admin/markets/${trade.marketId}/activeTrades/${tradeId}`] = null;
 
@@ -1072,23 +1200,28 @@ setInterval(async () => {
 
                     await db.ref().update(updates);
 
-                    // Send Final Result Reply to Telegram with Current Balance
+                    // টেলিগ্রামে ট্রেড রেজাল্ট মেসেজ পাঠানো
                     if (trade.tgMessageId) {
                         const icon = result === 'win' ? '✅' : (result === 'loss' ? '❌' : '🔄');
-                        const updatedUserSnap = await db.ref(`users/${uid}/realBalance`).once('value');
-                        const curRealBal = parseFloat(updatedUserSnap.val() || 0);
+                        const curRealBal = (parseFloat(user.realBalance || 0)) + (result === 'win' ? profitChange : 0);
                         
-                        await sendTgMessage(
+                        sendTgMessage(
                             `${icon} <b>Trade Closed: ${result.toUpperCase()}</b>\n` +
                             `💵 <b>Payout:</b> $${payout.toFixed(2)}\n` +
                             `💰 <b>Current Balance:</b> $${curRealBal.toFixed(2)}`,
                             trade.tgMessageId
-                        );
+                        ).catch(() => {});
                     }
+
+                    // মেমোরি ক্যাশ থেকে ট্রেডটি রিমুভ ও প্রসেসিং গার্ড ক্লিয়ার
+                    if (user.activeTrades) delete user.activeTrades[tradeId];
+                    processingTrades.delete(tradeId);
                 }
             }
         }
-    } catch (e) { console.log("Server Resolution Loop Error:", e); }
+    } catch (e) { 
+        console.log("Server Resolution Loop Error:", e); 
+    }
 }, 1000);
 
 
