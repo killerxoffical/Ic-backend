@@ -37,7 +37,7 @@ const TIMEFRAME = 60000;
 const TICK_MS = 300;
 const MIN_PRICE = 0.00001;
 const HISTORY_SEED_COUNT = 100;
-const MAX_CANDLES = 2880; // ২ দিন (৪৮ ঘণ্টা × ৬০ মিনিট = ২৮৮০ ক্যান্ডেল)0;
+const MAX_CANDLES = 2880; // ২ দিন (৪৮ ঘণ্টা × ৬০ মিনিট = ২৮৮০ ক্যান্ডেল)
 
 // 🔥 ADMIN SMART SETTINGS 🔥
 const SMART_AUTO_PILOT = true;
@@ -783,150 +783,6 @@ function sendPingBotAlert(text) {
 }
 
 // =====================================================================
-// AUTOMATED MULTI-CRYPTO GATEWAY (NOWPAYMENTS API INTEGRATION)
-// =====================================================================
-const NOWPAYMENTS_API_KEY = "C8H6P5A-0QXM6SS-PHDQ107-SVN7AYG";
-
-// ১. পেমেন্ট ইনভয়েস জেনারেটর এপিআই
-app.post('/api/crypto/create-payment', async (req, res) => {
-    try {
-        const { userId, amountUSD, userName, userEmail, currencySymbol, promoCode } = req.body;
-        if (!userId || !amountUSD || amountUSD <= 0) {
-            return res.status(400).json({ error: 'Invalid deposit parameters' });
-        }
-
-        const orderId = 'CRYPTO_' + Date.now() + '_' + Math.random().toString(36).substr(2, 5);
-
-        const payload = {
-            price_amount: parseFloat(amountUSD),
-            price_currency: "usd",
-            order_id: orderId,
-            order_description: `Deposit for User ID ${userId}`,
-            ipn_callback_url: `${cachedServerUrl || 'https://ic-backend-l5sm.onrender.com'}/api/crypto/webhook`,
-            success_url: "https://ictex.iceiy.com",
-            cancel_url: "https://ictex.iceiy.com",
-            is_fee_paid_by_user: false
-        };
-
-        // যদি ইউজার নির্দিষ্ট কোনো কয়েনে ক্লিক করে (যেমন: btc, sol, trx)
-        if (currencySymbol) {
-            payload.pay_currency = currencySymbol;
-        }
-
-        const response = await axios.post('https://api.nowpayments.io/v1/invoice', payload, {
-            headers: {
-                'x-api-key': NOWPAYMENTS_API_KEY,
-                'Content-Type': 'application/json'
-            }
-        });
-
-        if (response.data && response.data.invoice_url) {
-            // ফায়ারবেসে অর্ডার ডাটা সংরক্ষণ
-            await db.ref(`crypto_deposit_orders/${orderId}`).set({
-                userId: userId,
-                userName: userName || 'Trader',
-                userEmail: userEmail || '',
-                amountUSD: parseFloat(amountUSD),
-                promoCode: promoCode || null,
-                invoiceId: response.data.id,
-                invoiceUrl: response.data.invoice_url,
-                status: 'waiting',
-                createdAt: Date.now()
-            });
-
-            // ইউজারের ট্রানজেকশনে পেন্ডিং রেকর্ড তৈরি
-            await db.ref(`users/${userId}/transactions/${orderId}`).set({
-                id: orderId,
-                timestamp: Date.now(),
-                status: 'pending',
-                amount: parseFloat(amountUSD),
-                method: 'Instant Crypto Pay',
-                type: 'deposit'
-            });
-
-            res.json({ success: true, invoice_url: response.data.invoice_url, order_id: orderId });
-        } else {
-            res.status(500).json({ error: 'Invoice creation failed' });
-        }
-    } catch (e) {
-        console.error("Crypto Invoice Error:", e.response ? e.response.data : e.message);
-        res.status(500).json({ error: e.message });
-    }
-});
-
-// ২. অটো-এপ্রুভ ইনস্ট্যান্ট ওয়েবহুক
-app.post('/api/crypto/webhook', async (req, res) => {
-    try {
-        const data = req.body;
-        console.log("⚡ Auto Crypto Webhook Alert:", data);
-
-        const paymentStatus = data.payment_status; // 'finished' or 'confirmed'
-        const orderId = data.order_id;
-        const paidUSD = parseFloat(data.price_amount || data.pay_amount || 0);
-
-        if ((paymentStatus === 'finished' || paymentStatus === 'confirmed') && orderId) {
-            const orderSnap = await db.ref(`crypto_deposit_orders/${orderId}`).once('value');
-            if (orderSnap.exists()) {
-                const order = orderSnap.val();
-                if (order.status !== 'completed') {
-                    // ১. অর্ডার স্ট্যাটাস কমপ্লিট করা
-                    await db.ref(`crypto_deposit_orders/${orderId}/status`).set('completed');
-                    await db.ref(`crypto_deposit_orders/${orderId}/completedAt`).set(Date.now());
-
-                    const userId = order.userId;
-                    const finalAmount = order.amountUSD || paidUSD;
-
-                    // ২. ইউজারের রিয়েল ব্যালেন্সে অটোমেটিক ডলার যোগ
-                    await db.ref(`users/${userId}`).update({
-                        realBalance: firebase.database.ServerValue.increment(finalAmount),
-                        lastDepositDate: firebase.database.ServerValue.TIMESTAMP,
-                        'taskProgress/totalDepositAmount': firebase.database.ServerValue.increment(finalAmount),
-                        'taskProgress/currentDepositAmount': firebase.database.ServerValue.increment(finalAmount),
-                        'taskProgress/depositCount': firebase.database.ServerValue.increment(1)
-                    });
-
-                    // ৩. ট্রানজেকশন সফল মার্ক করা
-                    await db.ref(`users/${userId}/transactions/${orderId}/status`).set('succeeded');
-
-                    // ৪. ৫% রেফারেল কমিশন স্বয়ংক্রিয়ভাবে মেন্টর ওয়ালেটে পাঠানো
-                    const userSnap = await db.ref(`users/${userId}`).once('value');
-                    const userData = userSnap.val();
-                    if (userData && userData.mentorId) {
-                        const mentorSnap = await db.ref('mentors').orderByChild('mentorId').equalTo(userData.mentorId).once('value');
-                        if (mentorSnap.exists()) {
-                            let mentorUid;
-                            mentorSnap.forEach(c => { mentorUid = c.key; });
-                            if (mentorUid) {
-                                const comm = finalAmount * 0.05;
-                                await db.ref(`mentors/${mentorUid}/commissionWallet`).update({
-                                    balance: firebase.database.ServerValue.increment(comm),
-                                    totalEarned: firebase.database.ServerValue.increment(comm)
-                                });
-                                const commTx = `REFBONUS_${Date.now()}`;
-                                await db.ref(`users/${mentorUid}/transactions/${commTx}`).set({
-                                    id: commTx,
-                                    timestamp: Date.now(),
-                                    status: 'succeeded',
-                                    amount: comm,
-                                    method: 'Referral Commission (5%)',
-                                    type: 'bonus'
-                                });
-                            }
-                        }
-                    }
-
-                    console.log(`🎉 [Crypto Deposit Success] $${finalAmount} credited to user: ${userId}`);
-                }
-            }
-        }
-        res.status(200).send('OK');
-    } catch (e) {
-        console.error("Crypto Webhook Process Error:", e.message);
-        res.status(500).send('Error');
-    }
-});
-
-// =====================================================================
 // AUTOMATED 25+ MULTI-CRYPTO PAYMENT GATEWAY (NOWPAYMENTS API)
 // =====================================================================
 const NOWPAYMENTS_API_KEY = "C8H6P5A-0QXM6SS-PHDQ107-SVN7AYG";
@@ -1020,7 +876,7 @@ app.post('/api/crypto/webhook', async (req, res) => {
                     const userId = order.userId;
                     const finalAmount = order.amountUSD || paidUSD;
 
-                    // ২. ইউজারের রিয়েল ব্যালেন্সে অটোমেটিক ডলার যোগ (Safe Transaction)
+                    // ২. ইউজারের রিয়েল ব্যালেন্সে অটোমেটিক ডলার যোগ
                     await db.ref(`users/${userId}/realBalance`).transaction(curr => (curr || 0) + finalAmount);
                     await db.ref(`users/${userId}/lastDepositDate`).set(Date.now());
                     await db.ref(`users/${userId}/taskProgress/totalDepositAmount`).transaction(curr => (curr || 0) + finalAmount);
