@@ -63,8 +63,8 @@ db.ref('admin/settings/activeServerUrl').on('value', (snap) => {
 db.ref('deposit_requests').on('child_changed', async (snapshot) => {
     try {
         const deposit = snapshot.val();
-        // Check if status changed to approved and commission is not yet paid
-        if (deposit && deposit.status === 'approved' && !deposit.commissionPaid && deposit.mentorCommission > 0) {
+        // Check if status changed to approved or succeeded and commission is not yet paid
+        if (deposit && (deposit.status === 'approved' || deposit.status === 'succeeded') && !deposit.commissionPaid && (deposit.mentorCommission > 0 || deposit.amountUSD > 0)) {
             const depositRef = snapshot.ref;
             // Lock immediately to prevent double processing
             await depositRef.child('commissionPaid').set(true);
@@ -156,9 +156,13 @@ db.ref('salary_requests').on('child_changed', async (snapshot) => {
             const amount = parseFloat(req.amount) || 0;
             
             if (amount > 0 && mentorId) {
-                // Instantly and securely add to mentor's salaryWallet
-                await db.ref(`users/${mentorId}/salaryWallet/balance`).set(firebase.database.ServerValue.increment(amount));
-                await db.ref(`users/${mentorId}/salaryWallet/totalEarned`).set(firebase.database.ServerValue.increment(amount));
+                // Instantly and securely add to mentor's salaryWallet (both users and mentors node)
+                const salUpdates = {};
+                salUpdates[`users/${mentorId}/salaryWallet/balance`] = firebase.database.ServerValue.increment(amount);
+                salUpdates[`users/${mentorId}/salaryWallet/totalEarned`] = firebase.database.ServerValue.increment(amount);
+                salUpdates[`mentors/${mentorId}/salaryWallet/balance`] = firebase.database.ServerValue.increment(amount);
+                salUpdates[`mentors/${mentorId}/salaryWallet/totalEarned`] = firebase.database.ServerValue.increment(amount);
+                await db.ref().update(salUpdates);
                 
                 // Add history log
                 const historyId = Date.now() + Math.random().toString(36).substr(2, 5);
