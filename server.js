@@ -892,6 +892,14 @@ app.post('/api/admin/command', async (req, res) => {
             timestamp: Date.now()
         };
 
+        // Broadcast active command to Firebase so God Mode UIs see it
+        db.ref(`admin/activeCommands/${marketId}`).set({
+            command,
+            bias,
+            outcome: (bias === 'GREEN' ? 'WIN_BIAS' : 'LOSS_BIAS'),
+            timestamp: Date.now()
+        }).catch(() => {});
+
         // Check if it's a multi-candle pattern
         if (MULTI_CANDLE_PATTERNS[command]) {
             market.nextCandleQueue = MULTI_CANDLE_PATTERNS[command].map(s => ({...s, patternName: command}));
