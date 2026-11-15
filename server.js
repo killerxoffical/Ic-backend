@@ -1594,42 +1594,18 @@ setInterval(async () => {
                     const precision = 0.000001;
                     let result = 'push', payout = betAmount, profitChange = 0;
 
-                    if (forcedOutcome === 'win') {
+                    if (Math.abs(diff) <= precision) {
+                        result = 'push';
+                        payout = betAmount;
+                        profitChange = 0;
+                    } else if ((diff > precision && trade.direction === 'UP') || (diff < -precision && trade.direction === 'DOWN')) {
                         result = 'win';
                         payout = betAmount * payoutRate;
                         profitChange = payout - betAmount;
-                        const margin = Math.max(0.00015, Math.abs(diff) || 0.00015);
-                        closingPrice = roundPrice(trade.direction === 'UP' ? openPrice + margin : openPrice - margin);
-                        if (matchedCandle) {
-                            matchedCandle.close = closingPrice;
-                            if (trade.direction === 'UP') matchedCandle.high = Math.max(matchedCandle.high, closingPrice + margin * 0.2);
-                            else matchedCandle.low = Math.min(matchedCandle.low, closingPrice - margin * 0.2);
-                        }
-                    } else if (forcedOutcome === 'loss') {
+                    } else {
                         result = 'loss';
                         payout = 0;
                         profitChange = -betAmount;
-                        const margin = Math.max(0.00015, Math.abs(diff) || 0.00015);
-                        closingPrice = roundPrice(trade.direction === 'UP' ? openPrice - margin : openPrice + margin);
-                        if (matchedCandle) {
-                            matchedCandle.close = closingPrice;
-                            if (trade.direction === 'UP') matchedCandle.low = Math.min(matchedCandle.low, closingPrice - margin * 0.2);
-                            else matchedCandle.high = Math.max(matchedCandle.high, closingPrice + margin * 0.2);
-                        }
-                    } else {
-                        if (Math.abs(diff) <= precision) {
-                            result = 'push';
-                            payout = betAmount;
-                            profitChange = 0;
-                        } else if ((diff > precision && trade.direction === 'UP') || (diff < -precision && trade.direction === 'DOWN')) {
-                            result = 'win';
-                            payout = betAmount * payoutRate;
-                            profitChange = payout - betAmount;
-                        } else {
-                            result = 'loss';
-                            payout = 0;
-                            profitChange = -betAmount;
-                        }
                     }
 
                     trade.lockedClosingPrice = closingPrice;
