@@ -279,11 +279,18 @@ function generateHistoricalCandle(timestamp, open, isLive = false) {
 
 // 2. Exact Pattern Generator (AI Controlled but Natural Looking)
 function generateDynamicCandle(timestamp, open, command, cloneData) {
-    if (command === 'CUSTOM_CLONE' && cloneData) {
-        const bodySize = cloneData.body || 0;
-        const upperWick = cloneData.upperWick || 0;
-        const lowerWick = cloneData.lowerWick || 0;
-        const isGreen = cloneData.isGreen;
+    if ((command === 'CUSTOM_CLONE' || command === 'CUSTOM_V2') && cloneData) {
+        const isGreen = cloneData.isGreen !== undefined ? cloneData.isGreen : true;
+        let bodySize = cloneData.body || 0;
+        let upperWick = cloneData.upperWick || 0;
+        let lowerWick = cloneData.lowerWick || 0;
+
+        if (cloneData.isPercent) {
+            const baseVol = open * 0.00015;
+            bodySize = Math.max(open * 0.00001, (cloneData.body / 100) * baseVol * 2.5);
+            upperWick = (cloneData.upperWick / 100) * baseVol * 2.0;
+            lowerWick = (cloneData.lowerWick / 100) * baseVol * 2.0;
+        }
         
         const close = isGreen ? open + bodySize : open - bodySize;
         const high = Math.max(open, close) + upperWick;
@@ -291,7 +298,9 @@ function generateDynamicCandle(timestamp, open, command, cloneData) {
 
         return {
             timestamp, open: roundPrice(open), high: roundPrice(open), low: roundPrice(open), close: roundPrice(open),
-            isPredetermined: true, isNatural: false, isAdminCommand: true, targetHigh: roundPrice(high), targetLow: roundPrice(low), targetClose: roundPrice(close), pattern: 'CUSTOM_CLONE'
+            isPredetermined: true, isNatural: false, isAdminCommand: true, 
+            targetHigh: roundPrice(high), targetLow: roundPrice(low), targetClose: roundPrice(close), 
+            pattern: command || 'CUSTOM_V2'
         };
     }
 
@@ -508,7 +517,7 @@ function getActiveTradesForMarket(marketId) {
 }
 
 function getCommandBias(cmd, cloneData) {
-    if (cmd === 'CUSTOM_CLONE' && cloneData) {
+    if ((cmd === 'CUSTOM_CLONE' || cmd === 'CUSTOM_V2') && cloneData) {
         return cloneData.isGreen ? 'GREEN' : 'RED';
     }
     if (!cmd) return 'NATURAL';
