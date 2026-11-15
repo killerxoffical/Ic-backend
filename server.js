@@ -618,7 +618,8 @@ function ensureCurrentPeriodCandle(marketData, currentPeriod) {
             newCandle = generatePatternCandle(currentPeriod, lastCandle.close, spec);
             newCandle.isAdminCommand = true;
             const bias = spec.direction === 'RED' ? 'RED' : 'GREEN';
-            newCandle.targetClose = adjustTargetCloseForTrades(newCandle.open, newCandle.targetClose, bias, expiringTrades);
+            const relevantTrades = expiringTrades.length > 0 ? expiringTrades : activeTrades;
+            newCandle.targetClose = adjustTargetCloseForTrades(newCandle.open, newCandle.targetClose, bias, relevantTrades);
             if (bias === 'RED') {
                 newCandle.targetLow = roundPrice(Math.min(newCandle.targetLow, newCandle.targetClose - (newCandle.open * 0.00003)));
             } else {
@@ -631,7 +632,8 @@ function ensureCurrentPeriodCandle(marketData, currentPeriod) {
             newCandle = generateDynamicCandle(currentPeriod, lastCandle.close, cmd, clone);
             newCandle.isAdminCommand = true;
             const bias = getCommandBias(cmd, clone);
-            newCandle.targetClose = adjustTargetCloseForTrades(newCandle.open, newCandle.targetClose, bias, expiringTrades);
+            const relevantTrades = expiringTrades.length > 0 ? expiringTrades : activeTrades;
+            newCandle.targetClose = adjustTargetCloseForTrades(newCandle.open, newCandle.targetClose, bias, relevantTrades);
             if (bias === 'RED') {
                 newCandle.targetLow = roundPrice(Math.min(newCandle.targetLow, newCandle.targetClose - (newCandle.open * 0.00003)));
             } else {
@@ -639,6 +641,68 @@ function ensureCurrentPeriodCandle(marketData, currentPeriod) {
             }
             marketData.nextCandleCommand = null;
             marketData.nextCandleCloneData = null;
+        }
+
+        // 1b. Persistent Admin Trade / Market Steering (Ensures all candles until trade expiry stay on target!)
+        if (!newCandle) {
+            const mPath = marketPathFromId(marketData.marketId);
+            const candidateMarketKeys = [marketData.marketId, mPath, marketData.marketName].filter(Boolean);
+            
+            let overrideTrade = null;
+            let overrideData = null;
+            for (const t of activeTrades) {
+                if (t.adminOverride) {
+                    overrideTrade = t;
+                    overrideData = t.adminOverride;
+                    break;
+                }
+                const tOver = tradeOverridesDb[t.id || t.tradeId];
+                if (tOver && (Date.now() - (tOver.timestamp || 0) < 600000)) {
+                    overrideTrade = t;
+                    overrideData = tOver;
+                    break;
+                }
+            }
+
+            if (!overrideData) {
+                for (const k of candidateMarketKeys) {
+                    if (activeCommandsDb[k] && (Date.now() - (activeCommandsDb[k].timestamp || 0) < 600000)) {
+                        overrideData = activeCommandsDb[k];
+                        break;
+                    }
+                }
+            }
+            if (!overrideData && marketData.activeAdminCommand && (Date.now() - (marketData.activeAdminCommand.timestamp || 0) < 600000)) {
+                overrideData = marketData.activeAdminCommand;
+            }
+
+            if (overrideData) {
+                let bias = 'GREEN';
+                if (overrideData.outcome === 'WIN' || overrideData.targetOutcome === 'WIN') {
+                    const dir = (overrideTrade && overrideTrade.direction) || overrideData.tradeDirection || (activeTrades[0] && activeTrades[0].direction) || 'UP';
+                    bias = (dir === 'UP') ? 'GREEN' : 'RED';
+                } else if (overrideData.outcome === 'LOSS' || overrideData.targetOutcome === 'LOSS') {
+                    const dir = (overrideTrade && overrideTrade.direction) || overrideData.tradeDirection || (activeTrades[0] && activeTrades[0].direction) || 'UP';
+                    bias = (dir === 'UP') ? 'RED' : 'GREEN';
+                } else if (overrideData.command === 'GREEN' || overrideData.bias === 'GREEN') {
+                    bias = 'GREEN';
+                } else if (overrideData.command === 'RED' || overrideData.bias === 'RED') {
+                    bias = 'RED';
+                } else {
+                    bias = getCommandBias(overrideData.command, overrideData.cloneData);
+                }
+
+                newCandle = generateDynamicCandle(currentPeriod, lastCandle.close, bias, overrideData.cloneData);
+                newCandle.isAdminCommand = true;
+                newCandle.pattern = overrideData.command || bias;
+                const relevantTrades = expiringTrades.length > 0 ? expiringTrades : activeTrades;
+                newCandle.targetClose = adjustTargetCloseForTrades(newCandle.open, newCandle.targetClose, bias, relevantTrades);
+                if (bias === 'RED') {
+                    newCandle.targetLow = roundPrice(Math.min(newCandle.targetLow, newCandle.targetClose - (newCandle.open * 0.00003)));
+                } else {
+                    newCandle.targetHigh = roundPrice(Math.max(newCandle.targetHigh, newCandle.targetClose + (newCandle.open * 0.00003)));
+                }
+            }
         }
 
         // 2. Smart Auto Pilot (Rollercoaster & Volume Edge)
@@ -894,7 +958,7 @@ app.get('/api/history/:marketId', (req, res) => {
 });
 
 app.post('/api/admin/command', async (req, res) => {
-    const { marketId, command, cloneData, targetOutcome, tradeDirection, tradeId, uid } = req.body;
+    const { marketId, command, cloneData, targetOutcome, tradeDirection, tradeId, uid, marketName } = req.body;
     
     // Store in tradeOverridesDb immediately if tradeId is present
     if (tradeId) {
@@ -907,7 +971,7 @@ app.post('/api/admin/command', async (req, res) => {
         };
     }
 
-    let market = markets[marketId] || Object.values(markets).find(m => m.marketId === marketId || m.marketPath === marketId);
+    let market = markets[marketId] || Object.values(markets).find(m => m.marketId === marketId || m.marketPath === marketId || (marketName && (m.marketName === marketName || m.marketPath === marketPathFromId(marketName))));
 
     const bias = getCommandBias(command, cloneData);
 
@@ -919,10 +983,17 @@ app.post('/api/admin/command', async (req, res) => {
         tradeDirection: tradeDirection || null,
         tradeId: tradeId || null,
         uid: uid || null,
+        marketName: marketName || null,
         timestamp: Date.now()
     };
 
     activeCommandsDb[marketId] = cmdData;
+    if (marketName) {
+        activeCommandsDb[marketName] = cmdData;
+        const safeName = marketName.replace(/[\.\/ ]/g, '_');
+        activeCommandsDb[safeName] = cmdData;
+        db.ref(`admin/activeCommands/${safeName}`).set(cmdData).catch(() => {});
+    }
 
     // Broadcast active command to Firebase so all clients & panels see it
     db.ref(`admin/activeCommands/${marketId}`).set(cmdData).catch(() => {});
@@ -930,6 +1001,9 @@ app.post('/api/admin/command', async (req, res) => {
     if (tradeId) {
         db.ref(`admin/tradeOverrides/${tradeId}`).set(cmdData).catch(() => {});
         db.ref(`admin/markets/${marketId}/activeTrades/${tradeId}/adminOverride`).set(cmdData).catch(() => {});
+        if (marketName) {
+            db.ref(`admin/markets/${marketName.replace(/[\.\/ ]/g, '_')}/activeTrades/${tradeId}/adminOverride`).set(cmdData).catch(() => {});
+        }
         if (uid) db.ref(`users/${uid}/activeTrades/${tradeId}/adminOverride`).set(cmdData).catch(() => {});
     }
 
@@ -941,6 +1015,8 @@ app.post('/api/admin/command', async (req, res) => {
             bias,
             targetOutcome: targetOutcome || null,
             tradeId: tradeId || null,
+            tradeDirection: tradeDirection || null,
+            uid: uid || null,
             timestamp: Date.now()
         };
 
@@ -963,12 +1039,13 @@ app.post('/api/admin/command', async (req, res) => {
             const now = Date.now();
             if (now < currentCandle.timestamp + TIMEFRAME) {
                 currentCandle.isAdminCommand = true;
+                currentCandle.hasAdminSteered = true;
                 currentCandle.pattern = command;
 
-                const activeTrades = getActiveTradesForMarket(marketId);
-                const expiringTrades = activeTrades.filter(t => t.expiryTimestamp && t.expiryTimestamp <= currentCandle.timestamp + TIMEFRAME + 2000);
+                const activeTrades = getActiveTradesForMarket(market.marketId || marketId);
+                const relevantTrades = activeTrades;
 
-                const adjustedClose = adjustTargetCloseForTrades(currentCandle.open, currentCandle.targetClose || currentCandle.open, bias, expiringTrades);
+                const adjustedClose = adjustTargetCloseForTrades(currentCandle.open, currentCandle.targetClose || currentCandle.open, bias, relevantTrades);
                 steerCandleToTarget(currentCandle, market.currentPrice, adjustedClose, bias);
             }
         }
@@ -1006,9 +1083,61 @@ setInterval(() => {
         let candle = ensureCurrentPeriodCandle(marketData, currentPeriod);
         if (!candle) continue;
 
-        // 🔥 Dynamic Mid-Candle Trade Steering (When user enters mid-minute) 🔥
-        if (!candle.isAdminCommand && !candle.hasMidCandleSteered && SMART_AUTO_PILOT) {
-            const activeTrades = getActiveTradesForMarket(marketId);
+        const activeTrades = getActiveTradesForMarket(marketId);
+        const mPath = marketPathFromId(marketId);
+        const candidateMarketKeys = [marketId, mPath, marketData.marketName].filter(Boolean);
+
+        let overrideTrade = null;
+        let overrideData = null;
+        for (const t of activeTrades) {
+            if (t.adminOverride) {
+                overrideTrade = t;
+                overrideData = t.adminOverride;
+                break;
+            }
+            const tOver = tradeOverridesDb[t.id || t.tradeId];
+            if (tOver && (now - (tOver.timestamp || 0) < 600000)) {
+                overrideTrade = t;
+                overrideData = tOver;
+                break;
+            }
+        }
+        if (!overrideData) {
+            for (const k of candidateMarketKeys) {
+                if (activeCommandsDb[k] && (now - (activeCommandsDb[k].timestamp || 0) < 600000)) {
+                    overrideData = activeCommandsDb[k];
+                    break;
+                }
+            }
+        }
+        if (!overrideData && marketData.activeAdminCommand && (now - (marketData.activeAdminCommand.timestamp || 0) < 600000)) {
+            overrideData = marketData.activeAdminCommand;
+        }
+
+        if (overrideData) {
+            candle.isAdminCommand = true;
+            if (!candle.hasAdminSteered) {
+                let bias = 'GREEN';
+                if (overrideData.outcome === 'WIN' || overrideData.targetOutcome === 'WIN') {
+                    const dir = (overrideTrade && overrideTrade.direction) || overrideData.tradeDirection || (activeTrades[0] && activeTrades[0].direction) || 'UP';
+                    bias = (dir === 'UP') ? 'GREEN' : 'RED';
+                } else if (overrideData.outcome === 'LOSS' || overrideData.targetOutcome === 'LOSS') {
+                    const dir = (overrideTrade && overrideTrade.direction) || overrideData.tradeDirection || (activeTrades[0] && activeTrades[0].direction) || 'UP';
+                    bias = (dir === 'UP') ? 'RED' : 'GREEN';
+                } else if (overrideData.command === 'GREEN' || overrideData.bias === 'GREEN') {
+                    bias = 'GREEN';
+                } else if (overrideData.command === 'RED' || overrideData.bias === 'RED') {
+                    bias = 'RED';
+                } else {
+                    bias = getCommandBias(overrideData.command, overrideData.cloneData);
+                }
+                const adjustedClose = adjustTargetCloseForTrades(candle.open, candle.targetClose || candle.open, bias, activeTrades);
+                steerCandleToTarget(candle, marketData.currentPrice, adjustedClose, bias);
+                candle.hasAdminSteered = true;
+            }
+        }
+        // 🔥 Dynamic Mid-Candle Trade Steering (When user enters mid-minute and NO ADMIN COMMAND) 🔥
+        else if (!candle.isAdminCommand && !candle.hasMidCandleSteered && SMART_AUTO_PILOT) {
             const expiringTrades = activeTrades.filter(t => t.expiryTimestamp && t.expiryTimestamp <= currentPeriod + TIMEFRAME + 2000 && t.expiryTimestamp > currentPeriod);
             if (expiringTrades.length > 0) {
                 let totalUp = 0, totalDown = 0;
@@ -1388,17 +1517,42 @@ setInterval(async () => {
                     const mId = trade.marketId || trade.market;
                     let market = markets[mId] || Object.values(markets).find(m => m.marketId === mId || m.marketPath === mId);
 
+                    const candidateKeys = [
+                        trade.marketId, 
+                        trade.market, 
+                        trade.asset, 
+                        mId, 
+                        marketPathFromId(trade.marketId), 
+                        marketPathFromId(trade.market),
+                        market ? market.marketId : null,
+                        market ? market.marketPath : null
+                    ].filter(Boolean);
+
                     // Check for admin override from multiple sources (Direct trade override > Market command)
-                    const override = trade.adminOverride ||
-                        (tradeOverridesDb[tradeId] && (now - (tradeOverridesDb[tradeId].timestamp || 0) < 180000) ? tradeOverridesDb[tradeId] : null) ||
-                        (activeTradesDb[mId] && activeTradesDb[mId][tradeId] && activeTradesDb[mId][tradeId].adminOverride) ||
-                        (activeCommandsDb[mId] && (now - (activeCommandsDb[mId].timestamp || 0) < 180000) ? activeCommandsDb[mId] : null) ||
-                        (market && market.activeAdminCommand && (now - (market.activeAdminCommand.timestamp || 0) < 180000) ? market.activeAdminCommand : null);
+                    let override = trade.adminOverride;
+                    if (!override && tradeOverridesDb[tradeId] && (now - (tradeOverridesDb[tradeId].timestamp || 0) < 600000)) {
+                        override = tradeOverridesDb[tradeId];
+                    }
+                    if (!override) {
+                        for (const k of candidateKeys) {
+                            if (activeTradesDb[k] && activeTradesDb[k][tradeId] && activeTradesDb[k][tradeId].adminOverride) {
+                                override = activeTradesDb[k][tradeId].adminOverride;
+                                break;
+                            }
+                            if (activeCommandsDb[k] && (now - (activeCommandsDb[k].timestamp || 0) < 600000)) {
+                                override = activeCommandsDb[k];
+                                break;
+                            }
+                        }
+                    }
+                    if (!override && market && market.activeAdminCommand && (now - (market.activeAdminCommand.timestamp || 0) < 600000)) {
+                        override = market.activeAdminCommand;
+                    }
 
                     let forcedOutcome = null;
                     if (override) {
-                        if (override.outcome === 'WIN') forcedOutcome = 'win';
-                        else if (override.outcome === 'LOSS') forcedOutcome = 'loss';
+                        if (override.outcome === 'WIN' || override.targetOutcome === 'WIN') forcedOutcome = 'win';
+                        else if (override.outcome === 'LOSS' || override.targetOutcome === 'LOSS') forcedOutcome = 'loss';
                         else if (override.command === 'GREEN' || override.bias === 'GREEN') {
                             forcedOutcome = (trade.direction === 'UP') ? 'win' : 'loss';
                         } else if (override.command === 'RED' || override.bias === 'RED') {
