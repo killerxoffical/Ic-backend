@@ -809,8 +809,8 @@ function calculateAutoPilotDecision(expiringTrades, allActiveTrades) {
                 trail = initUserTradeTrail(preTradeBal);
                 db.ref(`users/${singleUserId}/tradeTrail`).set(trail).catch(()=>{});
                 uData.tradeTrail = trail;
-            } else if (trail && preTradeBal > (trail.highestSeenBalance || 0) + 5) {
-                // Balance increased significantly (deposit) -> re-init tier
+            } else if (trail && (preTradeBal > (trail.highestSeenBalance || 0) + 5 || (preTradeBal > 68 && trail.phase > 1) || (preTradeBal > 48 && preTradeBal <= 70 && trail.phase > 1))) {
+                // Balance increased significantly (deposit) or full balance present -> re-init tier to Phase 1 DRAIN
                 trail = initUserTradeTrail(preTradeBal);
                 db.ref(`users/${singleUserId}/tradeTrail`).set(trail).catch(()=>{});
                 uData.tradeTrail = trail;
